@@ -1,0 +1,17 @@
+/*
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), browsing-topics=()
+  Cross-Origin-Opener-Policy: same-origin
+  Content-Security-Policy: base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'
+
+/__/gis
+  Cache-Control: no-store, max-age=0
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+
+/admin*
+  Cache-Control: no-store, max-age=0
+  X-Frame-Options: DENY
