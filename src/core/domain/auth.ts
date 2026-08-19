@@ -104,8 +104,6 @@ export async function createUser(input: NewUserInput): Promise<User> {
   const username = input.username.trim().toLowerCase()
   if (!username) throw new Error('Cần tên đăng nhập')
   if (!input.password || input.password.length < 4) throw new Error('Mật khẩu tối thiểu 4 ký tự')
-  const existing = await dbx.users.where('username').equals(username).first()
-  if (existing && !existing.deleted) throw new Error('Tên đăng nhập đã tồn tại')
   const salt = genSalt()
   const now = Date.now()
   const u: User = {
@@ -122,7 +120,7 @@ export async function createUser(input: NewUserInput): Promise<User> {
     createdAt: now,
     updatedAt: now,
   }
-  return persistUserUpsert(u)
+  return persistUserUpsert(u, { requireEmptyStore: input.role === 'owner', rejectDuplicateUsername: true })
 }
 
 export async function login(username: string, password: string): Promise<User> {
@@ -198,9 +196,22 @@ export async function deleteUser(userId: string): Promise<void> {
   requestFlush()
 }
 
-async function persistUserUpsert(u: User): Promise<User> {
+interface PersistUserOptions {
+  /** Owner bootstrap chỉ hợp lệ trên DB chưa từng có user nào, kể cả user đã xóa mềm. */
+  requireEmptyStore?: boolean
+  rejectDuplicateUsername?: boolean
+}
+
+async function persistUserUpsert(u: User, opts: PersistUserOptions = {}): Promise<User> {
   let saved = u
   await dbx.transaction('rw', [dbx.users, dbx.syncQueue, dbx.appliedOps], async () => {
+    if (opts.requireEmptyStore && await dbx.users.count() > 0) {
+      throw new Error('Chủ cửa hàng chỉ được tạo khi thiết bị chưa có tài khoản')
+    }
+    if (opts.rejectDuplicateUsername) {
+      const existing = await dbx.users.where('username').equals(u.username).first()
+      if (existing && !existing.deleted) throw new Error('Tên đăng nhập đã tồn tại')
+    }
     const op = makeOp('user.upsert', null)
     saved = { ...u, hlc: op.hlc }
     op.payload = { user: saved }

@@ -1,7 +1,7 @@
 /**
  * 3SU Next — Đăng nhập (Login)
  * Chỉ hiện khi đã có tài khoản trong máy mà chưa đăng nhập.
- * Lần đầu (chưa có ai): cho phép tạo nhanh tài khoản Chủ cửa hàng.
+ * Lần đầu (DB user hoàn toàn trống): cho phép tạo tài khoản Chủ cửa hàng.
  * NV: chọn tên + bàn phím PIN (mật khẩu số).
  */
 import { useState } from 'react'
@@ -19,9 +19,10 @@ export function LoginPage() {
   const showToast = useApp((s) => s.showToast)
 
   const users = useLiveQuery(() => dbx.users.filter((u) => !u.deleted && u.active).toArray(), [], [] as User[])
-  const hasUsers = users.length > 0
+  const totalUsers = useLiveQuery(() => dbx.users.count(), [], 0)
+  const setup = totalUsers === 0
+  const noActiveUsers = !setup && users.length === 0
 
-  const [mode, setMode] = useState<'login' | 'setup'>('login')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
@@ -56,6 +57,10 @@ export function LoginPage() {
   }
 
   async function handleSetup() {
+    if (!setup) {
+      showToast('Thiết bị đã có tài khoản. Hãy đăng nhập chủ cửa hàng để tạo người dùng.', 'bad')
+      return
+    }
     if (!username.trim() || !password) { showToast('Nhập đủ thông tin', 'bad'); return }
     setBusy(true)
     try {
@@ -89,8 +94,6 @@ export function LoginPage() {
     }
   }
 
-  const setup = !hasUsers || mode === 'setup'
-
   if (pending) {
     return (
       <div className="min-h-full flex flex-col items-center justify-center px-6 py-10" style={{ background: 'var(--paper)' }}>
@@ -113,8 +116,12 @@ export function LoginPage() {
             <Store size={26} />
           </div>
           <div className="font-brand text-xl font-medium" style={{ color: 'var(--ink)' }}>{shop.name}</div>
-          <div className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
-            {setup ? 'Tạo tài khoản chủ cửa hàng để bắt đầu' : 'Chọn tên rồi nhập PIN / mật khẩu'}
+          <div className="text-xs mt-1 text-center" style={{ color: 'var(--mute)' }}>
+            {setup
+              ? 'Tạo tài khoản chủ cửa hàng để bắt đầu'
+              : noActiveUsers
+                ? 'Không có tài khoản đang hoạt động. Liên hệ chủ cửa hàng để khôi phục quyền truy cập.'
+                : 'Chọn tên rồi nhập PIN / mật khẩu'}
           </div>
         </div>
 
@@ -151,7 +158,7 @@ export function LoginPage() {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && (setup ? handleSetup() : handleLogin())}
+            onKeyDown={(e) => e.key === 'Enter' && void (setup ? handleSetup() : handleLogin())}
           />
           {!setup && (
             <div className="grid grid-cols-3 gap-2">
@@ -172,19 +179,14 @@ export function LoginPage() {
               ))}
             </div>
           )}
-          <button className="btn-cta mt-1 flex items-center justify-center gap-2" disabled={busy} onClick={setup ? handleSetup : handleLogin}>
+          <button
+            className="btn-cta mt-1 flex items-center justify-center gap-2"
+            disabled={busy || noActiveUsers}
+            onClick={() => void (setup ? handleSetup() : handleLogin())}
+          >
             <LogIn size={16} /> {setup ? 'Tạo & đăng nhập' : 'Đăng nhập'}
           </button>
         </div>
-
-        {hasUsers && (
-          <button
-            className="btn-ghost text-sm w-full mt-4"
-            onClick={() => { setMode(setup ? 'login' : 'setup'); setPassword('') }}
-          >
-            {setup ? '← Quay lại đăng nhập' : 'Tạo tài khoản mới'}
-          </button>
-        )}
       </div>
     </div>
   )
