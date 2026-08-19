@@ -5,7 +5,7 @@
 import { dbx, getSettings } from '../db'
 import type { Product, ProductBatch, Sale, SaleItem, PayMethod, Customer } from '../types'
 import { consumeBatchesFefo, liveBatchExpiry, restoreBatchesFefo } from './inventory'
-import { uid, today, localDay } from '../format'
+import { uid, localDay } from '../format'
 import { enqueueOp, requestFlush } from '../sync/engine'
 import { notifyDbChanged, withExclusiveLock } from '../offline'
 
@@ -26,9 +26,12 @@ export function cartUnitCost(item: CartItem, p: Product): number {
   return p.cost * item.unitRatio
 }
 
-/** Cộng dồn cùng SP + cùng đơn vị; khác ĐV thì dòng mới. */
+/** Cộng dồn cùng SP + cùng đơn vị và cùng hệ số; khác quy đổi thì dòng mới. */
 export function mergeCartLine(cart: CartItem[], item: CartItem): CartItem[] {
-  const i = cart.findIndex((c) => c.productId === item.productId && c.unitName === item.unitName)
+  const i = cart.findIndex((c) =>
+    c.productId === item.productId
+    && c.unitName === item.unitName
+    && c.unitRatio === item.unitRatio)
   if (i < 0) return [...cart, item]
   return cart.map((c, idx) => (idx === i ? { ...c, qty: c.qty + item.qty } : c))
 }
@@ -46,7 +49,7 @@ export type DiscountKind = 'amount' | 'percent'
 
 /** Đổi giảm giá UI → số tiền đưa vào confirmSale. */
 export function discountToAmount(subtotal: number, value: number, kind: DiscountKind): number {
-  if (!(subtotal > 0) || !(value > 0)) return 0
+  if (!(subtotal > 0) || !(value > 0) || !Number.isFinite(subtotal) || !Number.isFinite(value)) return 0
   const raw = kind === 'percent' ? subtotal * (value / 100) : value
   return Math.max(0, Math.min(subtotal, Math.round(raw)))
 }
@@ -60,7 +63,8 @@ export { consumeBatchesFefo, restoreBatchesFefo }
 
 async function writeProductBatches(p: Product, batches: ProductBatch[]): Promise<void> {
   p.batches = batches
-  p.expiry = liveBatchExpiry(batches) || p.expiry
+  // Khi mọi lô đã hết, phải xóa HSD projection thay vì giữ HSD cũ.
+  p.expiry = liveBatchExpiry(batches)
   await dbx.products.put(p)
   for (const b of batches) await dbx.batches.put(b)
 }
@@ -80,15 +84,22 @@ export interface CheckoutResult {
   warnings: string[]
 }
 
+function assertFiniteNonNegative(value: number, label: string): void {
+  if (!Number.isFinite(value) || value < 0) throw new Error(label + ' không hợp lệ')
+}
+
 /**
  * Chốt đơn — atomic transaction:
  * 1. Tính lại giá từ product (không tin tổng client)
- * 2. Trừ tồn kho
- * 3. Ghi đơn + stock moves
+ * 2. Gom tổng số lượng gốc theo product rồi kiểm tồn một lần
+ * 3. Trừ tồn kho, ghi đơn + stock moves
  * 4. Cập nhật công nợ khách nếu ghi nợ/thiếu tiền
  */
 export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult> {
   if (!input.items.length) throw new Error('Giỏ hàng trống')
+  if (input.payMethod !== 'cash' && input.payMethod !== 'transfer' && input.payMethod !== 'debt') {
+    throw new Error('Hình thức thanh toán không hợp lệ')
+  }
   const warnings: string[] = []
   let sale!: Sale
 
@@ -96,16 +107,25 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
     const settings = await getSettings()
     const allowNeg = settings.allowNegativeStock !== false
     const saleItems: SaleItem[] = []
+    const productCache = new Map<string, Product>()
+    const requestedBaseQty = new Map<string, number>()
 
     for (const ci of input.items) {
-      if (!(ci.qty > 0) || !(ci.unitRatio > 0)) throw new Error('Số lượng không hợp lệ')
-      const p = await dbx.products.get(ci.productId)
-      if (!p || p.deleted) throw new Error('Sản phẩm không tồn tại: ' + ci.productId)
-      const deducted = ci.qty * ci.unitRatio
-      if (p.stock - deducted < 0) {
-        if (!allowNeg) throw new Error(`${p.name} không đủ tồn (còn ${p.stock})`)
-        warnings.push(`${p.name} sẽ âm kho (${p.stock - deducted})`)
+      if (!Number.isFinite(ci.qty) || !Number.isFinite(ci.unitRatio) || !(ci.qty > 0) || !(ci.unitRatio > 0)) {
+        throw new Error('Số lượng không hợp lệ')
       }
+      let p = productCache.get(ci.productId)
+      if (!p) {
+        p = await dbx.products.get(ci.productId)
+        if (!p || p.deleted) throw new Error('Sản phẩm không tồn tại: ' + ci.productId)
+        assertFiniteNonNegative(p.price, 'Giá bán ' + p.name)
+        assertFiniteNonNegative(p.cost, 'Giá vốn ' + p.name)
+        if (!Number.isFinite(p.stock)) throw new Error('Tồn kho ' + p.name + ' không hợp lệ')
+        productCache.set(p.id, p)
+      }
+      const deducted = ci.qty * ci.unitRatio
+      if (!Number.isFinite(deducted) || deducted <= 0) throw new Error('Số lượng quy đổi không hợp lệ')
+      requestedBaseQty.set(p.id, (requestedBaseQty.get(p.id) ?? 0) + deducted)
       saleItems.push({
         productId: p.id,
         name: p.name,
@@ -117,14 +137,28 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
       })
     }
 
+    // Kiểm tổng nhu cầu của từng sản phẩm, không kiểm riêng từng dòng đơn vị.
+    for (const [productId, deducted] of requestedBaseQty) {
+      const p = productCache.get(productId)!
+      const projected = p.stock - deducted
+      if (projected < 0) {
+        if (!allowNeg) throw new Error(`${p.name} không đủ tồn (còn ${p.stock}, cần ${deducted})`)
+        warnings.push(`${p.name} sẽ âm kho (${projected})`)
+      }
+    }
+
     const subtotal = saleItems.reduce((a, it) => a + it.price * it.qty, 0)
-    const discount = Math.min(input.discount, subtotal)
+    if (!Number.isFinite(subtotal) || subtotal < 0) throw new Error('Tạm tính không hợp lệ')
+    const rawDiscount = Number.isFinite(input.discount) ? Math.round(input.discount) : 0
+    const discount = Math.max(0, Math.min(rawDiscount, subtotal))
     const total = Math.max(0, subtotal - discount)
     const profit = saleItems.reduce((a, it) => a + (it.price - it.cost) * it.qty, 0) - discount
+    if (!Number.isFinite(profit)) throw new Error('Lợi nhuận không hợp lệ')
     if (profit < 0) warnings.push('Đơn này đang lỗ ' + Math.abs(Math.round(profit)).toLocaleString('vi-VN') + 'đ')
 
     const isDebt = input.payMethod === 'debt'
-    const tendered = isDebt ? 0 : (input.payMethod === 'cash' ? input.tendered : total)
+    const cashTendered = Number.isFinite(input.tendered) ? Math.max(0, Math.round(input.tendered)) : 0
+    const tendered = isDebt ? 0 : (input.payMethod === 'cash' ? cashTendered : total)
     const change = isDebt ? 0 : Math.max(0, tendered - total)
     const debtAmount = isDebt ? total : (input.payMethod === 'cash' ? Math.max(0, total - tendered) : 0)
     if (debtAmount > 0 && !input.customerId) {
@@ -167,7 +201,7 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
         id: uid('mv'),
         productId: p.id,
         type: 'sale',
-        qty: -(it.qty * it.unitRatio),
+        qty: -deducted,
         cost: it.cost,
         note: 'Bán: ' + it.name,
         refId: sale.id,
@@ -222,7 +256,7 @@ export async function voidSale(saleId: string, reason: string): Promise<void> {
         id: uid('mv'),
         productId: it.productId,
         type: 'void_restore',
-        qty: it.qty * it.unitRatio,
+        qty: add,
         cost: it.cost,
         note: 'Hoàn kho do hủy đơn',
         refId: sale.id,
@@ -231,20 +265,12 @@ export async function voidSale(saleId: string, reason: string): Promise<void> {
       })
     }
 
-    // Hoàn nợ
-    if (sale.debtAmount > 0 && sale.customerId) {
+    // Hoàn nợ và chỉ số khách
+    if (sale.customerId) {
       const c = await dbx.customers.get(sale.customerId)
       if (c) {
-        c.debt = Math.max(0, c.debt - sale.debtAmount)
-        c.totalSpent -= sale.total
-        c.orderCount = Math.max(0, c.orderCount - 1)
-        c.updatedAt = Date.now()
-        await dbx.customers.put(c)
-      }
-    } else if (sale.customerId) {
-      const c = await dbx.customers.get(sale.customerId)
-      if (c) {
-        c.totalSpent -= sale.total
+        if (sale.debtAmount > 0) c.debt = Math.max(0, c.debt - sale.debtAmount)
+        c.totalSpent = Math.max(0, c.totalSpent - sale.total)
         c.orderCount = Math.max(0, c.orderCount - 1)
         c.updatedAt = Date.now()
         await dbx.customers.put(c)
@@ -274,7 +300,7 @@ export function dayStats(sales: Sale[], date: string): DayStatResult {
     revenue: daySales.reduce((a, s) => a + s.total, 0),
     profit: daySales.reduce((a, s) => a + s.profit, 0),
     orders: daySales.length,
-    items: daySales.reduce((a, s) => a + s.items.reduce((x, i) => x + i.qty, 0), 0),
+    items: daySales.reduce((a, s) => a + s.items.reduce((x, i) => x + i.qty * i.unitRatio, 0), 0),
   }
 }
 
@@ -299,7 +325,7 @@ export function bestSellerIds(sales: Sale[], limit = 24): string[] {
   const count: Record<string, number> = {}
   activeSalesFilter(sales).slice(-100).forEach((s) =>
     s.items.forEach((it) => {
-      count[it.productId] = (count[it.productId] || 0) + it.qty
+      count[it.productId] = (count[it.productId] || 0) + it.qty * it.unitRatio
     }),
   )
   return Object.entries(count)
@@ -313,7 +339,9 @@ export function customerHabits(sales: Sale[], customerId: string): { productId: 
   const map: Record<string, number> = {}
   sales
     .filter((s) => !s.voided && s.customerId === customerId)
-    .forEach((s) => s.items.forEach((it) => { map[it.productId] = (map[it.productId] || 0) + it.qty }))
+    .forEach((s) => s.items.forEach((it) => {
+      map[it.productId] = (map[it.productId] || 0) + it.qty * it.unitRatio
+    }))
   return Object.entries(map)
     .sort((a, b) => b[1] - a[1])
     .map(([productId, qty]) => ({ productId, qty }))
