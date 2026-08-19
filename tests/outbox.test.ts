@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { dbx } from '@/core/db'
+import { dbx, setCurrentUser } from '@/core/db'
 import { initSyncEngine } from '@/core/sync/engine'
 import { confirmSale, voidSale } from '@/core/domain/sales'
 import { addProduct, updateProduct, deleteProduct, saveGoodsReceipt, saveStocktake } from '@/core/domain/inventory'
@@ -215,6 +215,11 @@ describe('outbox — op sinh atomic trong domain', () => {
   })
 
   it('createUser / changePassword / deleteUser phát op user.*', async () => {
+    const owner = await createUser({ username: 'owner', name: 'Chủ', password: '1234', role: 'owner' })
+    await setCurrentUser(owner)
+    await dbx.syncQueue.clear()
+    await dbx.appliedOps.clear()
+
     const u = await createUser({ username: 'an', name: 'An', password: '1111', role: 'staff' })
     const created = (await dbx.syncQueue.toArray()).find((o) => o.type === 'user.upsert')
     expect(created).toBeTruthy()
