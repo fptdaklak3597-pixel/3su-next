@@ -145,6 +145,8 @@ export interface GoodsReceipt {
   supplier: string
   /** Liên kết nhà cung cấp (để tính công nợ) */
   supplierId?: string
+  /** PO nguồn; dùng đối soát và chống tính trùng phần chưa nhận. */
+  purchaseOrderId?: string
   date: string
   expiry: string
   note: string
@@ -285,15 +287,22 @@ export interface SupplierPayment {
   amount: number
   date: string
   note: string
+  /** Dữ liệu mới dùng field này; note prefix chỉ còn để đọc bản ghi legacy. */
+  paymentKind?: 'standalone' | 'receipt'
+  receiptId?: string
 }
 
 /* ─── Đơn mua hàng (Purchase Order) ─── */
 export type PurchaseOrderStatus = 'draft' | 'ordered' | 'received' | 'cancelled'
 
 export interface PurchaseOrderRow {
+  /** ID ổn định của dòng; optional để đọc PO legacy. */
+  lineId?: string
   productId: string
   name: string
   unit: string
+  /** Quy đổi về đơn vị gốc; PO legacy mặc định 1. */
+  unitRatio?: number
   qty: number
   cost: number
   receivedQty: number
