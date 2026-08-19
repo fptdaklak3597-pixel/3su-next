@@ -1,7 +1,7 @@
 /**
  * Phiên Firebase — một bộ nhớ chung cho web + form đăng nhập.
  * Không chờ tạo shop xong mới lắng nghe auth (tránh kẹt màn hình cũ).
- * Sau Google/email: cùng email chủ thì vào shop có sẵn; không có thì 'need-shop' (nhập mã / tạo mới).
+ * Sau Google/email: xác minh membership server trước khi mở dữ liệu local.
  */
 import { useEffect, useState } from 'react'
 import {
@@ -17,6 +17,7 @@ export type CloudSession = 'loading' | 'in' | 'out' | 'verify' | 'need-shop'
 
 let started = false
 let current: CloudSession = 'loading'
+let generation = 0
 const listeners = new Set<(s: CloudSession) => void>()
 
 function gateOfUser(): CloudSession {
@@ -37,12 +38,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 async function resolveShopGate(): Promise<CloudSession> {
-  const { enterExistingCloudShop, getCloudShopId, isCloudPaused } = await import('@/core/sync/cloud')
-  const local = await getCloudShopId()
-  if (local) {
-    if (!(await isCloudPaused())) void enterExistingCloudShop()
-    return 'in'
-  }
+  const { enterExistingCloudShop } = await import('@/core/sync/cloud')
   try {
     const id = await withTimeout(enterExistingCloudShop(), 8000)
     return id ? 'in' : 'need-shop'
@@ -62,23 +58,32 @@ function startCloudSession(): void {
   if (isGoogleRedirectPending()) emit('loading')
 
   watchCloudSession((s) => {
+    const run = ++generation
     if (s === 'out' && isGoogleRedirectPending()) return
     if (s === 'out') {
-      emit('out')
+      void import('@/core/sync/cloud')
+        .then((m) => m.clearCloudSession())
+        .catch(() => {})
+        .finally(() => { if (run === generation) emit('out') })
       return
     }
     if (s === 'verify') {
-      emit('in')
+      if (run === generation) emit('in')
       return
     }
-    void resolveShopGate().then(emit)
+    emit('loading')
+    void resolveShopGate().then((next) => {
+      if (run === generation) emit(next)
+    })
   })
 
   void (async () => {
     try {
       const u = await completePendingSignIn()
       if (u) {
-        emit(await resolveShopGate())
+        const run = ++generation
+        const next = await resolveShopGate()
+        if (run === generation) emit(next)
         return
       }
     } catch { /* thiếu email trên máy khác — form hỏi lại */ }
@@ -86,7 +91,7 @@ function startCloudSession(): void {
   })()
 }
 
-/** Gọi sau khi tạo cửa hàng hoặc nhập mã thành công. */
+/** Gọi sau khi chọn, tạo cửa hàng hoặc nhập mã thành công. */
 export function markCloudShopEntered(): void {
   emit('in')
 }
@@ -95,6 +100,7 @@ if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     started = false
     current = 'loading'
+    generation = 0
     listeners.clear()
   })
 }
