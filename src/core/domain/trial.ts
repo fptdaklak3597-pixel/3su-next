@@ -25,9 +25,16 @@ export function validateBackupSchema(data: unknown): void {
   for (const key of requiredArrays) {
     if (!Array.isArray(d[key])) throw new Error('Thiếu hoặc sai kiểu: ' + key)
   }
-  const optionalArrays = ['suppliers', 'supplierPayments', 'goodsReceipts', 'stockMoves', 'purchaseOrders', 'users', 'stocktakes']
+  const optionalArrays = [
+    'suppliers', 'supplierPayments', 'goodsReceipts', 'stockMoves', 'purchaseOrders',
+    'users', 'stocktakes', 'debtPayments', 'invoices', 'batches', 'priceLog', 'notes',
+    'pricingRules', 'quickAnswers', 'devices',
+  ]
   for (const key of optionalArrays) {
     if (d[key] != null && !Array.isArray(d[key])) throw new Error('Sai kiểu: ' + key)
+  }
+  if (d.sourceShopId != null && typeof d.sourceShopId !== 'string') {
+    throw new Error('sourceShopId phải là string')
   }
   if (d.settings != null && (typeof d.settings !== 'object' || Array.isArray(d.settings))) {
     throw new Error('settings phải là object')
