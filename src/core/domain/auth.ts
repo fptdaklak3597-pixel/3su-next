@@ -1,9 +1,9 @@
 /**
  * 3SU Next — Người dùng, đăng nhập & phân quyền
- * Port nghiệp vụ từ 50-auth-cloud-ai.js (users/auth/perms).
  *
- * Bảo mật: mật khẩu KHÔNG lưu plain text — lưu SHA-256(salt + password).
- * Local-first: tài khoản lưu trên máy; cloud auth (tuỳ chọn) đồng bộ sau.
+ * Mật khẩu mới dùng PBKDF2-SHA-256 có version. Hash legacy vẫn đăng nhập được
+ * và tự nâng cấp sau lần xác thực thành công. Verifier owner/admin chỉ tồn tại
+ * trên thiết bị đặt mật khẩu, không được phát sang máy nhân viên.
  */
 import { dbx } from '../db'
 import { uid } from '../format'
@@ -12,12 +12,40 @@ import type { User, UserRole, UserPerms } from '../types'
 
 /* ─── Hash mật khẩu ─── */
 
+const KDF_NAME = 'pbkdf2-sha256'
+const KDF_ITERATIONS = import.meta.env.MODE === 'test' ? 2_000 : 210_000
+const LOGIN_WINDOW_MS = 15 * 60_000
+const LOGIN_LOCK_AFTER = 5
+const LOGIN_BASE_LOCK_MS = 30_000
+const LOGIN_MAX_LOCK_MS = 15 * 60_000
+const LOGIN_META_PREFIX = 'auth:login:'
+
+interface LoginAttemptState {
+  failures: number
+  lastFailedAt: number
+  lockedUntil: number
+}
+
+function requireWebCrypto(): SubtleCrypto {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Thiết bị không hỗ trợ mã hóa mật khẩu an toàn')
+  }
+  return crypto.subtle
+}
+
 function bufToHex(buf: ArrayBuffer): string {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-/** FNV-1a 32-bit × 4 vòng — chỉ dùng khi thiếu Web Crypto (môi trường không HTTPS). */
-function fallbackHash(input: string): string {
+function hexToBytes(hex: string): Uint8Array {
+  if (!/^[0-9a-f]+$/i.test(hex) || hex.length % 2 !== 0) throw new Error('Salt không hợp lệ')
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  return out
+}
+
+/** Chỉ dùng để xác minh hash FNV legacy 32-hex; không bao giờ tạo verifier mới. */
+function legacyFallbackHash(input: string): string {
   let out = ''
   for (let round = 0; round < 4; round++) {
     let h = 0x811c9dc5 ^ round
@@ -31,39 +59,184 @@ function fallbackHash(input: string): string {
 }
 
 export function genSalt(): string {
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const arr = new Uint8Array(16)
-    crypto.getRandomValues(arr)
-    return bufToHex(arr.buffer)
+  if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
+    throw new Error('Thiết bị không có bộ sinh số ngẫu nhiên an toàn')
   }
-  return fallbackHash(String(Math.random()) + Date.now()).slice(0, 32)
+  const arr = new Uint8Array(16)
+  crypto.getRandomValues(arr)
+  return bufToHex(arr.buffer)
+}
+
+async function derivePbkdf2(password: string, salt: string, iterations: number): Promise<string> {
+  if (!Number.isSafeInteger(iterations) || iterations < 1_000 || iterations > 2_000_000) {
+    throw new Error('Tham số mã hóa mật khẩu không hợp lệ')
+  }
+  const subtle = requireWebCrypto()
+  const key = await subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits'],
+  )
+  const bits = await subtle.deriveBits({
+    name: 'PBKDF2',
+    hash: 'SHA-256',
+    salt: hexToBytes(salt),
+    iterations,
+  }, key, 256)
+  return bufToHex(bits)
 }
 
 export async function hashPassword(password: string, salt: string): Promise<string> {
-  const input = salt + ':' + password
-  if (typeof crypto !== 'undefined' && crypto.subtle) {
-    try {
-      const data = new TextEncoder().encode(input)
-      const digest = await crypto.subtle.digest('SHA-256', data)
-      return bufToHex(digest)
-    } catch {
-      /* rơi xuống fallback */
-    }
-  }
-  return fallbackHash(input)
+  const digest = await derivePbkdf2(password, salt, KDF_ITERATIONS)
+  return `${KDF_NAME}$${KDF_ITERATIONS}$${digest}`
 }
 
-/** So sánh chuỗi an toàn (hằng thời, tránh timing attack). */
+/** So sánh hằng thời tương đối, kể cả chuỗi khác độ dài. */
 export function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  const length = Math.max(a.length, b.length)
+  let diff = a.length ^ b.length
+  for (let i = 0; i < length; i += 1) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0)
+  }
   return diff === 0
 }
 
+function parsePbkdf2(hash: string): { iterations: number; digest: string } | null {
+  const match = /^pbkdf2-sha256\$(\d+)\$([0-9a-f]{64})$/i.exec(hash)
+  if (!match) return null
+  return { iterations: Number(match[1]), digest: match[2]!.toLowerCase() }
+}
+
+async function legacySha256(password: string, salt: string): Promise<string> {
+  const subtle = requireWebCrypto()
+  const data = new TextEncoder().encode(salt + ':' + password)
+  return bufToHex(await subtle.digest('SHA-256', data))
+}
+
 export async function verifyPassword(password: string, salt: string, hash: string): Promise<boolean> {
-  const h = await hashPassword(password, salt)
-  return safeEqual(h, hash)
+  if (!password || !salt || !hash) return false
+  const parsed = parsePbkdf2(hash)
+  if (parsed) {
+    try {
+      return safeEqual(await derivePbkdf2(password, salt, parsed.iterations), parsed.digest)
+    } catch {
+      return false
+    }
+  }
+  // SHA-256 legacy = 64 hex. FNV fallback legacy = 32 hex.
+  if (/^[0-9a-f]{64}$/i.test(hash)) {
+    try { return safeEqual(await legacySha256(password, salt), hash.toLowerCase()) } catch { return false }
+  }
+  if (/^[0-9a-f]{32}$/i.test(hash)) {
+    return safeEqual(legacyFallbackHash(salt + ':' + password), hash.toLowerCase())
+  }
+  return false
+}
+
+export function passwordHashNeedsUpgrade(hash: string): boolean {
+  const parsed = parsePbkdf2(hash)
+  return !parsed || parsed.iterations !== KDF_ITERATIONS
+}
+
+export function minimumPasswordLength(role: UserRole): number {
+  return role === 'staff' ? 6 : 8
+}
+
+export function passwordPolicyMessage(role: UserRole): string {
+  return role === 'staff'
+    ? 'PIN/mật khẩu nhân viên tối thiểu 6 ký tự'
+    : 'Mật khẩu chủ/quản trị tối thiểu 8 ký tự'
+}
+
+export function passwordMeetsPolicy(password: string, role: UserRole): boolean {
+  return typeof password === 'string'
+    && password.length >= minimumPasswordLength(role)
+    && password.length <= 128
+    && password.trim().length > 0
+}
+
+function validatePassword(password: string, role: UserRole): void {
+  if (!passwordMeetsPolicy(password, role)) throw new Error(passwordPolicyMessage(role))
+}
+
+function isPrivilegedRole(role: UserRole): boolean {
+  return role === 'owner' || role === 'admin'
+}
+
+/** Payload hồ sơ gửi cloud: máy khác không bao giờ nhận verifier owner/admin. */
+export function userForSync(user: User): User {
+  if (!isPrivilegedRole(user.role)) return { ...user }
+  return {
+    ...user,
+    passwordHash: '',
+    salt: '',
+    passwordNeedsReset: true,
+  }
+}
+
+function passwordPayloadForSync(user: User): Record<string, unknown> {
+  if (isPrivilegedRole(user.role)) {
+    return {
+      userId: user.id,
+      clearVerifier: true,
+      passwordNeedsReset: true,
+      updatedAt: user.updatedAt,
+    }
+  }
+  return {
+    userId: user.id,
+    passwordHash: user.passwordHash,
+    salt: user.salt,
+    passwordNeedsReset: user.passwordNeedsReset ?? false,
+    updatedAt: user.updatedAt,
+  }
+}
+
+function loginMetaKey(username: string): string {
+  return LOGIN_META_PREFIX + encodeURIComponent(username).slice(0, 128)
+}
+
+function readAttempt(value: unknown): LoginAttemptState {
+  if (!value || typeof value !== 'object') return { failures: 0, lastFailedAt: 0, lockedUntil: 0 }
+  const row = value as Partial<LoginAttemptState>
+  return {
+    failures: Number.isSafeInteger(row.failures) && (row.failures ?? 0) > 0 ? row.failures! : 0,
+    lastFailedAt: Number.isFinite(row.lastFailedAt) ? Math.max(0, row.lastFailedAt ?? 0) : 0,
+    lockedUntil: Number.isFinite(row.lockedUntil) ? Math.max(0, row.lockedUntil ?? 0) : 0,
+  }
+}
+
+export async function getLoginAttemptState(username: string): Promise<LoginAttemptState> {
+  const row = await dbx.meta.get(loginMetaKey(username.trim().toLowerCase()))
+  return readAttempt(row?.value)
+}
+
+async function assertLoginAllowed(username: string, now = Date.now()): Promise<void> {
+  const state = await getLoginAttemptState(username)
+  if (state.lockedUntil > now) {
+    throw new Error(`Đăng nhập tạm khóa. Thử lại sau ${Math.max(1, Math.ceil((state.lockedUntil - now) / 1000))} giây`)
+  }
+}
+
+async function recordLoginFailure(username: string, now = Date.now()): Promise<void> {
+  const key = loginMetaKey(username)
+  await dbx.transaction('rw', dbx.meta, async () => {
+    const previous = readAttempt((await dbx.meta.get(key))?.value)
+    const stale = now - previous.lastFailedAt > LOGIN_WINDOW_MS
+    const failures = (stale ? 0 : previous.failures) + 1
+    let lockedUntil = 0
+    if (failures >= LOGIN_LOCK_AFTER) {
+      const duration = Math.min(LOGIN_MAX_LOCK_MS, LOGIN_BASE_LOCK_MS * (2 ** Math.min(8, failures - LOGIN_LOCK_AFTER)))
+      lockedUntil = now + duration
+    }
+    await dbx.meta.put({ key, value: { failures, lastFailedAt: now, lockedUntil } satisfies LoginAttemptState })
+  })
+}
+
+async function clearLoginFailures(username: string): Promise<void> {
+  await dbx.meta.delete(loginMetaKey(username))
 }
 
 /* ─── Phân quyền ─── */
@@ -142,7 +315,7 @@ export interface NewUserInput {
 export async function createUser(input: NewUserInput): Promise<User> {
   const username = input.username.trim().toLowerCase()
   if (!username) throw new Error('Cần tên đăng nhập')
-  if (!input.password || input.password.length < 4) throw new Error('Mật khẩu tối thiểu 4 ký tự')
+  validatePassword(input.password, input.role)
   const salt = genSalt()
   const now = Date.now()
   const u: User = {
@@ -164,26 +337,70 @@ export async function createUser(input: NewUserInput): Promise<User> {
 
 let recentlyVerifiedUserId = ''
 
+async function refreshCredentialAfterLogin(user: User, password: string): Promise<User> {
+  const needsUpgrade = passwordHashNeedsUpgrade(user.passwordHash)
+  const weakPassword = !passwordMeetsPolicy(password, user.role)
+  const needsReset = !!user.passwordNeedsReset || weakPassword
+  if (!needsUpgrade && needsReset === !!user.passwordNeedsReset) return user
+
+  const salt = needsUpgrade ? genSalt() : user.salt
+  const passwordHash = needsUpgrade ? await hashPassword(password, salt) : user.passwordHash
+  let saved: User = { ...user, salt, passwordHash, passwordNeedsReset: needsReset }
+  await dbx.transaction('rw', [dbx.users, dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
+    const cur = await dbx.users.get(user.id)
+    if (!cur || cur.deleted || !cur.active) throw new Error('Tài khoản không còn hoạt động')
+    // Không ghi đè khi credential đã được đổi trong lúc PBKDF2 đang chạy.
+    if (cur.passwordHash !== user.passwordHash || cur.salt !== user.salt) {
+      saved = cur
+      return
+    }
+    const op = makeOp(needsUpgrade ? 'user.password' : 'user.upsert', null)
+    saved = {
+      ...cur,
+      salt,
+      passwordHash,
+      passwordNeedsReset: needsReset,
+      updatedAt: Date.now(),
+      hlc: op.hlc,
+    }
+    op.payload = needsUpgrade
+      ? passwordPayloadForSync(saved)
+      : { user: userForSync(saved) }
+    await dbx.users.put(saved)
+    await persistOp(op)
+  })
+  requestFlush()
+  return saved
+}
+
 export async function login(username: string, password: string): Promise<User> {
   const clean = username.trim().toLowerCase()
+  await assertLoginAllowed(clean)
   const u = await dbx.users.where('username').equals(clean)
     .filter((row) => !row.deleted && row.active)
     .first()
-  if (!u) throw new Error('Sai tên đăng nhập hoặc mật khẩu')
-  const ok = await verifyPassword(password, u.salt, u.passwordHash)
-  if (!ok) throw new Error('Sai tên đăng nhập hoặc mật khẩu')
-  recentlyVerifiedUserId = u.id
-  return u
+  if (!u || !await verifyPassword(password, u.salt, u.passwordHash)) {
+    await recordLoginFailure(clean)
+    throw new Error('Sai tên đăng nhập hoặc mật khẩu')
+  }
+  await clearLoginFailures(clean)
+  let refreshed = u
+  try { refreshed = await refreshCredentialAfterLogin(u, password) } catch { /* đăng nhập vẫn hợp lệ; lần sau thử nâng lại */ }
+  recentlyVerifiedUserId = refreshed.id
+  return refreshed
 }
 
 export async function changePassword(userId: string, newPassword: string): Promise<void> {
-  if (!newPassword || newPassword.length < 4) throw new Error('Mật khẩu tối thiểu 4 ký tự')
+  const initial = await dbx.users.get(userId)
+  if (!initial || initial.deleted || !initial.active) throw new Error('Không tìm thấy tài khoản đang hoạt động')
+  validatePassword(newPassword, initial.role)
   const salt = genSalt()
   const passwordHash = await hashPassword(newPassword, salt)
   const updatedAt = Date.now()
   await dbx.transaction('rw', [dbx.users, dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
     const cur = await dbx.users.get(userId)
     if (!cur || cur.deleted || !cur.active) throw new Error('Không tìm thấy tài khoản đang hoạt động')
+    validatePassword(newPassword, cur.role)
     const actor = await currentActorInTransaction()
     const verifiedSelf = recentlyVerifiedUserId === userId
     const signedInSelf = actor?.id === userId
@@ -200,14 +417,9 @@ export async function changePassword(userId: string, newPassword: string): Promi
       updatedAt,
       hlc: op.hlc,
     }
-    op.payload = {
-      userId,
-      passwordHash,
-      salt,
-      passwordNeedsReset: false,
-      updatedAt,
-    }
+    op.payload = passwordPayloadForSync(next)
     await dbx.users.put(next)
+    if (actor?.id === userId) await dbx.meta.put({ key: 'currentUser', value: next })
     await persistOp(op)
   })
   if (recentlyVerifiedUserId === userId) recentlyVerifiedUserId = ''
@@ -239,8 +451,9 @@ export async function updateUser(
 
     const op = makeOp('user.upsert', null)
     next.hlc = op.hlc
-    op.payload = { user: next }
+    op.payload = { user: userForSync(next) }
     await dbx.users.put(next)
+    if (actor.id === userId) await dbx.meta.put({ key: 'currentUser', value: next })
     await persistOp(op)
   })
   requestFlush()
@@ -278,7 +491,7 @@ async function persistNewUser(u: User, ownerBootstrap: boolean): Promise<User> {
     if (existing) throw new Error('Tên đăng nhập đã tồn tại')
     const op = makeOp('user.upsert', null)
     saved = { ...u, hlc: op.hlc }
-    op.payload = { user: saved }
+    op.payload = { user: userForSync(saved) }
     await dbx.users.put(saved)
     await persistOp(op)
   })
