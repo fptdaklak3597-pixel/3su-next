@@ -28,6 +28,7 @@ export function WebAccountPage() {
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const showToast = useApp((s) => s.showToast)
+  const setUser = useApp((s) => s.setUser)
   const shop = useApp((s) => s.shop)
   const cloudSession = useCloudSession()
   const [cloudUser, setCloudUser] = useState<FirebaseUser | null>(
@@ -49,22 +50,15 @@ export function WebAccountPage() {
         return
       }
       setShopBusy(true)
-      void Promise.all([getCloudShopId(), getCloudRole()])
-        .then(async ([id, r]) => {
-          if (id) {
-            setShopId(id)
-            setRole(r)
-            try { await connectCloud() } catch (e) { logError(e, 'account.connect') }
-            return
-          }
-          try {
-            const sid = await enterExistingCloudShop()
-            setShopId(sid)
-            setRole(await getCloudRole())
-          } catch (e) {
-            logError(e, 'account.ensureShop')
-            setShopId(null)
-          }
+      void enterExistingCloudShop()
+        .then(async (id) => {
+          setShopId(id)
+          setRole(id ? await getCloudRole() : null)
+        })
+        .catch((e) => {
+          logError(e, 'account.ensureShop')
+          setShopId(null)
+          setRole(null)
         })
         .finally(() => setShopBusy(false))
     })
@@ -151,10 +145,12 @@ export function WebAccountPage() {
                   className="web-btn"
                   onClick={async () => {
                     await cloudSignOut()
+                    setUser(null)
                     setShopId(null)
                     setRole(null)
                     setPairCode('')
                     showToast('Đã đăng xuất', 'ok')
+                    navigate('/')
                   }}
                 >
                   Đăng xuất
@@ -169,7 +165,7 @@ export function WebAccountPage() {
               onReady={async (id) => {
                 setShopId(id || null)
                 setRole(await getCloudRole())
-                try { await connectCloud() } catch (e) { logError(e, 'account.connect') }
+                try { await connectCloud({ resume: true }) } catch (e) { logError(e, 'account.connect') }
                 showToast(id ? 'Đã vào tài khoản' : 'Đăng nhập xong', 'ok')
                 if (id && next.startsWith('/')) navigate(next)
               }}
