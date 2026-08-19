@@ -188,9 +188,10 @@ async function catchUpSnapshot(): Promise<void> {
   await setMeta('sync:lastSnapshotSeq', 0)
 }
 
-/** Máy đã sync giữ lastSeq; máy mới (0) nhận mốc snapshot. */
-export function lastSeqAfterSnapshot(oldLastSeq: number, upToSeq: number): number {
-  return oldLastSeq > 0 ? oldLastSeq : upToSeq
+/** Sau import, cursor phải đúng watermark của snapshot để replay mọi op phía sau. */
+export function lastSeqAfterSnapshot(_oldLastSeq: number, upToSeq: number): number {
+  if (!Number.isSafeInteger(upToSeq) || upToSeq < 0) throw new Error('Mốc snapshot không hợp lệ')
+  return upToSeq
 }
 
 /** Kéo snapshot cloud. force=true ghi đè máy này (hỏi trước ở UI). */
@@ -204,11 +205,13 @@ export async function pullCloudSnapshot(force = false): Promise<boolean> {
     if (force) throw new Error('Cloud chưa có bản sao để kéo')
     return false
   }
-  // Đọc trước import — tránh nhảy lastSeq qua ops chưa apply khi force-pull
-  const oldLastSeq = await getMeta<number>('sync:lastSeq', 0)
+  const snapshotSeq = lastSeqAfterSnapshot(
+    await getMeta<number>('sync:lastSeq', 0),
+    got.upToSeq,
+  )
   await importSnapshot(got.snapshot)
-  await setMeta('sync:lastSeq', lastSeqAfterSnapshot(oldLastSeq, got.upToSeq))
-  await setMeta('sync:lastSnapshotSeq', got.upToSeq)
+  await setMeta('sync:lastSeq', snapshotSeq)
+  await setMeta('sync:lastSnapshotSeq', snapshotSeq)
   return true
 }
 

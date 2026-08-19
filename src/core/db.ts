@@ -260,6 +260,8 @@ export async function saveTrial(t: TrialInfo | null): Promise<void> {
 export interface BackupData {
   version: number
   exportedAt: string
+  /** Shop cloud nguồn, nếu backup được tạo khi đang ghép cloud. */
+  sourceShopId?: string
   shop: ShopInfo
   settings: Settings
   products: Product[]
@@ -285,7 +287,7 @@ export interface BackupData {
 export async function exportBackup(): Promise<BackupData> {
   const [products, sales, customers, debtPayments, goodsReceipts, stockMoves, stocktakes,
     suppliers, supplierPayments, users, purchaseOrders, invoices, batches, priceLog, notes,
-    pricingRules, quickAnswers, devices] =
+    pricingRules, quickAnswers, devices, sourceShopId] =
     await Promise.all([
       dbx.products.toArray(),
       dbx.sales.toArray(),
@@ -305,10 +307,12 @@ export async function exportBackup(): Promise<BackupData> {
       dbx.pricingRules.toArray(),
       dbx.quickAnswers.toArray(),
       dbx.devices.toArray(),
+      getMeta<string | null>('cloud:shopId', null),
     ])
   return {
     version: 5,
     exportedAt: new Date().toISOString(),
+    sourceShopId: sourceShopId || undefined,
     shop: await getShop(),
     settings: await readSettings(),
     products, sales, customers, debtPayments, goodsReceipts, stockMoves, stocktakes,
@@ -366,10 +370,50 @@ export async function restoreBackup(data: BackupData): Promise<void> {
   )
 }
 
-/** Khôi phục từ file local: restore data rồi xóa outbox (giữ lastSeq / appliedOps). */
+const LOCAL_RESTORE_RESET_KEYS = [
+  'currentUser',
+  'cloud:shopId',
+  'cloud:role',
+  'cloud:license',
+  'sync:lastSeq',
+  'sync:lastSnapshotAt',
+  'sync:lastSnapshotSeq',
+  'sync:poisoned',
+  'sync:blocked',
+  'device:cloudAt',
+]
+
+/**
+ * Khôi phục từ file local là một nhánh dữ liệu mới:
+ * - đóng transport đang chạy trước khi thay state;
+ * - xóa outbox/cursor/applied markers của state cũ;
+ * - tạm dừng và tháo liên kết shop cloud để không đẩy nhầm backup;
+ * - xóa session local, buộc đăng nhập lại bằng users trong backup.
+ */
 export async function restoreLocalBackup(data: BackupData): Promise<void> {
+  const previousShopId = await getMeta<string | null>('cloud:shopId', null)
+  try {
+    const { disconnectTransport } = await import('./sync/engine')
+    disconnectTransport()
+  } catch {
+    /* DB restore vẫn tiếp tục ở chế độ an toàn qua meta cloud:paused. */
+  }
+
   await restoreBackup(data)
-  await dbx.syncQueue.clear()
+  await dbx.transaction('rw', [dbx.syncQueue, dbx.appliedOps, dbx.meta], async () => {
+    await dbx.syncQueue.clear()
+    await dbx.appliedOps.clear()
+    await dbx.meta.bulkDelete(LOCAL_RESTORE_RESET_KEYS)
+    await dbx.meta.put({ key: 'cloud:paused', value: true })
+    await dbx.meta.put({
+      key: 'restore:last',
+      value: {
+        at: Date.now(),
+        sourceShopId: data.sourceShopId ?? null,
+        detachedFromShopId: previousShopId,
+      },
+    })
+  })
 }
 
 /** Xóa toàn bộ dữ liệu (chủ shop mới được phép — kiểm tra ở UI) */

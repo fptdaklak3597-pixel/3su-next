@@ -50,10 +50,20 @@ describe('M2 — stock.adjust replay', () => {
 })
 
 describe('S5 — lastSeq sau snapshot', () => {
-  it('máy đã sync không nhảy lên upToSeq của snapshot người khác', () => {
-    expect(lastSeqAfterSnapshot(40, 200)).toBe(40)
+  it('máy đang ở cursor thấp hơn căn lên đúng watermark snapshot', () => {
+    expect(lastSeqAfterSnapshot(40, 200)).toBe(200)
   })
+
+  it('force-pull snapshot cũ phải lùi cursor để replay mọi op phía sau', () => {
+    expect(lastSeqAfterSnapshot(400, 200)).toBe(200)
+  })
+
   it('máy mới lastSeq 0 nhận mốc snapshot', () => {
     expect(lastSeqAfterSnapshot(0, 200)).toBe(200)
+  })
+
+  it('từ chối watermark âm hoặc không nguyên', () => {
+    expect(() => lastSeqAfterSnapshot(10, -1)).toThrow(/không hợp lệ/)
+    expect(() => lastSeqAfterSnapshot(10, 1.5)).toThrow(/không hợp lệ/)
   })
 })
