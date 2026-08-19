@@ -58,10 +58,14 @@ export function validateGisSubmission({ credential, bodyCsrf, cookieHeader }) {
 }
 
 export function randomNonce() {
-  if (!globalThis.crypto?.getRandomValues) throw new Error('Secure random unavailable')
-  const bytes = new Uint8Array(18)
-  globalThis.crypto.getRandomValues(bytes)
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  const cryptoApi = globalThis.crypto
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(18)
+    cryptoApi.getRandomValues(bytes)
+    return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID().replace(/-/g, '')
+  throw new Error('Secure random unavailable')
 }
 
 export function gisCallbackPage(credential, nonce) {
