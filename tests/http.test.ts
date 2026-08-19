@@ -1,8 +1,15 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { createHttpTransport, gzipJson, ungzipJson } from '@/core/sync/http'
+import {
+  createHttpTransport,
+  fetchWithTimeout,
+  gzipJson,
+  HttpTimeoutError,
+  ungzipJson,
+} from '@/core/sync/http'
 import type { SyncOp } from '@/core/types'
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -11,6 +18,12 @@ describe('http transport', () => {
     const src = { a: 1, b: 'x' }
     const b64 = await gzipJson(src)
     expect(typeof b64).toBe('string')
+    expect(await ungzipJson<typeof src>(b64)).toEqual(src)
+  })
+
+  it('mã hóa snapshot lớn theo chunk, không vượt giới hạn đối số JS', async () => {
+    const src = { text: 'abc-'.repeat(100_000) }
+    const b64 = await gzipJson(src)
     expect(await ungzipJson<typeof src>(b64)).toEqual(src)
   })
 
@@ -58,5 +71,29 @@ describe('http transport', () => {
     const got = await t.pullSnapshot()
     expect(got?.upToSeq).toBe(4)
     expect(got?.snapshot).toEqual(snap)
+  })
+
+  it('hủy request treo khi quá timeout', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      }),
+    ))
+
+    const request = fetchWithTimeout('https://example.invalid', {}, 25)
+    const assertion = expect(request).rejects.toBeInstanceOf(HttpTimeoutError)
+    await vi.advanceTimersByTimeAsync(30)
+    await assertion
+  })
+
+  it('từ chối payload pull sai schema', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ ops: 'not-an-array', seq: 1 }), { status: 200 }),
+    ))
+    const t = createHttpTransport({
+      baseUrl: 'http://x', shopId: 's', getToken: async () => 't',
+    })
+    await expect(t.pullOps(0)).rejects.toThrow(/pull không hợp lệ/)
   })
 })
