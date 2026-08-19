@@ -222,6 +222,13 @@ function base64ToBytes(b64: string): Uint8Array {
   return out
 }
 
+/** Tạo ArrayBuffer sở hữu riêng để Blob không nhận SharedArrayBuffer qua generic ArrayBufferLike. */
+function ownedBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.length)
+  copy.set(bytes)
+  return copy.buffer
+}
+
 export async function gzipJson(data: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(data))
   if (bytes.length > MAX_SNAPSHOT_SOURCE_BYTES) throw new Error('Snapshot vượt giới hạn dữ liệu')
@@ -240,7 +247,7 @@ export async function ungzipJson<T>(b64: string): Promise<T> {
     return JSON.parse(text) as T
   }
   try {
-    const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream('gzip'))
+    const stream = new Blob([ownedBuffer(raw)]).stream().pipeThrough(new DecompressionStream('gzip'))
     const buf = await new Response(stream).arrayBuffer()
     if (buf.byteLength > MAX_SNAPSHOT_SOURCE_BYTES) throw new Error('Snapshot giải nén vượt giới hạn')
     return JSON.parse(new TextDecoder().decode(buf)) as T
