@@ -153,25 +153,29 @@ async function rememberShop(shopId: string, role?: string): Promise<void> {
     await setMeta('cloud:shopId', shopId)
     await setMeta('cloud:role', role || '')
     await setMeta(CLOUD_UID_KEY, uid)
-    await setMeta('cloud:paused', false)
   })
-  setCloudPaused(false)
 }
 
 async function forgetCloudBinding(): Promise<void> {
-  await dbx.meta.bulkDelete([...CLOUD_BINDING_KEYS])
+  disconnectTransport()
+  setCloudPaused(false)
+  await dbx.transaction('rw', dbx.meta, async () => {
+    await dbx.meta.bulkDelete(Array.from(CLOUD_BINDING_KEYS))
+    await setMeta('cloud:paused', false)
+  })
   await saveCachedLicense(null)
 }
 
 /**
  * Dọn identity/session nhưng giữ data:shopId để dữ liệu không thể bị nối sang tenant khác.
+ * Không giữ trạng thái pause do identity cũ; lần đăng nhập tiếp theo được phép xác minh lại.
  */
 export async function clearCloudSession(): Promise<void> {
   disconnectTransport()
-  setCloudPaused(true)
+  setCloudPaused(false)
   await dbx.transaction('rw', dbx.meta, async () => {
-    await dbx.meta.bulkDelete([...CLOUD_BINDING_KEYS])
-    await setMeta('cloud:paused', true)
+    await dbx.meta.bulkDelete(Array.from(CLOUD_BINDING_KEYS))
+    await setMeta('cloud:paused', false)
   })
   await saveCachedLicense(null)
   await setCurrentUser(null)
@@ -256,7 +260,7 @@ export async function ensureCloudShop(pairCode?: string): Promise<string> {
   const code = pairCode?.trim().toUpperCase()
   if (code) {
     const shopId = await redeemPairCode(code)
-    await connectCloud()
+    await connectCloud({ resume: true })
     return shopId
   }
   throw new Error('Chưa vào cửa hàng. Chọn cửa hàng, tạo mới hoặc nhập mã.')
