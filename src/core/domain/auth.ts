@@ -91,6 +91,45 @@ export const ROLE_LABEL: Record<UserRole, string> = {
   staff: 'Nhân viên',
 }
 
+function sessionUserId(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (!value || typeof value !== 'object') return ''
+  const id = (value as { id?: unknown }).id
+  return typeof id === 'string' ? id : ''
+}
+
+async function currentActorInTransaction(): Promise<User | null> {
+  const session = await dbx.meta.get('currentUser')
+  const id = sessionUserId(session?.value)
+  if (!id) return null
+  const user = await dbx.users.get(id)
+  return user && !user.deleted && user.active ? user : null
+}
+
+/** Đọc actor hiện hành từ record mới nhất, không tin object session đã cache. */
+export async function getCurrentActor(): Promise<User | null> {
+  return dbx.transaction('r', [dbx.users, dbx.meta], currentActorInTransaction)
+}
+
+/** Guard dùng cho command ngoài auth. DB hoàn toàn trống được phép bootstrap ban đầu. */
+export async function requirePermission(
+  permission: keyof UserPerms,
+  opts: { allowEmptyStore?: boolean } = { allowEmptyStore: true },
+): Promise<User | null> {
+  return dbx.transaction('r', [dbx.users, dbx.meta], async () => {
+    if (opts.allowEmptyStore !== false && await dbx.users.count() === 0) return null
+    const actor = await currentActorInTransaction()
+    if (!actor || !hasPerm(actor, permission)) throw new Error('Bạn không có quyền thực hiện thao tác này')
+    return actor
+  })
+}
+
+async function requireUserManagerInTransaction(): Promise<User> {
+  const actor = await currentActorInTransaction()
+  if (!actor || !hasPerm(actor, 'users')) throw new Error('Bạn không có quyền quản lý người dùng')
+  return actor
+}
+
 /* ─── Quản lý tài khoản ─── */
 export interface NewUserInput {
   username: string
@@ -120,27 +159,38 @@ export async function createUser(input: NewUserInput): Promise<User> {
     createdAt: now,
     updatedAt: now,
   }
-  return persistUserUpsert(u, { requireEmptyStore: input.role === 'owner', rejectDuplicateUsername: true })
+  return persistNewUser(u, input.role === 'owner')
 }
 
+let recentlyVerifiedUserId = ''
+
 export async function login(username: string, password: string): Promise<User> {
-  const u = await dbx.users.where('username').equals(username.trim().toLowerCase()).first()
-  if (!u || u.deleted || !u.active) throw new Error('Sai tên đăng nhập hoặc mật khẩu')
+  const clean = username.trim().toLowerCase()
+  const u = await dbx.users.where('username').equals(clean)
+    .filter((row) => !row.deleted && row.active)
+    .first()
+  if (!u) throw new Error('Sai tên đăng nhập hoặc mật khẩu')
   const ok = await verifyPassword(password, u.salt, u.passwordHash)
   if (!ok) throw new Error('Sai tên đăng nhập hoặc mật khẩu')
+  recentlyVerifiedUserId = u.id
   return u
 }
 
 export async function changePassword(userId: string, newPassword: string): Promise<void> {
-  const u = await dbx.users.get(userId)
-  if (!u) return
   if (!newPassword || newPassword.length < 4) throw new Error('Mật khẩu tối thiểu 4 ký tự')
   const salt = genSalt()
   const passwordHash = await hashPassword(newPassword, salt)
   const updatedAt = Date.now()
-  await dbx.transaction('rw', [dbx.users, dbx.syncQueue, dbx.appliedOps], async () => {
+  await dbx.transaction('rw', [dbx.users, dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
     const cur = await dbx.users.get(userId)
-    if (!cur) return
+    if (!cur || cur.deleted || !cur.active) throw new Error('Không tìm thấy tài khoản đang hoạt động')
+    const actor = await currentActorInTransaction()
+    const verifiedSelf = recentlyVerifiedUserId === userId
+    const signedInSelf = actor?.id === userId
+    if (!verifiedSelf && !signedInSelf) {
+      if (!actor || !hasPerm(actor, 'users')) throw new Error('Bạn không có quyền đổi mật khẩu tài khoản này')
+      if (cur.role === 'owner' && actor.role !== 'owner') throw new Error('Chỉ chủ cửa hàng được đổi mật khẩu chủ cửa hàng')
+    }
     const op = makeOp('user.password', null)
     const next: User = {
       ...cur,
@@ -160,6 +210,7 @@ export async function changePassword(userId: string, newPassword: string): Promi
     await dbx.users.put(next)
     await persistOp(op)
   })
+  if (recentlyVerifiedUserId === userId) recentlyVerifiedUserId = ''
   requestFlush()
 }
 
@@ -167,22 +218,41 @@ export async function updateUser(
   userId: string,
   patch: { name?: string; role?: UserRole; perms?: UserPerms; active?: boolean },
 ): Promise<void> {
-  const u = await dbx.users.get(userId)
-  if (!u) return
-  if (patch.name !== undefined) u.name = patch.name.trim() || u.name
-  if (patch.role !== undefined) u.role = patch.role
-  if (patch.perms !== undefined) u.perms = patch.perms
-  if (patch.active !== undefined) u.active = patch.active
-  u.updatedAt = Date.now()
-  await persistUserUpsert(u)
+  await dbx.transaction('rw', [dbx.users, dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
+    const actor = await requireUserManagerInTransaction()
+    const cur = await dbx.users.get(userId)
+    if (!cur || cur.deleted) throw new Error('Không tìm thấy tài khoản')
+    if (patch.role === 'owner' && cur.role !== 'owner') throw new Error('Không thể cấp vai trò chủ cửa hàng')
+    if (cur.role === 'owner') {
+      if (actor.role !== 'owner') throw new Error('Chỉ chủ cửa hàng được thay đổi tài khoản chủ cửa hàng')
+      if (patch.role && patch.role !== 'owner') throw new Error('Không thể hạ vai trò chủ cửa hàng')
+      if (patch.active === false) throw new Error('Không thể khóa tài khoản chủ cửa hàng')
+    }
+    if (actor.id === cur.id && patch.active === false) throw new Error('Không thể tự khóa tài khoản đang dùng')
+
+    const next: User = { ...cur }
+    if (patch.name !== undefined) next.name = patch.name.trim() || next.name
+    if (patch.role !== undefined) next.role = patch.role
+    if (patch.perms !== undefined) next.perms = patch.perms
+    if (patch.active !== undefined) next.active = patch.active
+    next.updatedAt = Date.now()
+
+    const op = makeOp('user.upsert', null)
+    next.hlc = op.hlc
+    op.payload = { user: next }
+    await dbx.users.put(next)
+    await persistOp(op)
+  })
+  requestFlush()
 }
 
 export async function deleteUser(userId: string): Promise<void> {
-  const u = await dbx.users.get(userId)
-  if (!u) return
-  await dbx.transaction('rw', [dbx.users, dbx.syncQueue, dbx.appliedOps], async () => {
+  await dbx.transaction('rw', [dbx.users, dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
+    const actor = await requireUserManagerInTransaction()
     const cur = await dbx.users.get(userId)
-    if (!cur) return
+    if (!cur || cur.deleted) throw new Error('Không tìm thấy tài khoản')
+    if (cur.role === 'owner') throw new Error('Không thể xóa tài khoản chủ cửa hàng')
+    if (actor.id === userId) throw new Error('Không thể tự xóa tài khoản đang dùng')
     const op = makeOp('user.delete', { userId })
     await dbx.users.put({
       ...cur,
@@ -196,22 +266,16 @@ export async function deleteUser(userId: string): Promise<void> {
   requestFlush()
 }
 
-interface PersistUserOptions {
-  /** Owner bootstrap chỉ hợp lệ trên DB chưa từng có user nào, kể cả user đã xóa mềm. */
-  requireEmptyStore?: boolean
-  rejectDuplicateUsername?: boolean
-}
-
-async function persistUserUpsert(u: User, opts: PersistUserOptions = {}): Promise<User> {
+async function persistNewUser(u: User, ownerBootstrap: boolean): Promise<User> {
   let saved = u
-  await dbx.transaction('rw', [dbx.users, dbx.syncQueue, dbx.appliedOps], async () => {
-    if (opts.requireEmptyStore && await dbx.users.count() > 0) {
-      throw new Error('Chủ cửa hàng chỉ được tạo khi thiết bị chưa có tài khoản')
+  await dbx.transaction('rw', [dbx.users, dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
+    if (ownerBootstrap) {
+      if (await dbx.users.count() > 0) throw new Error('Chủ cửa hàng chỉ được tạo khi thiết bị chưa có tài khoản')
+    } else {
+      await requireUserManagerInTransaction()
     }
-    if (opts.rejectDuplicateUsername) {
-      const existing = await dbx.users.where('username').equals(u.username).first()
-      if (existing && !existing.deleted) throw new Error('Tên đăng nhập đã tồn tại')
-    }
+    const existing = await dbx.users.where('username').equals(u.username).first()
+    if (existing) throw new Error('Tên đăng nhập đã tồn tại')
     const op = makeOp('user.upsert', null)
     saved = { ...u, hlc: op.hlc }
     op.payload = { user: saved }
@@ -225,5 +289,5 @@ async function persistUserUpsert(u: User, opts: PersistUserOptions = {}): Promis
 /** Số tài khoản đang hoạt động (chưa xóa). */
 export async function countActiveUsers(): Promise<number> {
   const all = await dbx.users.toArray()
-  return all.filter((u) => !u.deleted).length
+  return all.filter((u) => !u.deleted && u.active).length
 }

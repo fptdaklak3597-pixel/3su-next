@@ -5,8 +5,10 @@
 import { dbx, setMeta } from '../db'
 import type { Settings, ShopInfo } from '../types'
 import { enqueueOp, requestFlush } from '../sync/engine'
+import { requirePermission } from './auth'
 
 export async function saveSettingsSynced(s: Settings): Promise<void> {
+  await requirePermission('settings')
   await dbx.transaction('rw', [dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
     await setMeta('settings', s)
     const op = await enqueueOp('settings.set', { key: 'settings', value: s })
@@ -16,6 +18,7 @@ export async function saveSettingsSynced(s: Settings): Promise<void> {
 }
 
 export async function saveShopSynced(shop: ShopInfo): Promise<void> {
+  await requirePermission('settings')
   await dbx.transaction('rw', [dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
     await setMeta('shop', shop)
     const op = await enqueueOp('settings.set', { key: 'shop', value: shop })
