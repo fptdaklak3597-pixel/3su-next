@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { dbx } from '@/core/db'
+import { dbx, setCurrentUser } from '@/core/db'
 import { createUser } from '@/core/domain/auth'
 import { initSyncEngine } from '@/core/sync/engine'
 
@@ -53,8 +53,20 @@ describe('owner bootstrap', () => {
     expect(await dbx.users.count()).toBe(1)
   })
 
-  it('vẫn cho phép owner hiện hữu tạo tài khoản không phải owner qua luồng quản lý', async () => {
+  it('từ chối tạo staff khi chưa có actor quản lý đã đăng nhập', async () => {
     await createUser({ username: 'owner', name: 'Chủ', password: '1234', role: 'owner' })
+
+    await expect(createUser({
+      username: 'staff',
+      name: 'Nhân viên',
+      password: '5678',
+      role: 'staff',
+    })).rejects.toThrow(/quyền quản lý/)
+  })
+
+  it('cho phép owner đã đăng nhập tạo tài khoản không phải owner', async () => {
+    const owner = await createUser({ username: 'owner', name: 'Chủ', password: '1234', role: 'owner' })
+    await setCurrentUser(owner)
     const staff = await createUser({ username: 'staff', name: 'Nhân viên', password: '5678', role: 'staff' })
 
     expect(staff.role).toBe('staff')
