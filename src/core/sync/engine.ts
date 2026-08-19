@@ -22,7 +22,9 @@ import { nullTransport, type SyncTransport, type ServerMsg } from './transport'
 import { logError } from '../errorLogger'
 import { setPrintAgentOnline } from '../browser/printPresence'
 
-const RETRY_INTERVAL = 30_000 // 30s
+const RETRY_INTERVAL = 30_000
+const PULL_PAGE = 500
+const MAX_PULL_PAGES = 200
 
 let deviceId = ''
 let clock: HlcClock | null = null
@@ -35,6 +37,9 @@ let syncState: SyncState = {
 }
 let listeners: ((s: SyncState) => void)[] = []
 let timer: ReturnType<typeof setInterval> | null = null
+let onlineHandler: (() => void) | null = null
+let flushPromise: Promise<void> | null = null
+let flushAgain = false
 
 export function getSyncState(): SyncState {
   return syncState
@@ -101,7 +106,7 @@ export function requestFlush(): void {
   }, 0)
 }
 
-/** Cho reducer đẩy đồng hồ theo op remote (Task 3). */
+/** Cho reducer đẩy đồng hồ theo op remote. */
 export function observeRemoteHlc(remoteHlc: string): void {
   clock?.observe(remoteHlc)
 }
@@ -119,21 +124,49 @@ async function flushBlocked(): Promise<boolean> {
   return paused === true || paused === 'true' || paused === 1
 }
 
-export function setTransport(t: SyncTransport): void { transport = t }
+/** Thay transport phải đóng kết nối cũ để không giữ nhiều WebSocket song song. */
+export function setTransport(t: SyncTransport): void {
+  if (transport === t) return
+  try { transport.disconnect() } catch { /* transport cũ không được làm hỏng app */ }
+  transport = t
+}
+
 export function setSyncMode(m: SyncMode): void { mode = m }
 
 /** Đóng transport thật (WS), về offline local. */
 export function disconnectTransport(): void {
   cloudPaused = true
-  transport.disconnect()
+  flushAgain = false
+  try { transport.disconnect() } catch { /* */ }
   transport = nullTransport
   mode = 'local'
   setState({ status: 'offline' })
 }
 
-export async function flushQueue(): Promise<void> {
+/**
+ * Single-flight cho toàn bộ chu trình push → snapshot → pull.
+ * Caller đến trong lúc đang chạy chỉ yêu cầu thêm một vòng, không tạo request chồng nhau.
+ */
+export function flushQueue(): Promise<void> {
+  if (flushPromise) {
+    flushAgain = true
+    return flushPromise
+  }
+  flushPromise = runFlushLoop().finally(() => {
+    flushPromise = null
+  })
+  return flushPromise
+}
+
+async function runFlushLoop(): Promise<void> {
+  do {
+    flushAgain = false
+    await runFlushOnce()
+  } while (flushAgain)
+}
+
+async function runFlushOnce(): Promise<void> {
   if (await flushBlocked()) { setState({ status: 'offline' }); return }
-  if (syncState.status === 'syncing') return
   if (!navigator.onLine) { setState({ status: 'offline' }); return }
   setState({ status: 'syncing', error: null })
   try {
@@ -149,7 +182,7 @@ export async function flushQueue(): Promise<void> {
         const res = await transport.pushOps(batch)
         await dbx.syncQueue.bulkDelete(res.acked)
         // lastSeq = mốc đã ÁP, không phải MAX cloud. push trả seq toàn shop —
-        // ghi vào đây rồi pullSince sẽ bỏ op máy kia nằm giữa.
+        // ghi vào đây rồi pull sẽ bỏ op máy kia nằm giữa.
       }
     }
     await catchUpSnapshot()
@@ -224,55 +257,97 @@ export async function pushLocalSnapshot(): Promise<void> {
   await setMeta('sync:lastSnapshotSeq', lastSeq)
 }
 
-const PULL_PAGE = 500
-
 function pulledUpTo(since: number, ops: SyncOp[], cloudSeq: number): number {
   let max = since
-  let sawSeq = false
+  let sequenced = 0
   for (const op of ops) {
-    const s = (op as SyncOp & { seq?: number }).seq
-    if (typeof s === 'number') {
-      sawSeq = true
-      if (s > max) max = s
-    }
+    const seq = (op as SyncOp & { seq?: number }).seq
+    if (seq === undefined) continue
+    if (!Number.isSafeInteger(seq) || seq < 0) throw new Error('Op có seq không hợp lệ')
+    sequenced += 1
+    if (seq > max) max = seq
   }
-  if (sawSeq) return max
+  if (sequenced > 0 && sequenced !== ops.length) {
+    throw new Error('Trang pull trộn op có seq và không có seq')
+  }
+  if (sequenced === ops.length && sequenced > 0) return max
   if (ops.length > 0 && ops.length < PULL_PAGE) return Math.max(since, cloudSeq)
   if (ops.length >= PULL_PAGE) return since + ops.length
   return since
 }
 
+function pageFingerprint(ops: SyncOp[]): string {
+  if (!ops.length) return ''
+  return `${ops[0]?.id ?? ''}|${ops[ops.length - 1]?.id ?? ''}|${ops.length}`
+}
+
 async function pullSince(): Promise<void> {
+  let pages = 0
+  let previousFullPage = ''
+
   for (;;) {
+    pages += 1
+    if (pages > MAX_PULL_PAGES) {
+      throw new Error(`Đồng bộ vượt quá ${MAX_PULL_PAGES} trang trong một lượt`)
+    }
+
     const since = await getMeta<number>('sync:lastSeq', 0)
     const res = await transport.pullOps(since, PULL_PAGE)
+    if (!res || !Array.isArray(res.ops) || !Number.isSafeInteger(res.seq) || res.seq < 0) {
+      throw new Error('Phản hồi pull không hợp lệ')
+    }
+    if (res.ops.length > PULL_PAGE) {
+      throw new Error(`Máy chủ trả quá giới hạn ${PULL_PAGE} op`)
+    }
+
+    const fullPage = res.ops.length === PULL_PAGE
+    const fingerprint = fullPage ? pageFingerprint(res.ops) : ''
+    if (fullPage && fingerprint === previousFullPage) {
+      throw new Error('Máy chủ trả lặp cùng một trang đồng bộ')
+    }
+
     if (res.ops.length > 0) await applyOps(res.ops)
     const upTo = pulledUpTo(since, res.ops, res.seq)
+    if (fullPage && upTo <= since) {
+      throw new Error('Đồng bộ không tiến cursor; đã dừng để tránh vòng lặp vô hạn')
+    }
     if (upTo > since) await setMeta('sync:lastSeq', upTo)
-    if (res.ops.length < PULL_PAGE) break
+    if (!fullPage) break
+
+    previousFullPage = fingerprint
   }
 }
 
 export function handleServerMsg(m: ServerMsg): void {
   if (cloudPaused) return
-  if (m.t === 'bump') void pullSince()
+  if (m.t === 'bump') void flushQueue()
   else if (m.t === 'mode') { setSyncMode(m.mode); void flushQueue() }
   else if (m.t === 'print-agent') setPrintAgentOnline(!!m.online)
 }
 
 /* ─── Vòng lặp retry nền ─── */
 export function startSyncLoop(): void {
-  if (timer) return
-  timer = setInterval(() => {
-    void flushQueue().catch(() => { /* đã log bên trong */ })
-  }, RETRY_INTERVAL)
+  if (!timer) {
+    timer = setInterval(() => {
+      void flushQueue()
+    }, RETRY_INTERVAL)
+  }
 
-  // Sync lại khi có mạng
-  window.addEventListener('online', () => { void flushQueue() })
+  if (typeof window !== 'undefined' && !onlineHandler) {
+    onlineHandler = () => { void flushQueue() }
+    window.addEventListener('online', onlineHandler)
+  }
 }
 
 export function stopSyncLoop(): void {
-  if (timer) { clearInterval(timer); timer = null }
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+  if (typeof window !== 'undefined' && onlineHandler) {
+    window.removeEventListener('online', onlineHandler)
+    onlineHandler = null
+  }
 }
 
 /** Xóa appliedOps cũ hơn 30 ngày (id = HLC, 13 số đầu là ms). */
