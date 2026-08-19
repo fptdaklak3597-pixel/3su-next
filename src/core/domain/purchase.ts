@@ -25,7 +25,6 @@ export function forecastToPoRows(
         productId: f.productId,
         name: f.name,
         unit: p?.unit || 'cái',
-        unitRatio: 1,
         qty: f.suggestedQty,
         cost: p?.cost || 0,
       }
