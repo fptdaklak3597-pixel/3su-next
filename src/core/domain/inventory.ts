@@ -229,18 +229,20 @@ function normalizeReceiptRows(rows: GoodsReceiptRow[]): GoodsReceiptRow[] {
     if (!row?.productId) throw new Error('Dòng nhập thiếu sản phẩm')
     if (!Number.isFinite(row.qty) || row.qty <= 0) throw new Error(`Số lượng nhập không hợp lệ: ${row.name || row.productId}`)
     if (!Number.isFinite(row.cost) || row.cost < 0) throw new Error(`Giá nhập không hợp lệ: ${row.name || row.productId}`)
-    if (!Number.isFinite(row.unitRatio) || row.unitRatio <= 0) throw new Error(`Quy đổi đơn vị không hợp lệ: ${row.name || row.productId}`)
+    const unitRatio = row.unitRatio ?? 1
+    if (!Number.isFinite(unitRatio) || unitRatio <= 0) throw new Error(`Quy đổi đơn vị không hợp lệ: ${row.name || row.productId}`)
     return {
       ...row,
       name: String(row.name || '').trim() || row.productId,
       unit: String(row.unit || '').trim() || 'cái',
+      unitRatio,
       cost: Math.round(row.cost),
       expiry: String(row.expiry || ''),
     }
   })
 }
 
-/** Gọi bên trong transaction Dexie đã mở (9 hoặc 10 bảng). Không requestFlush. */
+/** Gọi bên trong transaction Dexie đã mở. Không requestFlush. */
 export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<GoodsReceipt> {
   const rows = normalizeReceiptRows(input.rows)
   for (const r of rows) {
@@ -363,15 +365,18 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
   let supplierDelta: GrCommitPayload['supplierDelta']
   if (input.supplierId) {
     const sup = await dbx.suppliers.get(input.supplierId)
-    if (!sup || sup.deleted) throw new Error('Không tìm thấy nhà cung cấp')
-    sup.totalPurchased = (Number.isFinite(sup.totalPurchased) ? sup.totalPurchased : 0) + total
-    sup.orderCount = (Number.isFinite(sup.orderCount) ? sup.orderCount : 0) + 1
-    sup.updatedAt = Date.now()
-    await dbx.suppliers.put(sup)
-    supplierDelta = {
-      supplierId: input.supplierId,
-      debtDelta: 0,
-      purchasedDelta: total,
+    // Backup/PO legacy có thể còn supplierId nhưng thiếu hồ sơ NCC. Vẫn giữ liên kết
+    // trên phiếu để đối soát; chỉ bỏ cập nhật projection hồ sơ bị thiếu.
+    if (sup && !sup.deleted) {
+      sup.totalPurchased = (Number.isFinite(sup.totalPurchased) ? sup.totalPurchased : 0) + total
+      sup.orderCount = (Number.isFinite(sup.orderCount) ? sup.orderCount : 0) + 1
+      sup.updatedAt = Date.now()
+      await dbx.suppliers.put(sup)
+      supplierDelta = {
+        supplierId: input.supplierId,
+        debtDelta: 0,
+        purchasedDelta: total,
+      }
     }
   }
 
