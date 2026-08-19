@@ -19,19 +19,28 @@ function gisRequest(over: {
   method?: string
   contentType?: string
 } = {}): Request {
-  const form = new URLSearchParams({
-    credential: over.credential ?? CREDENTIAL,
-    g_csrf_token: over.bodyCsrf ?? 'csrf-token-123',
-  })
-  const headers = new Headers({
+  const method = over.method ?? 'POST'
+  const body = method === 'POST'
+    ? new URLSearchParams({
+      credential: over.credential ?? CREDENTIAL,
+      g_csrf_token: over.bodyCsrf ?? 'csrf-token-123',
+    }).toString()
+    : ''
+  const values: Record<string, string> = {
     'content-type': over.contentType ?? 'application/x-www-form-urlencoded;charset=UTF-8',
     cookie: `other=x; g_csrf_token=${encodeURIComponent(over.cookieCsrf ?? 'csrf-token-123')}; tail=y`,
-  })
-  return new Request('https://app.example/__/gis', {
-    method: over.method ?? 'POST',
-    headers,
-    body: (over.method ?? 'POST') === 'POST' ? form.toString() : undefined,
-  })
+  }
+  const request = {
+    method,
+    url: 'https://app.example/__/gis',
+    headers: {
+      get(name: string) {
+        return values[name.toLowerCase()] ?? null
+      },
+    },
+    async text() { return body },
+  }
+  return request as unknown as Request
 }
 
 describe('GIS CSRF primitives', () => {
