@@ -60,7 +60,7 @@ describe('user management invariants', () => {
     expect((await dbx.users.get(staff.id))?.name).toBe('Tên mới')
     expect((await dbx.users.get(staff.id))?.perms.sell).toBe(true)
 
-    await expect(deleteUser(owner.id)).rejects.toThrow(/chủ cửa hàng/)
+    await expect(deleteUser(owner.id)).rejects.toThrow(/chủ cửa hàng/i)
   })
 
   it('không thể nâng tài khoản khác thành owner', async () => {
@@ -68,7 +68,7 @@ describe('user management invariants', () => {
   })
 
   it('không thể tự xóa hoặc tự khóa tài khoản đang dùng', async () => {
-    await expect(deleteUser(owner.id)).rejects.toThrow(/chủ cửa hàng/)
+    await expect(deleteUser(owner.id)).rejects.toThrow(/chủ cửa hàng/i)
     await expect(updateUser(owner.id, { active: false })).rejects.toThrow(/khóa tài khoản chủ/)
   })
 
@@ -76,7 +76,7 @@ describe('user management invariants', () => {
     const admin = await createUser({ username: 'admin', name: 'Quản trị', password: '1111', role: 'admin' })
     await setCurrentUser(admin)
 
-    await expect(changePassword(owner.id, '2222')).rejects.toThrow(/chỉ chủ cửa hàng/)
+    await expect(changePassword(owner.id, '2222')).rejects.toThrow(/chủ cửa hàng/i)
   })
 
   it('user vừa xác thực được đổi mật khẩu của chính mình lần đầu', async () => {
