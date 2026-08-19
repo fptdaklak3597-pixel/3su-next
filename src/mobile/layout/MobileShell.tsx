@@ -6,13 +6,21 @@
 import { useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Home, ShoppingCart, ClipboardList, Package, Menu } from 'lucide-react'
+import { useApp } from '@/core/store'
+import { hasPerm } from '@/core/domain/auth'
+import type { UserPerms } from '@/core/types'
 import { ToolsSheet } from './ToolsSheet'
 
-const TABS = [
+const TABS: Array<{
+  path: string
+  label: string
+  icon: typeof Home
+  perm?: keyof UserPerms
+}> = [
   { path: '/', label: 'Trang chủ', icon: Home },
-  { path: '/ban-hang', label: 'Bán hàng', icon: ShoppingCart },
-  { path: '/don-hang', label: 'Đơn', icon: ClipboardList },
-  { path: '/kho', label: 'Kho', icon: Package },
+  { path: '/ban-hang', label: 'Bán hàng', icon: ShoppingCart, perm: 'sell' },
+  { path: '/don-hang', label: 'Đơn', icon: ClipboardList, perm: 'sell' },
+  { path: '/kho', label: 'Kho', icon: Package, perm: 'inventory' },
 ]
 
 const HIDE_TAB = ['/ban-hang', '/thanh-toan']
@@ -24,10 +32,12 @@ const MORE_ACTIVE = [
 export function MobileShell() {
   const location = useLocation()
   const navigate = useNavigate()
+  const user = useApp((s) => s.user)
   const [toolsOpen, setToolsOpen] = useState(false)
 
   const hideBar = HIDE_TAB.some((p) => location.pathname.startsWith(p))
   const moreOn = MORE_ACTIVE.some((p) => location.pathname.startsWith(p))
+  const visibleTabs = TABS.filter((tab) => !tab.perm || !user || hasPerm(user, tab.perm))
 
   const isActive = (path: string) => {
     if (path === '/') return location.pathname === '/'
@@ -41,7 +51,7 @@ export function MobileShell() {
       </main>
       {!hideBar && (
         <nav className="tab-bar" aria-label="Điều hướng chính">
-          {TABS.map((tab) => {
+          {visibleTabs.map((tab) => {
             const active = isActive(tab.path)
             const Icon = tab.icon
             return (
