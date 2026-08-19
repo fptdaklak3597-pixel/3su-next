@@ -96,8 +96,19 @@ export async function pendingStockDelta(productId: string): Promise<number> {
   return d
 }
 
-function lineMoveId(opId: string, productId: string, index: number): string {
-  return `mv_${opId}_${productId}_${index}`
+/**
+ * Giữ ID lịch sử cho lần xuất hiện đầu tiên của mỗi sản phẩm.
+ * Chỉ thêm hậu tố khi cùng productId lặp trong một chứng từ.
+ */
+function nextDocumentMoveId(
+  opId: string,
+  productId: string,
+  occurrences: Map<string, number>,
+): string {
+  const occurrence = occurrences.get(productId) ?? 0
+  occurrences.set(productId, occurrence + 1)
+  const legacy = `mv_${opId}_${productId}`
+  return occurrence === 0 ? legacy : `${legacy}_${occurrence}`
 }
 
 async function applyOne(op: SyncOp): Promise<void> {
@@ -118,7 +129,8 @@ async function applyOne(op: SyncOp): Promise<void> {
         if (!c) throw new Error('sale.commit thiếu khách ' + sale.customerId)
       }
       await dbx.sales.add(sale)
-      for (const [lineIndex, it] of sale.items.entries()) {
+      const moveOccurrences = new Map<string, number>()
+      for (const it of sale.items) {
         const p = await dbx.products.get(it.productId)
         if (!p) throw new Error('sale.commit thiếu SP ' + it.productId)
         const deducted = it.qty * it.unitRatio
@@ -131,9 +143,15 @@ async function applyOne(op: SyncOp): Promise<void> {
         }
         await dbx.products.put(p)
         await dbx.stockMoves.add({
-          id: lineMoveId(op.id, it.productId, lineIndex), productId: it.productId, type: 'sale',
-          qty: -deducted, cost: it.cost, note: 'Bán: ' + it.name,
-          refId: sale.id, date: sale.date, ts: Date.now(),
+          id: nextDocumentMoveId(op.id, it.productId, moveOccurrences),
+          productId: it.productId,
+          type: 'sale',
+          qty: -deducted,
+          cost: it.cost,
+          note: 'Bán: ' + it.name,
+          refId: sale.id,
+          date: sale.date,
+          ts: Date.now(),
         })
       }
       if (sale.customerId) {
@@ -162,7 +180,8 @@ async function applyOne(op: SyncOp): Promise<void> {
       sale.voidReason = reason ?? ''
       await dbx.sales.put(sale)
 
-      for (const [lineIndex, it] of sale.items.entries()) {
+      const moveOccurrences = new Map<string, number>()
+      for (const it of sale.items) {
         const p = await dbx.products.get(it.productId)
         if (p) {
           const add = it.qty * it.unitRatio
@@ -176,9 +195,15 @@ async function applyOne(op: SyncOp): Promise<void> {
           await dbx.products.put(p)
         }
         await dbx.stockMoves.add({
-          id: lineMoveId(op.id, it.productId, lineIndex), productId: it.productId, type: 'void_restore',
-          qty: it.qty * it.unitRatio, cost: it.cost, note: 'Hoàn kho do hủy đơn',
-          refId: sale.id, date: new Date().toISOString(), ts: Date.now(),
+          id: nextDocumentMoveId(op.id, it.productId, moveOccurrences),
+          productId: it.productId,
+          type: 'void_restore',
+          qty: it.qty * it.unitRatio,
+          cost: it.cost,
+          note: 'Hoàn kho do hủy đơn',
+          refId: sale.id,
+          date: new Date().toISOString(),
+          ts: Date.now(),
         })
       }
 
@@ -231,15 +256,23 @@ async function applyOne(op: SyncOp): Promise<void> {
       p.updatedAt = Date.now()
       await dbx.products.put(p)
       await dbx.stockMoves.add({
-        id: mvId, productId: pl.productId, type: 'adjust', qty: pl.delta,
-        cost: p.cost, note: pl.reason, refId: pl.refId ?? '', date: new Date().toISOString(), ts: Date.now(),
+        id: mvId,
+        productId: pl.productId,
+        type: 'adjust',
+        qty: pl.delta,
+        cost: p.cost,
+        note: pl.reason,
+        refId: pl.refId ?? '',
+        date: new Date().toISOString(),
+        ts: Date.now(),
       })
       return
     }
     case 'stocktake.commit': {
       const rec = op.payload as StocktakeRecord
       if (!(await dbx.stocktakes.get(rec.id))) await dbx.stocktakes.add(rec)
-      for (const [rowIndex, row] of rec.rows.entries()) {
+      const moveOccurrences = new Map<string, number>()
+      for (const row of rec.rows) {
         const p = await dbx.products.get(row.productId)
         if (!p) throw new Error('stocktake thiếu SP ' + row.productId)
         if (p.stockSetHlc && compareHlc(op.hlc, p.stockSetHlc) <= 0) continue
@@ -254,7 +287,7 @@ async function applyOne(op: SyncOp): Promise<void> {
           await dbx.products.put(p)
           continue
         }
-        const mvId = lineMoveId(op.id, row.productId, rowIndex)
+        const mvId = nextDocumentMoveId(op.id, row.productId, moveOccurrences)
         if (await dbx.stockMoves.get(mvId)) continue
         p.stock += diff
         await applyStockDeltaToBatches(p, diff)
@@ -262,9 +295,15 @@ async function applyOne(op: SyncOp): Promise<void> {
         p.updatedAt = Date.now()
         await dbx.products.put(p)
         await dbx.stockMoves.add({
-          id: mvId, productId: row.productId, type: 'stocktake', qty: diff,
-          cost: p.cost, note: 'Kiểm kê: ' + (diff > 0 ? 'thừa' : 'thiếu') + ' ' + Math.abs(diff),
-          refId: rec.id, date: rec.date, ts: rec.ts,
+          id: mvId,
+          productId: row.productId,
+          type: 'stocktake',
+          qty: diff,
+          cost: p.cost,
+          note: 'Kiểm kê: ' + (diff > 0 ? 'thừa' : 'thiếu') + ' ' + Math.abs(diff),
+          refId: rec.id,
+          date: rec.date,
+          ts: rec.ts,
         })
       }
       return
@@ -284,7 +323,8 @@ async function applyOne(op: SyncOp): Promise<void> {
       const { gr, patches, supplierDelta } = op.payload as GrCommitPayload
       if (await dbx.goodsReceipts.get(gr.id)) return
       await dbx.goodsReceipts.add(gr)
-      for (const [patchIndex, pt] of patches.entries()) {
+      const moveOccurrences = new Map<string, number>()
+      for (const pt of patches) {
         const p = await dbx.products.get(pt.productId)
         if (!p) throw new Error('gr.commit thiếu SP ' + pt.productId)
         p.stock += pt.addQty
@@ -302,10 +342,19 @@ async function applyOne(op: SyncOp): Promise<void> {
         }
         p.updatedAt = Date.now()
         await dbx.products.put(p)
-        for (const pl of pt.priceLogRows) if (!(await dbx.priceLog.get(pl.id))) await dbx.priceLog.add(pl)
+        for (const pl of pt.priceLogRows) {
+          if (!(await dbx.priceLog.get(pl.id))) await dbx.priceLog.add(pl)
+        }
         await dbx.stockMoves.add({
-          id: lineMoveId(op.id, pt.productId, patchIndex), productId: pt.productId, type: 'purchase',
-          qty: pt.addQty, cost: pt.newCost, note: 'Nhập: ' + gr.code, refId: gr.id, date: gr.date, ts: Date.now(),
+          id: nextDocumentMoveId(op.id, pt.productId, moveOccurrences),
+          productId: pt.productId,
+          type: 'purchase',
+          qty: pt.addQty,
+          cost: pt.newCost,
+          note: 'Nhập: ' + gr.code,
+          refId: gr.id,
+          date: gr.date,
+          ts: Date.now(),
         })
       }
       if (supplierDelta) {
@@ -422,7 +471,8 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
       // Giữ tombstone nếu payload không gỡ xóa tường minh
       await dbx.invoices.put({
-        ...cur, ...inv,
+        ...cur,
+        ...inv,
         deleted: inv.deleted ?? cur?.deleted,
         deletedHlc: cur?.deletedHlc,
         hlc: op.hlc,
@@ -439,8 +489,18 @@ async function applyOne(op: SyncOp): Promise<void> {
         }
       } else {
         await dbx.invoices.put({
-          id: invoiceId, code: '', type: 'import', date: '', amount: 0, tax: 0,
-          status: 'draft', data: {}, ts: 0, deleted: true, deletedHlc: op.hlc, hlc: op.hlc,
+          id: invoiceId,
+          code: '',
+          type: 'import',
+          date: '',
+          amount: 0,
+          tax: 0,
+          status: 'draft',
+          data: {},
+          ts: 0,
+          deleted: true,
+          deletedHlc: op.hlc,
+          hlc: op.hlc,
         })
       }
       return
@@ -452,7 +512,8 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (cur?.deletedHlc && compareHlc(op.hlc, cur.deletedHlc) <= 0) return
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
       await dbx.pricingRules.put({
-        ...cur, ...rule,
+        ...cur,
+        ...rule,
         deleted: rule.deleted ?? cur?.deleted,
         deletedHlc: cur?.deletedHlc,
         hlc: op.hlc,
@@ -469,8 +530,15 @@ async function applyOne(op: SyncOp): Promise<void> {
         }
       } else {
         await dbx.pricingRules.put({
-          id: ruleId, name: '', cat: '', marginPct: 0, roundTo: 0, active: false,
-          deleted: true, deletedHlc: op.hlc, hlc: op.hlc,
+          id: ruleId,
+          name: '',
+          cat: '',
+          marginPct: 0,
+          roundTo: 0,
+          active: false,
+          deleted: true,
+          deletedHlc: op.hlc,
+          hlc: op.hlc,
         })
       }
       return
@@ -481,7 +549,8 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (cur?.deletedHlc && compareHlc(op.hlc, cur.deletedHlc) <= 0) return
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
       await dbx.notes.put({
-        ...cur, ...note,
+        ...cur,
+        ...note,
         deleted: note.deleted ?? cur?.deleted,
         deletedHlc: cur?.deletedHlc,
         hlc: op.hlc,
@@ -498,8 +567,15 @@ async function applyOne(op: SyncOp): Promise<void> {
         }
       } else {
         await dbx.notes.put({
-          id: noteId, text: '', date: '', type: 'note', done: false, pinned: false,
-          deleted: true, deletedHlc: op.hlc, hlc: op.hlc,
+          id: noteId,
+          text: '',
+          date: '',
+          type: 'note',
+          done: false,
+          pinned: false,
+          deleted: true,
+          deletedHlc: op.hlc,
+          hlc: op.hlc,
         })
       }
       return
