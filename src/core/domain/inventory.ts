@@ -198,7 +198,7 @@ export interface NormalizedReceiptPayment {
 /**
  * Chuẩn hóa thanh toán phiếu nhập.
  * - Ghi nợ luôn có paid=0.
- * - Tiền mặt/chuyển khoản để 0 hoặc bỏ trống nghĩa là trả đủ (đúng hướng dẫn UI).
+ * - Với tiền mặt/chuyển khoản, paid=0 nghĩa là chưa trả và toàn bộ còn nợ.
  * - Không cho trả vượt phiếu; khoản ứng trước NCC được ghi bằng supplier payment riêng.
  */
 export function normalizeReceiptPayment(
@@ -215,7 +215,6 @@ export function normalizeReceiptPayment(
   let normalized = Math.round(rawPaid)
   const roundedTotal = Math.round(total)
   if (payMethod === 'debt') normalized = 0
-  else if ((payMethod === 'cash' || payMethod === 'transfer') && normalized === 0) normalized = roundedTotal
   if (normalized > roundedTotal) throw new Error('Số tiền đã trả vượt tổng phiếu nhập')
   return {
     paid: normalized,
