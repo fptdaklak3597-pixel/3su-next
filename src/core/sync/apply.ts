@@ -24,6 +24,22 @@ const TABLES = () => [dbx.products, dbx.sales, dbx.customers, dbx.debtPayments,
   dbx.priceLog, dbx.notes, dbx.users, dbx.devices, dbx.meta, dbx.appliedOps, dbx.syncQueue]
 
 const POISON_META = 'sync:poisoned'
+const BLOCKED_META = 'sync:blocked'
+const MAX_DIAGNOSTIC_OPS = 200
+
+export class SyncDependencyError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SyncDependencyError'
+  }
+}
+
+export class SyncPayloadError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SyncPayloadError'
+  }
+}
 
 export interface PoisonedOp {
   id: string
@@ -32,44 +48,118 @@ export interface PoisonedOp {
   at: number
 }
 
-/** Danh sách op độc đã ghi vào meta (không retry). */
-export async function getPoisonedOps(): Promise<PoisonedOp[]> {
-  const row = await dbx.meta.get(POISON_META)
+export interface BlockedOp extends PoisonedOp {}
+
+function diagnosticRecord(op: SyncOp, err: unknown): PoisonedOp {
+  return {
+    id: op.id,
+    type: op.type,
+    message: err instanceof Error ? err.message : String(err),
+    at: Date.now(),
+  }
+}
+
+async function readDiagnosticOps(key: string): Promise<PoisonedOp[]> {
+  const row = await dbx.meta.get(key)
   return Array.isArray(row?.value) ? (row!.value as PoisonedOp[]) : []
 }
 
-/** Ghi op lỗi vào meta quarantine — thay thế bản cũ cùng op.id. */
-export async function recordPoisonedOp(op: SyncOp, err: unknown): Promise<void> {
-  const message = err instanceof Error ? err.message : String(err)
-  const prev = await getPoisonedOps()
-  const next = [...prev.filter((p) => p.id !== op.id), {
-    id: op.id, type: op.type, message, at: Date.now(),
-  }]
-  await dbx.meta.put({ key: POISON_META, value: next })
+async function upsertDiagnosticOp(key: string, op: SyncOp, err: unknown): Promise<void> {
+  const prev = await readDiagnosticOps(key)
+  const next = [...prev.filter((p) => p.id !== op.id), diagnosticRecord(op, err)]
+    .slice(-MAX_DIAGNOSTIC_OPS)
+  await dbx.meta.put({ key, value: next })
 }
 
+async function clearDiagnosticOp(key: string, opId: string): Promise<void> {
+  const prev = await readDiagnosticOps(key)
+  if (!prev.some((p) => p.id === opId)) return
+  await dbx.meta.put({ key, value: prev.filter((p) => p.id !== opId) })
+}
+
+/** Op sai payload có tính terminal, đã bỏ qua để cursor tiếp tục. */
+export async function getPoisonedOps(): Promise<PoisonedOp[]> {
+  return readDiagnosticOps(POISON_META)
+}
+
+/** Op hợp lệ nhưng thiếu dependency; chưa được đánh applied và sẽ được thử lại. */
+export async function getBlockedOps(): Promise<BlockedOp[]> {
+  return readDiagnosticOps(BLOCKED_META)
+}
+
+export async function recordPoisonedOp(op: SyncOp, err: unknown): Promise<void> {
+  await upsertDiagnosticOp(POISON_META, op, err)
+}
+
+export async function recordBlockedOp(op: SyncOp, err: unknown): Promise<void> {
+  await upsertDiagnosticOp(BLOCKED_META, op, err)
+}
+
+async function applyInsideTransaction(op: SyncOp): Promise<void> {
+  await dbx.transaction('rw', TABLES(), async () => {
+    if (await dbx.appliedOps.get(op.id)) return
+    await applyOne(op)
+    await dbx.appliedOps.add({ id: op.id })
+  })
+}
+
+/**
+ * Áp một batch theo nhiều lượt để dependency nằm sau trong cùng page vẫn có cơ hội tạo trước.
+ * - Dependency chưa có: không đánh applied, ghi blocked, thử lại sau.
+ * - Payload hỏng terminal: ghi poison + đánh applied để không khóa toàn bộ shop.
+ * - Lỗi IndexedDB/hạ tầng: ném ra ngoài, không đánh applied và không nuốt lỗi.
+ */
 export async function applyOps(ops: SyncOp[]): Promise<number> {
   let applied = 0
-  for (const op of ops) {
-    if (await dbx.appliedOps.get(op.id)) {
-      observeRemoteHlc(op.hlc)
-      continue
+  let pending = [...ops]
+
+  while (pending.length > 0) {
+    let progressed = false
+    const deferred: Array<{ op: SyncOp; err: SyncDependencyError }> = []
+
+    for (const op of pending) {
+      if (await dbx.appliedOps.get(op.id)) {
+        await clearDiagnosticOp(BLOCKED_META, op.id)
+        observeRemoteHlc(op.hlc)
+        progressed = true
+        continue
+      }
+
+      try {
+        await applyInsideTransaction(op)
+        await clearDiagnosticOp(BLOCKED_META, op.id)
+        observeRemoteHlc(op.hlc)
+        applied += 1
+        progressed = true
+      } catch (err) {
+        if (err instanceof SyncDependencyError) {
+          await recordBlockedOp(op, err)
+          observeRemoteHlc(op.hlc)
+          deferred.push({ op, err })
+          continue
+        }
+        if (err instanceof SyncPayloadError) {
+          if (!(await dbx.appliedOps.get(op.id))) await dbx.appliedOps.add({ id: op.id })
+          await recordPoisonedOp(op, err)
+          await clearDiagnosticOp(BLOCKED_META, op.id)
+          observeRemoteHlc(op.hlc)
+          progressed = true
+          continue
+        }
+        throw err
+      }
     }
-    try {
-      await dbx.transaction('rw', TABLES(), async () => {
-        if (await dbx.appliedOps.get(op.id)) return
-        await applyOne(op)
-        await dbx.appliedOps.add({ id: op.id })
-      })
-      observeRemoteHlc(op.hlc)
-      applied += 1
-    } catch (err) {
-      // Op độc: rollback tx, đánh appliedOps để không kẹt pull, ghi poison, tiếp op sau
-      if (!(await dbx.appliedOps.get(op.id))) await dbx.appliedOps.add({ id: op.id })
-      await recordPoisonedOp(op, err)
-      observeRemoteHlc(op.hlc)
+
+    if (deferred.length === 0) break
+    if (!progressed) {
+      const first = deferred[0]
+      throw new SyncDependencyError(
+        `Đồng bộ đang chờ dependency cho ${first.op.type} (${first.op.id}): ${first.err.message}`,
+      )
     }
+    pending = deferred.map((d) => d.op)
   }
+
   return applied
 }
 
@@ -111,28 +201,38 @@ function nextDocumentMoveId(
   return occurrence === 0 ? legacy : `${legacy}_${occurrence}`
 }
 
+function payloadError(message: string): never {
+  throw new SyncPayloadError(message)
+}
+
+function dependencyError(message: string): never {
+  throw new SyncDependencyError(message)
+}
+
 async function applyOne(op: SyncOp): Promise<void> {
   switch (op.type) {
     case 'sale.commit': {
-      const sale = op.payload as Sale
-      if (await dbx.sales.get(sale.id)) return
-      if (!sale.items?.length) throw new Error('sale.commit thiếu dòng hàng')
+      const sale = op.payload as Sale | null
+      if (!sale?.id || !Array.isArray(sale.items) || sale.items.length === 0) {
+        payloadError('sale.commit thiếu id hoặc dòng hàng')
+      }
       for (const it of sale.items) {
-        if (!Number.isFinite(it.qty) || !Number.isFinite(it.unitRatio) || it.qty <= 0 || it.unitRatio <= 0) {
-          throw new Error('sale.commit có số lượng không hợp lệ')
+        if (!it?.productId || !Number.isFinite(it.qty) || !Number.isFinite(it.unitRatio) || it.qty <= 0 || it.unitRatio <= 0) {
+          payloadError('sale.commit có dòng hàng không hợp lệ')
         }
         const p = await dbx.products.get(it.productId)
-        if (!p) throw new Error('sale.commit thiếu SP ' + it.productId)
+        if (!p) dependencyError('sale.commit thiếu SP ' + it.productId)
       }
       if (sale.customerId) {
         const c = await dbx.customers.get(sale.customerId)
-        if (!c) throw new Error('sale.commit thiếu khách ' + sale.customerId)
+        if (!c) dependencyError('sale.commit thiếu khách ' + sale.customerId)
       }
+      if (await dbx.sales.get(sale.id)) return
       await dbx.sales.add(sale)
       const moveOccurrences = new Map<string, number>()
       for (const it of sale.items) {
         const p = await dbx.products.get(it.productId)
-        if (!p) throw new Error('sale.commit thiếu SP ' + it.productId)
+        if (!p) dependencyError('sale.commit thiếu SP ' + it.productId)
         const deducted = it.qty * it.unitRatio
         p.stock -= deducted
         p.updatedAt = Date.now()
@@ -156,49 +256,48 @@ async function applyOne(op: SyncOp): Promise<void> {
       }
       if (sale.customerId) {
         const c = await dbx.customers.get(sale.customerId)
-        if (c) {
-          c.debt += sale.debtAmount || 0
-          c.totalSpent += sale.total
-          c.orderCount += 1
-          c.updatedAt = Date.now()
-          await dbx.customers.put(c)
-        }
+        if (!c) dependencyError('sale.commit thiếu khách ' + sale.customerId)
+        c.debt += sale.debtAmount || 0
+        c.totalSpent += sale.total
+        c.orderCount += 1
+        c.updatedAt = Date.now()
+        await dbx.customers.put(c)
       }
       return
     }
     case 'sale.void': {
-      const { saleId, reason } = op.payload as { saleId: string; reason?: string }
-      const sale = await dbx.sales.get(saleId)
-      if (!sale) throw new Error('sale.void chưa có đơn ' + saleId)
+      const payload = op.payload as { saleId?: string; reason?: string } | null
+      if (!payload?.saleId) payloadError('sale.void thiếu saleId')
+      const sale = await dbx.sales.get(payload.saleId)
+      if (!sale) dependencyError('sale.void chưa có đơn ' + payload.saleId)
       if (sale.voided) return
       for (const it of sale.items) {
-        if (!(await dbx.products.get(it.productId))) throw new Error('sale.void thiếu SP ' + it.productId)
+        if (!(await dbx.products.get(it.productId))) dependencyError('sale.void thiếu SP ' + it.productId)
       }
 
       sale.voided = true
       sale.voidedAt = new Date().toISOString()
-      sale.voidReason = reason ?? ''
+      sale.voidReason = payload.reason ?? ''
       await dbx.sales.put(sale)
 
       const moveOccurrences = new Map<string, number>()
       for (const it of sale.items) {
         const p = await dbx.products.get(it.productId)
-        if (p) {
-          const add = it.qty * it.unitRatio
-          p.stock += add
-          p.updatedAt = Date.now()
-          if (p.batches?.length) {
-            p.batches = restoreBatchesFefo(p.batches, add)
-            p.expiry = liveBatchExpiry(p.batches)
-            for (const b of p.batches) await dbx.batches.put(b)
-          }
-          await dbx.products.put(p)
+        if (!p) dependencyError('sale.void thiếu SP ' + it.productId)
+        const add = it.qty * it.unitRatio
+        p.stock += add
+        p.updatedAt = Date.now()
+        if (p.batches?.length) {
+          p.batches = restoreBatchesFefo(p.batches, add)
+          p.expiry = liveBatchExpiry(p.batches)
+          for (const b of p.batches) await dbx.batches.put(b)
         }
+        await dbx.products.put(p)
         await dbx.stockMoves.add({
           id: nextDocumentMoveId(op.id, it.productId, moveOccurrences),
           productId: it.productId,
           type: 'void_restore',
-          qty: it.qty * it.unitRatio,
+          qty: add,
           cost: it.cost,
           note: 'Hoàn kho do hủy đơn',
           refId: sale.id,
@@ -220,10 +319,11 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'product.upsert': {
-      const { product } = op.payload as { product: Partial<Product> & { id: string } }
+      const payload = op.payload as { product?: Partial<Product> & { id?: string } } | null
+      const product = payload?.product
+      if (!product?.id) payloadError('product.upsert thiếu product.id')
       const cur = await dbx.products.get(product.id)
       if (cur) {
-        // Tombstone thắng upsert cũ hơn — không sống lại
         if (cur.deletedHlc && compareHlc(op.hlc, cur.deletedHlc) <= 0) return
         const next: Product = { ...cur, fieldHlc: { ...(cur.fieldHlc ?? {}) } }
         const skip = new Set(['stock', 'batches', 'stockSetHlc', 'grHlc', 'id', 'fieldHlc', 'hlc', 'deletedHlc'])
@@ -247,21 +347,22 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'stock.adjust': {
-      const pl = op.payload as StockAdjustPayload
+      const pl = op.payload as Partial<StockAdjustPayload> | null
+      if (!pl?.productId || !Number.isFinite(pl.delta)) payloadError('stock.adjust thiếu productId hoặc delta')
       const mvId = 'mv_' + op.id
       if (await dbx.stockMoves.get(mvId)) return
       const p = await dbx.products.get(pl.productId)
-      if (!p) throw new Error('stock.adjust thiếu SP ' + pl.productId)
-      p.stock += pl.delta
+      if (!p) dependencyError('stock.adjust thiếu SP ' + pl.productId)
+      p.stock += pl.delta as number
       p.updatedAt = Date.now()
       await dbx.products.put(p)
       await dbx.stockMoves.add({
         id: mvId,
         productId: pl.productId,
         type: 'adjust',
-        qty: pl.delta,
+        qty: pl.delta as number,
         cost: p.cost,
-        note: pl.reason,
+        note: pl.reason ?? '',
         refId: pl.refId ?? '',
         date: new Date().toISOString(),
         ts: Date.now(),
@@ -269,18 +370,17 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'stocktake.commit': {
-      const rec = op.payload as StocktakeRecord
+      const rec = op.payload as StocktakeRecord | null
+      if (!rec?.id || !Array.isArray(rec.rows)) payloadError('stocktake.commit thiếu id hoặc rows')
       if (!(await dbx.stocktakes.get(rec.id))) await dbx.stocktakes.add(rec)
       const moveOccurrences = new Map<string, number>()
       for (const row of rec.rows) {
-        const p = await dbx.products.get(row.productId)
-        if (!p) throw new Error('stocktake thiếu SP ' + row.productId)
-        if (p.stockSetHlc && compareHlc(op.hlc, p.stockSetHlc) <= 0) continue
-        // Cộng diff (actual − system), không set tuyệt đối. Máy đếm gửi
-        // system = tồn họ thấy; máy kia đã bán rồi thì localStock ≠ system,
-        // set actual sẽ hoàn đơn đã đẩy. pending outbox = localStock − system
-        // khi đơn chưa trừ kho — cùng một phép cộng diff.
+        if (!row?.productId) payloadError('stocktake.commit có dòng thiếu productId')
         const diff = typeof row.diff === 'number' ? row.diff : row.actual - row.system
+        if (!Number.isFinite(diff)) payloadError('stocktake.commit có diff không hợp lệ')
+        const p = await dbx.products.get(row.productId)
+        if (!p) dependencyError('stocktake thiếu SP ' + row.productId)
+        if (p.stockSetHlc && compareHlc(op.hlc, p.stockSetHlc) <= 0) continue
         if (diff === 0) {
           p.stockSetHlc = op.hlc
           p.updatedAt = Date.now()
@@ -309,24 +409,35 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'debt.pay': {
-      const dp = op.payload as DebtPayment
+      const dp = op.payload as DebtPayment | null
+      if (!dp?.id || !dp.customerId || !Number.isFinite(dp.amount) || dp.amount <= 0) {
+        payloadError('debt.pay thiếu dữ liệu hợp lệ')
+      }
       if (await dbx.debtPayments.get(dp.id)) return
-      await dbx.debtPayments.add(dp)
       const c = await dbx.customers.get(dp.customerId)
-      if (!c) throw new Error('debt.pay thiếu khách ' + dp.customerId)
+      if (!c) dependencyError('debt.pay thiếu khách ' + dp.customerId)
+      await dbx.debtPayments.add(dp)
       c.debt = Math.max(0, c.debt - dp.amount)
       c.updatedAt = Date.now()
       await dbx.customers.put(c)
       return
     }
     case 'gr.commit': {
-      const { gr, patches, supplierDelta } = op.payload as GrCommitPayload
+      const payload = op.payload as Partial<GrCommitPayload> | null
+      const gr = payload?.gr
+      const patches = payload?.patches
+      const supplierDelta = payload?.supplierDelta
+      if (!gr?.id || !Array.isArray(patches)) payloadError('gr.commit thiếu phiếu hoặc patches')
       if (await dbx.goodsReceipts.get(gr.id)) return
+      for (const pt of patches) {
+        if (!pt?.productId || !Number.isFinite(pt.addQty)) payloadError('gr.commit có patch không hợp lệ')
+        if (!(await dbx.products.get(pt.productId))) dependencyError('gr.commit thiếu SP ' + pt.productId)
+      }
       await dbx.goodsReceipts.add(gr)
       const moveOccurrences = new Map<string, number>()
       for (const pt of patches) {
         const p = await dbx.products.get(pt.productId)
-        if (!p) throw new Error('gr.commit thiếu SP ' + pt.productId)
+        if (!p) dependencyError('gr.commit thiếu SP ' + pt.productId)
         p.stock += pt.addQty
         if (!p.grHlc || compareHlc(op.hlc, p.grHlc) > 0) {
           p.cost = pt.newCost
@@ -334,7 +445,7 @@ async function applyOne(op: SyncOp): Promise<void> {
           if (pt.expiry) p.expiry = pt.expiry
           p.grHlc = op.hlc
         }
-        for (const b of pt.batches) {
+        for (const b of pt.batches ?? []) {
           if (!(await dbx.batches.get(b.id))) {
             await dbx.batches.add(b)
             p.batches = [...(p.batches || []), b]
@@ -342,7 +453,7 @@ async function applyOne(op: SyncOp): Promise<void> {
         }
         p.updatedAt = Date.now()
         await dbx.products.put(p)
-        for (const pl of pt.priceLogRows) {
+        for (const pl of pt.priceLogRows ?? []) {
           if (!(await dbx.priceLog.get(pl.id))) await dbx.priceLog.add(pl)
         }
         await dbx.stockMoves.add({
@@ -358,6 +469,7 @@ async function applyOne(op: SyncOp): Promise<void> {
         })
       }
       if (supplierDelta) {
+        if (!supplierDelta.supplierId) payloadError('gr.commit supplierDelta thiếu supplierId')
         const sup = await dbx.suppliers.get(supplierDelta.supplierId)
         if (sup) {
           sup.debt += supplierDelta.debtDelta
@@ -370,16 +482,21 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'settings.set': {
-      const { key, value } = op.payload as SettingsSetPayload
-      const hlcKey = 'hlc:' + key
+      const payload = op.payload as Partial<SettingsSetPayload> | null
+      if ((payload?.key !== 'settings' && payload?.key !== 'shop') || !('value' in (payload ?? {}))) {
+        payloadError('settings.set thiếu key/value hợp lệ')
+      }
+      const hlcKey = 'hlc:' + payload.key
       const cur = await dbx.meta.get(hlcKey)
       if (cur && compareHlc(op.hlc, cur.value as string) <= 0) return
-      await dbx.meta.put({ key, value })
+      await dbx.meta.put({ key: payload.key, value: payload.value })
       await dbx.meta.put({ key: hlcKey, value: op.hlc })
       return
     }
     case 'customer.upsert': {
-      const { customer } = op.payload as { customer: Partial<Customer> & { id: string } }
+      const payload = op.payload as { customer?: Partial<Customer> & { id?: string } } | null
+      const customer = payload?.customer
+      if (!customer?.id) payloadError('customer.upsert thiếu customer.id')
       const cur = await dbx.customers.get(customer.id)
       if (cur) {
         if (cur.deletedHlc && compareHlc(op.hlc, cur.deletedHlc) <= 0) return
@@ -406,23 +523,27 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'customer.delete': {
-      const { customerId } = op.payload as { customerId: string }
-      const cur = await dbx.customers.get(customerId)
+      const payload = op.payload as { customerId?: string } | null
+      if (!payload?.customerId) payloadError('customer.delete thiếu customerId')
+      const cur = await dbx.customers.get(payload.customerId)
       if (cur && (!cur.deletedHlc || compareHlc(op.hlc, cur.deletedHlc) > 0)) {
         await dbx.customers.put({ ...cur, deleted: true, deletedHlc: op.hlc, hlc: op.hlc })
       }
       return
     }
     case 'product.delete': {
-      const { productId } = op.payload as { productId: string }
-      const cur = await dbx.products.get(productId)
+      const payload = op.payload as { productId?: string } | null
+      if (!payload?.productId) payloadError('product.delete thiếu productId')
+      const cur = await dbx.products.get(payload.productId)
       if (cur && (!cur.deletedHlc || compareHlc(op.hlc, cur.deletedHlc) > 0)) {
         await dbx.products.put({ ...cur, deleted: true, deletedHlc: op.hlc, hlc: op.hlc })
       }
       return
     }
     case 'supplier.upsert': {
-      const { supplier } = op.payload as { supplier: Partial<Supplier> & { id: string } }
+      const payload = op.payload as { supplier?: Partial<Supplier> & { id?: string } } | null
+      const supplier = payload?.supplier
+      if (!supplier?.id) payloadError('supplier.upsert thiếu supplier.id')
       const cur = await dbx.suppliers.get(supplier.id)
       if (cur) {
         if (cur.deletedHlc && compareHlc(op.hlc, cur.deletedHlc) <= 0) return
@@ -449,27 +570,28 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'supplier.pay': {
-      const pay = op.payload as SupplierPayment
-      if (!pay?.id || !pay.supplierId || !(pay.amount > 0)) throw new Error('supplier.pay thiếu dữ liệu')
+      const pay = op.payload as SupplierPayment | null
+      if (!pay?.id || !pay.supplierId || !Number.isFinite(pay.amount) || pay.amount <= 0) {
+        payloadError('supplier.pay thiếu dữ liệu')
+      }
       if (await dbx.supplierPayments.get(pay.id)) return
       await dbx.supplierPayments.add(pay)
       return
     }
     case 'po.upsert': {
-      const po = op.payload as PurchaseOrder
-      if (!po?.id) throw new Error('po.upsert thiếu id')
+      const po = op.payload as PurchaseOrder | null
+      if (!po?.id) payloadError('po.upsert thiếu id')
       const cur = await dbx.purchaseOrders.get(po.id)
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
       await dbx.purchaseOrders.put({ ...po, hlc: op.hlc })
       return
     }
     case 'invoice.upsert': {
-      const inv = op.payload as InvoiceRecord
-      if (!inv?.id) throw new Error('invoice.upsert thiếu id')
+      const inv = op.payload as InvoiceRecord | null
+      if (!inv?.id) payloadError('invoice.upsert thiếu id')
       const cur = await dbx.invoices.get(inv.id)
       if (cur?.deletedHlc && compareHlc(op.hlc, cur.deletedHlc) <= 0) return
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
-      // Giữ tombstone nếu payload không gỡ xóa tường minh
       await dbx.invoices.put({
         ...cur,
         ...inv,
@@ -480,16 +602,16 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'invoice.delete': {
-      const { invoiceId } = op.payload as { invoiceId: string }
-      if (!invoiceId) return
-      const cur = await dbx.invoices.get(invoiceId)
+      const payload = op.payload as { invoiceId?: string } | null
+      if (!payload?.invoiceId) payloadError('invoice.delete thiếu invoiceId')
+      const cur = await dbx.invoices.get(payload.invoiceId)
       if (cur) {
         if (!cur.deletedHlc || compareHlc(op.hlc, cur.deletedHlc) > 0) {
           await dbx.invoices.put({ ...cur, deleted: true, deletedHlc: op.hlc, hlc: op.hlc })
         }
       } else {
         await dbx.invoices.put({
-          id: invoiceId,
+          id: payload.invoiceId,
           code: '',
           type: 'import',
           date: '',
@@ -506,8 +628,8 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'pricing.upsert': {
-      const rule = op.payload as PricingRule
-      if (!rule?.id) throw new Error('pricing.upsert thiếu id')
+      const rule = op.payload as PricingRule | null
+      if (!rule?.id) payloadError('pricing.upsert thiếu id')
       const cur = await dbx.pricingRules.get(rule.id)
       if (cur?.deletedHlc && compareHlc(op.hlc, cur.deletedHlc) <= 0) return
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
@@ -521,16 +643,16 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'pricing.delete': {
-      const { ruleId } = op.payload as { ruleId: string }
-      if (!ruleId) return
-      const cur = await dbx.pricingRules.get(ruleId)
+      const payload = op.payload as { ruleId?: string } | null
+      if (!payload?.ruleId) payloadError('pricing.delete thiếu ruleId')
+      const cur = await dbx.pricingRules.get(payload.ruleId)
       if (cur) {
         if (!cur.deletedHlc || compareHlc(op.hlc, cur.deletedHlc) > 0) {
           await dbx.pricingRules.put({ ...cur, deleted: true, deletedHlc: op.hlc, hlc: op.hlc })
         }
       } else {
         await dbx.pricingRules.put({
-          id: ruleId,
+          id: payload.ruleId,
           name: '',
           cat: '',
           marginPct: 0,
@@ -544,7 +666,8 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'note.upsert': {
-      const note = op.payload as Note
+      const note = op.payload as Note | null
+      if (!note?.id) payloadError('note.upsert thiếu id')
       const cur = await dbx.notes.get(note.id)
       if (cur?.deletedHlc && compareHlc(op.hlc, cur.deletedHlc) <= 0) return
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
@@ -558,16 +681,16 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'note.delete': {
-      const { noteId } = op.payload as { noteId: string }
-      if (!noteId) return
-      const cur = await dbx.notes.get(noteId)
+      const payload = op.payload as { noteId?: string } | null
+      if (!payload?.noteId) payloadError('note.delete thiếu noteId')
+      const cur = await dbx.notes.get(payload.noteId)
       if (cur) {
         if (!cur.deletedHlc || compareHlc(op.hlc, cur.deletedHlc) > 0) {
           await dbx.notes.put({ ...cur, deleted: true, deletedHlc: op.hlc, hlc: op.hlc })
         }
       } else {
         await dbx.notes.put({
-          id: noteId,
+          id: payload.noteId,
           text: '',
           date: '',
           type: 'note',
@@ -581,8 +704,9 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'user.upsert': {
-      const { user } = op.payload as { user: User }
-      if (!user?.id) throw new Error('user.upsert thiếu id')
+      const payload = op.payload as { user?: User } | null
+      const user = payload?.user
+      if (!user?.id) payloadError('user.upsert thiếu id')
       const cur = await dbx.users.get(user.id)
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
       await dbx.users.put({ ...user, hlc: op.hlc })
@@ -590,15 +714,15 @@ async function applyOne(op: SyncOp): Promise<void> {
     }
     case 'user.password': {
       const p = op.payload as {
-        userId: string
-        passwordHash: string
-        salt: string
+        userId?: string
+        passwordHash?: string
+        salt?: string
         passwordNeedsReset?: boolean
         updatedAt?: number
-      }
-      if (!p.userId || !p.passwordHash || !p.salt) throw new Error('user.password thiếu dữ liệu')
+      } | null
+      if (!p?.userId || !p.passwordHash || !p.salt) payloadError('user.password thiếu dữ liệu')
       const cur = await dbx.users.get(p.userId)
-      if (!cur) return
+      if (!cur) dependencyError('user.password thiếu user ' + p.userId)
       if (cur.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
       await dbx.users.put({
         ...cur,
@@ -611,28 +735,32 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'user.delete': {
-      const { userId } = op.payload as { userId: string }
-      const cur = await dbx.users.get(userId)
+      const payload = op.payload as { userId?: string } | null
+      if (!payload?.userId) payloadError('user.delete thiếu userId')
+      const cur = await dbx.users.get(payload.userId)
       if (cur && (!cur.hlc || compareHlc(op.hlc, cur.hlc) > 0)) {
         await dbx.users.put({ ...cur, deleted: true, active: false, hlc: op.hlc })
       }
       return
     }
     case 'device.upsert': {
-      const { device } = op.payload as { device: PairedDevice }
-      if (!device?.deviceId) throw new Error('device.upsert thiếu deviceId')
+      const payload = op.payload as { device?: PairedDevice } | null
+      const device = payload?.device
+      if (!device?.deviceId) payloadError('device.upsert thiếu deviceId')
       const thisId = await getThisDeviceId()
       await dbx.devices.put({ ...device, isThis: device.deviceId === thisId })
       return
     }
     case 'device.remove': {
-      const { deviceId } = op.payload as { deviceId: string }
-      if (!deviceId) throw new Error('device.remove thiếu deviceId')
+      const payload = op.payload as { deviceId?: string } | null
+      if (!payload?.deviceId) payloadError('device.remove thiếu deviceId')
       const thisId = await getThisDeviceId()
-      if (deviceId === thisId) return
-      const existing = await dbx.devices.where('deviceId').equals(deviceId).first()
+      if (payload.deviceId === thisId) return
+      const existing = await dbx.devices.where('deviceId').equals(payload.deviceId).first()
       if (existing) await dbx.devices.delete(existing.id)
       return
     }
+    default:
+      payloadError('Loại op không được hỗ trợ: ' + String((op as { type?: unknown }).type))
   }
 }
