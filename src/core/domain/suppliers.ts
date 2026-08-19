@@ -12,11 +12,15 @@ import { makeOp, persistOp, requestFlush } from '../sync/engine'
 
 /* ─── Tính toán công nợ (pure, test được) ─── */
 
+function safeMoney(value: number | undefined): number {
+  return Number.isFinite(value) ? Math.round(value ?? 0) : 0
+}
+
 /** Tổng giá trị đã nhập từ một NCC (cộng các phiếu nhập). */
 export function supplierTotalPurchases(supId: string, receipts: GoodsReceipt[]): number {
   return receipts
     .filter((r) => r.supplierId === supId)
-    .reduce((a, r) => a + (r.total || 0), 0)
+    .reduce((a, r) => a + Math.max(0, safeMoney(r.total)), 0)
 }
 
 /** Số phiếu nhập của một NCC. */
@@ -24,49 +28,93 @@ export function supplierReceiptCount(supId: string, receipts: GoodsReceipt[]): n
   return receipts.filter((r) => r.supplierId === supId).length
 }
 
-/**
- * Công nợ NCC (≥ 0): tổng (phiếu nhập − đã trả theo phiếu) − các khoản trả riêng.
- * Giống supplierDebt() bản gốc.
- */
 /** Prefix app từng gắn lúc nhập — bỏ qua khi tính extraPaid (dữ liệu cũ). */
 export const GR_PAY_NOTE_PREFIX = 'Thanh toán phiếu nhập'
 
 export function isOnReceiptPayment(p: SupplierPayment): boolean {
+  if (p.paymentKind === 'receipt') return true
+  if (p.paymentKind === 'standalone') return false
   return (p.note || '').startsWith(GR_PAY_NOTE_PREFIX)
 }
 
-export function supplierDebt(
+/**
+ * Số dư có dấu: dương = còn nợ NCC, âm = đã trả dư/ứng trước.
+ * Tiền trả ngay trên phiếu nằm trong GoodsReceipt.paid; supplierPayments chỉ cộng khoản trả riêng.
+ */
+export function supplierBalance(
   supId: string,
   receipts: GoodsReceipt[],
   payments: SupplierPayment[],
 ): number {
   const owed = receipts
     .filter((r) => r.supplierId === supId)
-    .reduce((a, r) => a + Math.max(0, (r.total || 0) - (r.paid || 0)), 0)
+    .reduce((sum, receipt) => {
+      const total = Math.max(0, safeMoney(receipt.total))
+      const paid = Math.max(0, Math.min(total, safeMoney(receipt.paid)))
+      return sum + (total - paid)
+    }, 0)
   const paid = payments
     .filter((p) => p.supplierId === supId && !isOnReceiptPayment(p))
-    .reduce((a, p) => a + (p.amount || 0), 0)
-  return Math.max(0, Math.round(owed - paid))
+    .reduce((sum, payment) => sum + Math.max(0, safeMoney(payment.amount)), 0)
+  return Math.round(owed - paid)
 }
 
-/** Sao kê một NCC trong tháng YYYY-MM: nhập, trả theo phiếu, trả riêng, còn nợ tháng. */
+/** Công nợ phải trả, không bao gồm phần ứng trước. */
+export function supplierDebt(
+  supId: string,
+  receipts: GoodsReceipt[],
+  payments: SupplierPayment[],
+): number {
+  return Math.max(0, supplierBalance(supId, receipts, payments))
+}
+
+/** Tiền đã trả dư/ứng trước cho NCC. */
+export function supplierCredit(
+  supId: string,
+  receipts: GoodsReceipt[],
+  payments: SupplierPayment[],
+): number {
+  return Math.max(0, -supplierBalance(supId, receipts, payments))
+}
+
+export interface SupplierMonthlyStatement {
+  purchased: number
+  paidOnReceipts: number
+  extraPaid: number
+  /** Số dư có dấu trong tháng: dương=nợ, âm=trả dư. */
+  balance: number
+  /** Alias tương thích UI cũ: chỉ phần nợ dương. */
+  net: number
+  credit: number
+  receiptCount: number
+}
+
+/** Sao kê một NCC trong tháng YYYY-MM: nhập, trả theo phiếu, trả riêng, nợ/credit tháng. */
 export function supplierMonthlyStatement(
   supplierId: string,
   receipts: GoodsReceipt[],
   payments: SupplierPayment[],
   month: string,
-): { purchased: number; paidOnReceipts: number; extraPaid: number; net: number; receiptCount: number } {
+): SupplierMonthlyStatement {
   const inMonth = (d: string) => (d || '').slice(0, 7) === month
   const recs = receipts.filter((r) => r.supplierId === supplierId && inMonth(r.date))
   const pays = payments.filter((p) => p.supplierId === supplierId && inMonth(p.date))
-  const purchased = recs.reduce((a, r) => a + (r.total || 0), 0)
-  const paidOnReceipts = recs.reduce((a, r) => a + (r.paid || 0), 0)
-  const extraPaid = pays.filter((p) => !isOnReceiptPayment(p)).reduce((a, p) => a + (p.amount || 0), 0)
+  const purchased = recs.reduce((a, r) => a + Math.max(0, safeMoney(r.total)), 0)
+  const paidOnReceipts = recs.reduce((a, r) => {
+    const total = Math.max(0, safeMoney(r.total))
+    return a + Math.max(0, Math.min(total, safeMoney(r.paid)))
+  }, 0)
+  const extraPaid = pays
+    .filter((p) => !isOnReceiptPayment(p))
+    .reduce((a, p) => a + Math.max(0, safeMoney(p.amount)), 0)
+  const balance = Math.round(purchased - paidOnReceipts - extraPaid)
   return {
     purchased,
     paidOnReceipts,
     extraPaid,
-    net: Math.max(0, purchased - paidOnReceipts - extraPaid),
+    balance,
+    net: Math.max(0, balance),
+    credit: Math.max(0, -balance),
     receiptCount: recs.length,
   }
 }
@@ -92,6 +140,8 @@ export interface SupplierInput {
 export async function createSupplier(input: SupplierInput): Promise<Supplier> {
   const name = input.name.trim()
   if (!name) throw new Error('Cần tên nhà cung cấp')
+  const leadDays = input.leadDays ?? 2
+  if (!Number.isFinite(leadDays)) throw new Error('Thời gian giao hàng không hợp lệ')
   const now = Date.now()
   const s: Supplier = {
     id: uid('sup'),
@@ -99,7 +149,7 @@ export async function createSupplier(input: SupplierInput): Promise<Supplier> {
     phone: (input.phone ?? '').trim(),
     address: (input.address ?? '').trim(),
     note: (input.note ?? '').trim(),
-    leadDays: Math.max(0, Math.min(60, input.leadDays ?? 2)),
+    leadDays: Math.max(0, Math.min(60, leadDays)),
     debt: 0,
     totalPurchased: 0,
     orderCount: 0,
@@ -130,7 +180,10 @@ export async function updateSupplier(id: string, patch: Partial<SupplierInput>):
   if (patch.phone !== undefined) s.phone = patch.phone.trim()
   if (patch.address !== undefined) s.address = patch.address.trim()
   if (patch.note !== undefined) s.note = patch.note.trim()
-  if (patch.leadDays !== undefined) s.leadDays = Math.max(0, Math.min(60, patch.leadDays))
+  if (patch.leadDays !== undefined) {
+    if (!Number.isFinite(patch.leadDays)) throw new Error('Thời gian giao hàng không hợp lệ')
+    s.leadDays = Math.max(0, Math.min(60, patch.leadDays))
+  }
   s.updatedAt = Date.now()
   await dbx.transaction('rw', [dbx.suppliers, dbx.syncQueue, dbx.appliedOps], async () => {
     const op = makeOp('supplier.upsert', null)
@@ -182,22 +235,23 @@ export interface SupplierPaymentInput {
 }
 
 /**
- * Ghi một khoản trả nợ NCC. amount > 0.
- * Trả về bản ghi đã lưu. Ném lỗi nếu số tiền không hợp lệ.
+ * Ghi khoản trả riêng cho NCC. Trả vượt nợ không bị mất: số dư âm trở thành credit trong ledger.
  */
 export async function recordSupplierPayment(input: SupplierPaymentInput): Promise<SupplierPayment> {
+  if (!Number.isFinite(input.amount) || input.amount <= 0) throw new Error('Cần số tiền hợp lệ')
   const amount = Math.round(input.amount)
-  if (!amount || amount <= 0) throw new Error('Cần số tiền hợp lệ')
-  const sup = await dbx.suppliers.get(input.supplierId)
-  if (!sup) throw new Error('Không tìm thấy nhà cung cấp')
-  const pay: SupplierPayment = {
-    id: uid('spay'),
-    supplierId: input.supplierId,
-    amount,
-    date: input.date ?? today(),
-    note: (input.note ?? '').trim(),
-  }
-  await dbx.transaction('rw', [dbx.supplierPayments, dbx.syncQueue, dbx.appliedOps], async () => {
+  let pay!: SupplierPayment
+  await dbx.transaction('rw', [dbx.suppliers, dbx.supplierPayments, dbx.syncQueue, dbx.appliedOps], async () => {
+    const sup = await dbx.suppliers.get(input.supplierId)
+    if (!sup || sup.deleted) throw new Error('Không tìm thấy nhà cung cấp')
+    pay = {
+      id: uid('spay'),
+      supplierId: input.supplierId,
+      amount,
+      date: input.date ?? today(),
+      note: (input.note ?? '').trim(),
+      paymentKind: 'standalone',
+    }
     const op = makeOp('supplier.pay', pay)
     await dbx.supplierPayments.put(pay)
     await persistOp(op)
@@ -240,7 +294,7 @@ export function compareSupplierPrices(
       const supMap = byProduct.get(row.productId)!
       const cur = supMap.get(r.supplierId) ?? { cost: 0, qty: 0 }
       const base = row.qty * (row.unitRatio || 1)
-      if (!base) continue
+      if (!Number.isFinite(base) || base <= 0) continue
       cur.cost += row.cost * row.qty
       cur.qty += base
       supMap.set(r.supplierId, cur)

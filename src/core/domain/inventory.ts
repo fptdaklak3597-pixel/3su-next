@@ -4,7 +4,10 @@
  * Port từ 16-inventory, 20-goods-receipt, 16b-stocktake, 28-stock-forecast.
  */
 import { dbx } from '../db'
-import type { Product, GoodsReceipt, GoodsReceiptRow, StocktakeRecord, StockForecast, Sale, ProductBatch, PriceLogEntry, GrPatch, GrCommitPayload } from '../types'
+import type {
+  Product, GoodsReceipt, GoodsReceiptRow, StocktakeRecord, StockForecast, Sale,
+  ProductBatch, PriceLogEntry, GrPatch, GrCommitPayload, PayMethod,
+} from '../types'
 import { uid, localDay, daysToExpiry } from '../format'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
 
@@ -175,51 +178,110 @@ export function analyzeInventory(products: Product[], lowStock: number, warnDays
 export type GoodsReceiptInput = {
   supplier: string
   supplierId?: string
+  purchaseOrderId?: string
   date: string
   expiry: string
   note: string
   rows: GoodsReceiptRow[]
   paid?: number
-  payMethod?: 'cash' | 'transfer' | 'debt'
+  payMethod?: PayMethod
   /** Giá bán mới theo dòng (cập nhật retail price) */
   prices?: Record<string, number>
 }
 
-/** Gọi bên trong transaction Dexie đã mở (9 hoặc 10 bảng). Không requestFlush. */
+export interface NormalizedReceiptPayment {
+  paid: number
+  payMethod?: PayMethod
+  outstanding: number
+}
+
+/**
+ * Chuẩn hóa thanh toán phiếu nhập.
+ * - Ghi nợ luôn có paid=0.
+ * - Với tiền mặt/chuyển khoản, paid=0 nghĩa là chưa trả và toàn bộ còn nợ.
+ * - Không cho trả vượt phiếu; khoản ứng trước NCC được ghi bằng supplier payment riêng.
+ */
+export function normalizeReceiptPayment(
+  total: number,
+  paid: number | undefined,
+  payMethod: PayMethod | undefined,
+): NormalizedReceiptPayment {
+  if (!Number.isFinite(total) || total < 0) throw new Error('Tổng tiền nhập không hợp lệ')
+  if (payMethod !== undefined && !['cash', 'transfer', 'debt'].includes(payMethod)) {
+    throw new Error('Hình thức thanh toán không hợp lệ')
+  }
+  const rawPaid = paid ?? 0
+  if (!Number.isFinite(rawPaid) || rawPaid < 0) throw new Error('Số tiền đã trả không hợp lệ')
+  let normalized = Math.round(rawPaid)
+  const roundedTotal = Math.round(total)
+  if (payMethod === 'debt') normalized = 0
+  if (normalized > roundedTotal) throw new Error('Số tiền đã trả vượt tổng phiếu nhập')
+  return {
+    paid: normalized,
+    payMethod,
+    outstanding: Math.max(0, roundedTotal - normalized),
+  }
+}
+
+function normalizeReceiptRows(rows: GoodsReceiptRow[]): GoodsReceiptRow[] {
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error('Phiếu nhập cần ít nhất một mặt hàng')
+  return rows.map((row) => {
+    if (!row?.productId) throw new Error('Dòng nhập thiếu sản phẩm')
+    if (!Number.isFinite(row.qty) || row.qty <= 0) throw new Error(`Số lượng nhập không hợp lệ: ${row.name || row.productId}`)
+    if (!Number.isFinite(row.cost) || row.cost < 0) throw new Error(`Giá nhập không hợp lệ: ${row.name || row.productId}`)
+    const unitRatio = row.unitRatio ?? 1
+    if (!Number.isFinite(unitRatio) || unitRatio <= 0) throw new Error(`Quy đổi đơn vị không hợp lệ: ${row.name || row.productId}`)
+    return {
+      ...row,
+      name: String(row.name || '').trim() || row.productId,
+      unit: String(row.unit || '').trim() || 'cái',
+      unitRatio,
+      cost: Math.round(row.cost),
+      expiry: String(row.expiry || ''),
+    }
+  })
+}
+
+/** Gọi bên trong transaction Dexie đã mở. Không requestFlush. */
 export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<GoodsReceipt> {
-  for (const r of input.rows) {
+  const rows = normalizeReceiptRows(input.rows)
+  for (const r of rows) {
     const p = await dbx.products.get(r.productId)
-    if (!p) throw new Error('Không tìm thấy hàng: ' + (r.name || r.productId))
+    if (!p || p.deleted) throw new Error('Không tìm thấy hàng: ' + (r.name || r.productId))
+    if (!Number.isFinite(p.stock) || !Number.isFinite(p.cost)) throw new Error('Dữ liệu tồn kho không hợp lệ: ' + p.name)
   }
   const code = 'NK-' + input.date.replace(/-/g, '') + '-' + String(Math.floor(Math.random() * 900) + 100)
-  const total = input.rows.reduce((a, r) => a + r.qty * r.cost, 0)
+  const total = Math.round(rows.reduce((a, r) => a + r.qty * r.cost, 0))
+  const payment = normalizeReceiptPayment(total, input.paid, input.payMethod)
   const gr: GoodsReceipt = {
     id: uid('gr'),
     code,
-    supplier: input.supplier,
+    supplier: String(input.supplier || '').trim() || 'NCC lẻ',
     supplierId: input.supplierId,
+    purchaseOrderId: input.purchaseOrderId,
     date: input.date,
     expiry: input.expiry,
     note: input.note,
-    rows: input.rows,
+    rows,
     total,
-    paid: input.paid ?? 0,
-    payMethod: input.payMethod,
+    paid: payment.paid,
+    payMethod: payment.payMethod,
     ts: Date.now(),
   }
 
   const grOp = makeOp('gr.commit', null)
   const patches: GrPatch[] = []
-  for (const r of input.rows) {
+  for (const r of rows) {
     const p = await dbx.products.get(r.productId)
     if (!p) throw new Error('Không tìm thấy hàng: ' + (r.name || r.productId))
 
-    const unitRatio = Math.max(1, Number(r.unitRatio) || 1)
+    const unitRatio = r.unitRatio
     const addQty = r.qty * unitRatio
-    const oldStock = Number(p.stock) || 0
-    const oldCost = Number(p.cost) || 0
+    if (!Number.isFinite(addQty) || addQty <= 0) throw new Error('Số lượng quy đổi không hợp lệ: ' + r.name)
+    const oldStock = p.stock
+    const oldCost = p.cost
     const newStock = oldStock + addQty
-    const costBase = addQty > 0 ? (r.qty * r.cost) / addQty : 0
+    const costBase = r.cost / unitRatio
 
     if (oldStock <= 0) {
       p.cost = Math.round(costBase || r.cost || oldCost || 0)
@@ -237,7 +299,10 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
     }
 
     const newPrice = input.prices?.[r.productId]
-    if (newPrice && newPrice > 0) p.price = newPrice
+    if (newPrice !== undefined && (!Number.isFinite(newPrice) || newPrice < 0)) {
+      throw new Error('Giá bán mới không hợp lệ: ' + p.name)
+    }
+    if (newPrice && newPrice > 0) p.price = Math.round(newPrice)
 
     p.grHlc = grOp.hlc
     p.updatedAt = Date.now()
@@ -247,7 +312,7 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
       productId: p.id,
       addQty,
       newCost: p.cost,
-      newPrice: newPrice && newPrice > 0 ? newPrice : undefined,
+      newPrice: newPrice && newPrice > 0 ? Math.round(newPrice) : undefined,
       expiry: rowExp || undefined,
       batches: [],
       priceLogRows: [],
@@ -262,7 +327,7 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
         expiry: rowExp,
         date: input.date,
         supId: input.supplierId || '',
-        supName: input.supplier,
+        supName: gr.supplier,
       }
       await dbx.batches.add(batch)
       p.batches = [...(p.batches || []), batch]
@@ -274,7 +339,7 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
       id: uid('pl'),
       productId: r.productId,
       supId: input.supplierId || '',
-      supName: input.supplier,
+      supName: gr.supplier,
       cost: r.cost,
       ts: Date.now(),
     }
@@ -300,12 +365,18 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
   let supplierDelta: GrCommitPayload['supplierDelta']
   if (input.supplierId) {
     const sup = await dbx.suppliers.get(input.supplierId)
-    if (sup) {
-      sup.totalPurchased = (sup.totalPurchased || 0) + total
-      sup.orderCount = (sup.orderCount || 0) + 1
+    // Backup/PO legacy có thể còn supplierId nhưng thiếu hồ sơ NCC. Vẫn giữ liên kết
+    // trên phiếu để đối soát; chỉ bỏ cập nhật projection hồ sơ bị thiếu.
+    if (sup && !sup.deleted) {
+      sup.totalPurchased = (Number.isFinite(sup.totalPurchased) ? sup.totalPurchased : 0) + total
+      sup.orderCount = (Number.isFinite(sup.orderCount) ? sup.orderCount : 0) + 1
       sup.updatedAt = Date.now()
       await dbx.suppliers.put(sup)
-      supplierDelta = { supplierId: input.supplierId, debtDelta: 0, purchasedDelta: total }
+      supplierDelta = {
+        supplierId: input.supplierId,
+        debtDelta: 0,
+        purchasedDelta: total,
+      }
     }
   }
 

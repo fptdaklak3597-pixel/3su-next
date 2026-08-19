@@ -32,7 +32,7 @@ export function WebPurchaseOrdersPage() {
 
   const rows = useMemo(() => {
     let list = aggregatePurchases(receipts, pos)
-    if (tab === 'pending') list = list.filter((r) => r.kind === 'po' && r.debt > 0)
+    if (tab === 'pending') list = list.filter((r) => r.kind === 'po')
     if (query.trim()) list = list.filter((r) => matchesSearch(r.code + ' ' + r.supplierName, query))
     return list
   }, [receipts, pos, tab, query])
@@ -47,7 +47,7 @@ export function WebPurchaseOrdersPage() {
       setCancelTarget(null)
     } catch (e) {
       logError(e, 'po.cancel')
-      showToast('Lỗi khi hủy', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi hủy', 'bad')
     }
   }
 
@@ -176,7 +176,17 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
       <div className="max-h-[20vh] overflow-y-auto mb-2">
         {query && filtered.slice(0, 8).map((p) => (
           <button key={p.id} className="list-row" onClick={() => {
-            setRows((rs) => rs.some((r) => r.productId === p.id) ? rs : [...rs, { key: p.id, productId: p.id, name: p.name, unit: p.unit, qty: 1, cost: p.cost || 0 }])
+            const key = p.id + '_' + Date.now()
+            setRows((rs) => rs.some((r) => r.productId === p.id) ? rs : [...rs, {
+              key,
+              lineId: key,
+              productId: p.id,
+              name: p.name,
+              unit: p.unit,
+              unitRatio: 1,
+              qty: 1,
+              cost: p.cost || 0,
+            }])
             setQuery('')
           }}>
             <span className="text-sm">{p.name}</span>
@@ -198,6 +208,10 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
   )
 }
 
+function receiveRowKey(row: PurchaseOrderRow, index: number): string {
+  return row.lineId || `${row.productId}#${index}`
+}
+
 function ReceiveSheet({ po, onClose }: { po: PurchaseOrder; onClose: () => void }) {
   const navigate = useNavigate()
   const showToast = useApp((s) => s.showToast)
@@ -206,8 +220,12 @@ function ReceiveSheet({ po, onClose }: { po: PurchaseOrder; onClose: () => void 
   const [expiry, setExpiry] = useState('')
   const [busy, setBusy] = useState(false)
   const [qtys, setQtys] = useState<Record<string, number>>(() =>
-    Object.fromEntries(po.rows.map((r) => [r.productId, Math.max(0, r.qty - (r.receivedQty || 0))])),
+    Object.fromEntries(po.rows.map((r, index) => [receiveRowKey(r, index), Math.max(0, r.qty - (r.receivedQty || 0))])),
   )
+  const receiveTotal = po.rows.reduce((sum, row, index) => {
+    const qty = qtys[receiveRowKey(row, index)] ?? 0
+    return sum + Math.max(0, qty) * row.cost
+  }, 0)
 
   async function handleReceive() {
     setBusy(true)
@@ -226,18 +244,21 @@ function ReceiveSheet({ po, onClose }: { po: PurchaseOrder; onClose: () => void 
 
   return (
     <Sheet open onClose={onClose} title={`Nhận hàng · ${po.code}`}>
-      {po.rows.map((r) => (
-        <div key={r.productId} className="flex items-center justify-between text-sm py-1 gap-2">
-          <span className="flex-1">{r.name} <span className="web-sub">đã nhận {r.receivedQty || 0}/{r.qty}</span></span>
-          <input
-            className="web-input !py-1 w-16"
-            type="number"
-            value={qtys[r.productId] ?? 0}
-            onChange={(e) => setQtys((q) => ({ ...q, [r.productId]: Number(e.target.value) || 0 }))}
-          />
-        </div>
-      ))}
-      <div className="flex justify-between text-sm font-medium py-2"><span>Tổng</span><span>{fmt(po.total)}</span></div>
+      {po.rows.map((r, index) => {
+        const key = receiveRowKey(r, index)
+        return (
+          <div key={key} className="flex items-center justify-between text-sm py-1 gap-2">
+            <span className="flex-1">{r.name} <span className="web-sub">đã nhận {r.receivedQty || 0}/{r.qty} {r.unit}</span></span>
+            <input
+              className="web-input !py-1 w-16"
+              type="number"
+              value={qtys[key] ?? 0}
+              onChange={(e) => setQtys((q) => ({ ...q, [key]: Number(e.target.value) || 0 }))}
+            />
+          </div>
+        )
+      })}
+      <div className="flex justify-between text-sm font-medium py-2"><span>Giá trị nhận lần này</span><span>{fmt(receiveTotal)}</span></div>
       <input className="web-input mb-2" type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
       <div className="web-chips">
         {(['debt', 'cash', 'transfer'] as const).map((m) => (
@@ -247,7 +268,13 @@ function ReceiveSheet({ po, onClose }: { po: PurchaseOrder; onClose: () => void 
         ))}
       </div>
       {payMethod !== 'debt' && (
-        <input className="web-input mb-2" type="number" placeholder="Số đã trả" value={paid || ''} onChange={(e) => setPaid(Number(e.target.value) || 0)} />
+        <>
+          <input className="web-input mb-2" type="number" placeholder="Số đã trả (0 = ghi nợ hết)" value={paid || ''} onChange={(e) => setPaid(Number(e.target.value) || 0)} />
+          <div className="web-chips">
+            <button className="web-chip" onClick={() => setPaid(receiveTotal)}>Trả đủ</button>
+            <button className="web-chip" onClick={() => setPaid(0)}>Chưa trả</button>
+          </div>
+        </>
       )}
       <button className="web-btn pri w-full" disabled={busy} onClick={handleReceive}>Xác nhận nhập kho</button>
     </Sheet>
