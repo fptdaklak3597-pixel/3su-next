@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="vi" data-shell="web">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3SU — Bản thiết kế chuẩn thanh chức năng & font cũ</title>
+  <style>
+    :root {
+      --font-text: "SF Pro Text", "SF Pro Icons", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Inter, "Segoe UI", Arial, sans-serif;
+      --font-display: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Inter, "Segoe UI", Arial, sans-serif;
+      
+      --blue: #1E40AF;
+      --blue-hover: #1D4ED8;
+      --blue-soft: #EFF6FF;
+      --orange: #D97706;
+      --orange-btn: #EA580C;
+      --kv-bg: #F6F8FB;
+      --kv-surface: #FFFFFF;
+      --kv-surface-2: #F8FAFC;
+      --kv-fg: #0F172A;
+      --kv-muted: #475569;
+      --kv-subtle: #7C8B9E;
+      --kv-line: #E2E8F0;
+      --ok: #15803D;
+      --ok-bg: #DCF5E4;
+      --warn: #B45309;
+      --warn-bg: #FEF3DC;
+      --radius: 10px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: var(--font-text);
+      background: var(--kv-bg);
+      color: var(--kv-fg);
+      font-size: 13.5px;
+      line-height: 1.47;
+      letter-spacing: -0.012em;
+    }
+
+    /* ─── TẦNG 1: WEB-UTIL (GIỮ Y NGUYÊN BẢN CŨ) ─── */
+    .web-util {
+      height: 40px;
+      background: var(--kv-surface);
+      border-bottom: 1px solid var(--kv-line);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+    }
+    .web-logo-text {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 16px;
+      color: var(--blue);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+    .web-util-links {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .web-util-a {
+      background: none;
+      border: 0;
+      padding: 0;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--kv-subtle);
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .web-util-a:hover { color: var(--kv-fg); }
+    .web-util-r {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      color: var(--kv-subtle);
+      font-size: 12.5px;
+    }
+    .web-util-shop {
+      color: var(--kv-muted);
+      font-weight: 500;
+    }
+    .web-util-shop .ok {
+      color: var(--ok);
+      font-weight: 600;
+    }
+    .web-util-ico {
+      width: 28px;
+      height: 28px;
+      border: 0;
+      background: none;
+      color: var(--kv-muted);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      border-radius: 6px;
+    }
+    .web-util-ico:hover { background: #F1F5F9; color: var(--kv-fg); }
+    .avatar-circle {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--blue);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: 11.5px;
+    }
+
+    /* ─── TẦNG 2: WEB-TOPBAR XANH (GIỮ Y NGUYÊN BẢN CŨ) ─── */
+    .web-topbar {
+      height: 46px;
+      background: var(--blue);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      padding: 0 12px 0 16px;
+      justify-content: space-between;
+    }
+    .web-menu-left {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+    .web-m {
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, .88);
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .web-m:hover,
+    .web-m.on {
+      background: rgba(255, 255, 255, .2);
+      color: #fff;
+      font-weight: 600;
+    }
+    .web-m .c { font-size: 9px; opacity: .7; }
+
+    .web-topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn-banhang {
+      height: 32px;
+      padding: 0 16px;
+      border-radius: 6px;
+      background: #22C55E;
+      color: #fff;
+      font-weight: 700;
+      font-size: 13px;
+      border: 0;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    }
+    .btn-banhang:hover { background: #16A34A; }
+
+    /* ─── PHẦN NỘI DUNG MỚI (BỐ CỤC 2 CỘT CÂN ĐỐI) ─── */
+    .web-main {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px 24px;
+    }
+    .grid-layout {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .web-card {
+      background: var(--kv-surface);
+      border: 1px solid var(--kv-line);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    /* Onboarding Card */
+    .onboard-box {
+      background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+      border: 1px solid #CBD5E1;
+      border-radius: var(--radius);
+      padding: 20px 22px;
+      margin-bottom: 18px;
+    }
+    .onboard-head {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--kv-fg);
+      margin-bottom: 4px;
+    }
+    .onboard-sub {
+      color: var(--kv-muted);
+      font-size: 12.5px;
+      margin-bottom: 14px;
+    }
+    .step-list {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .step-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #fff;
+      border: 1px solid var(--kv-line);
+      padding: 6px 12px;
+      border-radius: 7px;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: #334155;
+    }
+    .step-badge.ok { border-color: #86EFAC; background: #F0FDF4; color: #166534; }
+    .btn-action-primary {
+      background: var(--blue);
+      color: #fff;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 8px 16px;
+      border-radius: 7px;
+      border: 0;
+      cursor: pointer;
+    }
+    .btn-action-sec {
+      background: #fff;
+      color: #334155;
+      font-weight: 500;
+      font-size: 13px;
+      padding: 8px 14px;
+      border-radius: 7px;
+      border: 1px solid var(--kv-line);
+      cursor: pointer;
+      margin-left: 8px;
+    }
+
+    /* KPI 4 Cards */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .kpi-item {
+      background: var(--kv-surface);
+      border: 1px solid var(--kv-line);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .kpi-title {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--kv-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.2px;
+      margin-bottom: 8px;
+    }
+    .kpi-num {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--kv-fg);
+      letter-spacing: -0.3px;
+      margin-bottom: 2px;
+    }
+    .kpi-note {
+      font-size: 11.5px;
+      color: var(--kv-subtle);
+    }
+
+    /* Chart Box */
+    .chart-box {
+      margin-bottom: 18px;
+    }
+    .chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .chart-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--kv-fg);
+    }
+    .chart-bars-wrap {
+      height: 160px;
+      display: flex;
+      align-items: flex-end;
+      gap: 12px;
+      padding-top: 10px;
+      border-bottom: 1px dashed var(--kv-line);
+      padding-bottom: 8px;
+    }
+    .bar-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      height: 100%;
+      justify-content: flex-end;
+    }
+    .bar-pill {
+      width: 100%;
+      max-width: 22px;
+      background: #93C5FD;
+      border-radius: 4px 4px 1px 1px;
+      min-height: 4px;
+    }
+    .bar-pill.on { background: var(--blue); }
+    .bar-col span { font-size: 10.5px; font-weight: 600; color: var(--kv-subtle); }
+
+    /* Right Column Widgets */
+    .side-card {
+      background: var(--kv-surface);
+      border: 1px solid var(--kv-line);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      margin-bottom: 16px;
+    }
+    .side-title {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: var(--kv-fg);
+      margin-bottom: 12px;
+    }
+
+    .shortcut-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .sc-btn {
+      background: #F8FAFC;
+      border: 1px solid var(--kv-line);
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+    }
+    .sc-btn:hover { background: #F1F5F9; border-color: #CBD5E1; }
+    .sc-btn strong { font-size: 12.5px; color: var(--kv-fg); font-weight: 600; }
+    .sc-btn span { font-size: 11px; color: var(--kv-muted); }
+
+    .printer-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: #F8FAFC;
+      border: 1px solid var(--kv-line);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .printer-name { font-size: 12.5px; font-weight: 600; color: var(--kv-fg); }
+    .printer-status-text { font-size: 11.5px; color: var(--ok); display: flex; align-items: center; gap: 4px; }
+    .printer-status-text::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+    .btn-printer-open {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--blue);
+      background: var(--blue-soft);
+      border: 1px solid #BFDBFE;
+      padding: 5px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .empty-stream {
+      text-align: center;
+      padding: 22px 10px;
+      color: var(--kv-muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- TẦNG 1: Header Tiện ích (Y nguyên bản cũ) -->
+  <header class="web-util">
+    <a href="#" class="web-logo-text">3SU</a>
+    <div class="web-util-links">
+      <a href="#" class="web-util-a">Máy in</a>
+      <a href="#" class="web-util-a">Thiết bị</a>
+      <a href="#" class="web-util-a">Hỗ trợ</a>
+    </div>
+    <div class="web-util-r">
+      <span class="web-util-shop">
+        Cửa hàng của tôi · <span class="ok">● Đã đồng bộ</span>
+      </span>
+      <button class="web-util-ico" title="Thông báo">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+      </button>
+      <button class="web-util-ico" title="Cài đặt">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </button>
+      <div class="avatar-circle">H</div>
+    </div>
+  </header>
+
+  <!-- TẦNG 2: Header Menu Xanh KiotViet (Y nguyên bản cũ) -->
+  <nav class="web-topbar">
+    <div class="web-menu-left">
+      <a class="web-m on">Tổng quan</a>
+      <a class="web-m">Hàng hóa <span class="c">▾</span></a>
+      <a class="web-m">Giao dịch <span class="c">▾</span></a>
+      <a class="web-m">Đối tác <span class="c">▾</span></a>
+      <a class="web-m">Báo cáo</a>
+      <a class="web-m">Hệ thống <span class="c">▾</span></a>
+    </div>
+    <div class="web-topbar-right">
+      <button class="btn-banhang">
+        🛒 Bán hàng
+      </button>
+    </div>
+  </nav>
+
+  <!-- MAIN CONTENT: BỐ CỤC 2 CỘT CÂN ĐỐI MỚI -->
+  <main class="web-main">
+    <div class="grid-layout">
+      
+      <!-- Cột Trái (Nội dung chính) -->
+      <div class="main-col">
+        
+        <!-- Onboarding khi chưa có hàng -->
+        <div class="onboard-box">
+          <div class="onboard-head">Cửa hàng chưa có hàng</div>
+          <div class="onboard-sub">Làm lần lượt: hàng → bán đơn đầu → (tuỳ) STK VietQR → tab Máy in trên máy tính.</div>
+          <div class="step-list">
+            <span class="step-badge ok">✓ Tạo tài khoản</span>
+            <span class="step-badge">○ Có hàng trong kho</span>
+            <span class="step-badge">○ Đã bán đơn đầu</span>
+            <span class="step-badge">○ Điền STK VietQR</span>
+          </div>
+          <div>
+            <button class="btn-action-primary">+ Thêm hàng mới</button>
+            <button class="btn-action-sec">Nạp mẫu 20 mặt hàng</button>
+          </div>
+        </div>
+
+        <!-- 4 Thẻ KPI Doanh số -->
+        <div class="kpi-grid">
+          <div class="kpi-item">
+            <div class="kpi-title">Doanh thu hôm nay</div>
+            <div class="kpi-num">0 ₫</div>
+            <div class="kpi-note">Hôm qua: 0 ₫</div>
+          </div>
+          <div class="kpi-item">
+            <div class="kpi-title">Số đơn hàng</div>
+            <div class="kpi-num">0</div>
+            <div class="kpi-note">0 đơn đang xử lý</div>
+          </div>
+          <div class="kpi-item">
+            <div class="kpi-title">Lợi nhuận tạm tính</div>
+            <div class="kpi-num">0 ₫</div>
+            <div class="kpi-note">Tỷ suất: --%</div>
+          </div>
+          <div class="kpi-item">
+            <div class="kpi-title">Trả hàng</div>
+            <div class="kpi-num">0 ₫</div>
+            <div class="kpi-note">0 phiếu trả</div>
+          </div>
+        </div>
+
+        <!-- Biểu đồ Doanh thu -->
+        <div class="web-card chart-box">
+          <div class="chart-header">
+            <div class="chart-title">Doanh thu thuần tháng này</div>
+            <span style="font-size:12px; color:var(--kv-subtle);">Tháng 8/2026</span>
+          </div>
+          <div class="chart-bars-wrap">
+            <div class="bar-col"><div class="bar-pill" style="height:10%"></div><span>01</span></div>
+            <div class="bar-col"><div class="bar-pill" style="height:25%"></div><span>03</span></div>
+            <div class="bar-col"><div class="bar-pill" style="height:15%"></div><span>05</span></div>
+            <div class="bar-col"><div class="bar-pill" style="height:35%"></div><span>07</span></div>
+            <div class="bar-col"><div class="bar-pill" style="height:20%"></div><span>09</span></div>
+            <div class="bar-col"><div class="bar-pill" style="height:45%"></div><span>11</span></div>
+            <div class="bar-col"><div class="bar-pill" style="height:30%"></div><span>13</span></div>
+            <div class="bar-col"><div class="bar-pill" style="height:60%"></div><span>15</span></div>
+            <div class="bar-col"><div class="bar-pill on" style="height:70%"></div><span>16</span></div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Cột Phải (Máy in & Thao tác nhanh) -->
+      <div class="side-col">
+        
+        <!-- Máy in -->
+        <div class="side-card">
+          <div class="side-title">Máy in bill</div>
+          <div class="printer-row">
+            <div>
+              <div class="printer-name">Máy in nhiệt quầy 1</div>
+              <div class="printer-status-text">Sẵn sàng</div>
+            </div>
+            <button class="btn-printer-open">Mở trang in</button>
+          </div>
+          <p style="font-size:11.5px; color:var(--kv-muted); margin-top:8px; line-height:1.4;">
+            Mở tab Máy in và giữ nguyên. Điện thoại bán hàng sẽ tự động in bill.
+          </p>
+        </div>
+
+        <!-- Thao tác nhanh -->
+        <div class="side-card">
+          <div class="side-title">Thao tác nhanh</div>
+          <div class="shortcut-list">
+            <a href="#" class="sc-btn">
+              <strong>📥 Nhập hàng</strong>
+              <span>Từ nhà cung cấp</span>
+            </a>
+            <a href="#" class="sc-btn">
+              <strong>📋 Kiểm kê</strong>
+              <span>Cân đối tồn kho</span>
+            </a>
+            <a href="#" class="sc-btn">
+              <strong>👥 Khách nợ</strong>
+              <span>Thu nợ & lịch sử</span>
+            </a>
+            <a href="#" class="sc-btn">
+              <strong>📊 Báo cáo</strong>
+              <span>Chi tiết doanh thu</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Hoạt động gần đây -->
+        <div class="side-card">
+          <div class="side-title">Hoạt động gần đây</div>
+          <div class="empty-stream">
+            Chưa có giao dịch phát sinh hôm nay.
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </main>
+
+</body>
+</html>

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <clipPath id="tile">
+      <rect x="0" y="0" width="512" height="512" rx="113" ry="113"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <!-- Nền ink -->
+    <rect x="0" y="0" width="512" height="512" fill="#1C1917"/>
+    <!-- Thanh trên mái hiên -->
+    <rect x="82" y="123" width="348" height="82" fill="#B8935A"/>
+    <!-- Các vòm mái hiên -->
+    <circle cx="117" cy="205" r="35" fill="#B8935A"/>
+    <circle cx="186" cy="205" r="35" fill="#B8935A"/>
+    <circle cx="256" cy="205" r="35" fill="#B8935A"/>
+    <circle cx="326" cy="205" r="35" fill="#B8935A"/>
+    <circle cx="395" cy="205" r="35" fill="#B8935A"/>
+    <!-- Thân cửa hàng -->
+    <rect x="113" y="205" width="286" height="195" fill="#FAF7F2"/>
+    <!-- Cửa ra vào -->
+    <rect x="225" y="287" width="62" height="113" fill="#B8935A"/>
+  </g>
+</svg>

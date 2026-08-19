@@ -1,0 +1,27 @@
+# Dự phòng. Production: Cloudflare Pages + 3su.shop / app.3su.shop.
+# Publish folder set per-site: dist (web) hoặc dist-mobile (PWA).
+
+[build]
+command = "npm run build"
+publish = "dist"
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200
+
+[[headers]]
+for = "/index.html"
+  [headers.values]
+  Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+for = "/sw.js"
+  [headers.values]
+  Cache-Control = "public, max-age=0, must-revalidate"
+  Service-Worker-Allowed = "/"
+
+[[headers]]
+for = "/manifest.webmanifest"
+  [headers.values]
+  Cache-Control = "public, max-age=0, must-revalidate"

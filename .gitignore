@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-mobile/
+dist-admin/
+coverage/
+.env
+.env.*
+!.env.example
+.scratch/
+.netlify/
+.wrangler/
+.zcode/
+tsconfig.tsbuildinfo
+*.log

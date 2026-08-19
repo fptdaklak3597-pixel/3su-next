@@ -1,0 +1,53 @@
+{
+  "name": "3su-next",
+  "private": true,
+  "version": "4.0.0",
+  "type": "module",
+  "description": "3SU Next — Phần mềm bán hàng cho người bán nhỏ Việt Nam (Web + PWA)",
+  "scripts": {
+    "dev": "vite",
+    "dev:mobile": "vite --mode mobile",
+    "dev:admin": "vite --mode admin",
+    "icons": "node scripts/gen-icons.mjs",
+    "build": "node scripts/gen-icons.mjs && tsc -b && vite build",
+    "build:mobile": "node scripts/gen-icons.mjs && tsc -b && vite build --mode mobile",
+    "build:admin": "tsc -b && vite build --mode admin",
+    "build:all": "npm run build && npm run build:mobile && npm run build:admin",
+    "preview": "vite preview",
+    "preview:mobile": "vite preview --mode mobile",
+    "preview:admin": "vite preview --mode admin",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "dexie": "^4.0.11",
+    "dexie-react-hooks": "^1.1.7",
+    "firebase": "^12.16.0",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.469.0",
+    "pdfjs-dist": "^6.2.108",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.18.1",
+    "recharts": "^2.15.0",
+    "tesseract.js": "^7.0.0",
+    "xlsx": "^0.18.5",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "fake-indexeddb": "^6.2.5",
+    "happy-dom": "^15.11.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vite-plugin-pwa": "^1.3.0",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,377 @@
+import { describe, it, expect, beforeEach } from 'vitest'
+import { dbx } from '@/core/db'
+import { initSyncEngine, makeOp, enqueueOp } from '@/core/sync/engine'
+import { applyOps, pendingStockDelta } from '@/core/sync/apply'
+import { hlcString } from '@/core/sync/hlc'
+import type {
+  Product, Customer, Sale, SyncOp, DebtPayment, GoodsReceipt,
+  ProductBatch, PriceLogEntry, GrCommitPayload, Note, Supplier, User,
+  PurchaseOrder, InvoiceRecord, PricingRule, SupplierPayment,
+} from '@/core/types'
+
+/* ─── Factories ─── */
+let seq = 0
+function mkProduct(over: Partial<Product> = {}): Product {
+  seq += 1
+  return {
+    id: 'p' + seq, name: 'Sản phẩm ' + seq, cat: 'Khác', price: 5000, cost: 3000,
+    stock: 100, unit: 'cái', barcode: '', expiry: '', units: [], wholesalePrice: 0,
+    batches: [], createdAt: Date.now(), updatedAt: Date.now(), ...over,
+  }
+}
+
+function mkCustomer(over: Partial<Customer> = {}): Customer {
+  seq += 1
+  return {
+    id: 'c' + seq, name: 'Khách ' + seq, phone: '', note: '', debt: 0, totalSpent: 0,
+    orderCount: 0, createdAt: Date.now(), updatedAt: Date.now(), ...over,
+  }
+}
+
+function mkSale(productId: string, qty: number, over: Partial<Sale> = {}): Sale {
+  seq += 1
+  return {
+    id: 's' + seq,
+    items: [{ productId, name: 'x', qty, price: 10000, cost: 6000, unit: 'cái', unitRatio: 1 }],
+    total: qty * 10000, profit: qty * 4000, discount: 0, payMethod: 'cash',
+    tendered: qty * 10000, change: 0, debtAmount: 0, customerId: null,
+    date: new Date().toISOString(), ...over,
+  }
+}
+
+/** Giả op máy khác: giữ hlc của makeOp, đổi deviceId (không persistOp — op remote không nằm trong appliedOps). */
+function remoteOp(type: SyncOp['type'], payload: unknown, hlc?: string): SyncOp {
+  const op = makeOp(type, payload)
+  return { ...op, deviceId: 'dev_remote', ...(hlc ? { hlc, id: hlc } : {}) }
+}
+
+beforeEach(async () => {
+  await Promise.all([dbx.products.clear(), dbx.sales.clear(), dbx.customers.clear(),
+    dbx.debtPayments.clear(), dbx.goodsReceipts.clear(), dbx.stockMoves.clear(),
+    dbx.stocktakes.clear(), dbx.notes.clear(), dbx.batches.clear(), dbx.priceLog.clear(),
+    dbx.suppliers.clear(), dbx.supplierPayments.clear(), dbx.users.clear(),
+    dbx.purchaseOrders.clear(), dbx.invoices.clear(), dbx.pricingRules.clear(),
+    dbx.devices.clear(), dbx.syncQueue.clear(), dbx.appliedOps.clear(), dbx.meta.clear()])
+  await initSyncEngine()
+})
+
+describe('applyOps — idempotent + delta + LWW', () => {
+  it('áp op 2 lần chỉ có tác dụng 1 lần (appliedOps)', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    const op = remoteOp('stock.adjust', { productId: 'p1', delta: -3, reason: 'test' })
+    expect(await applyOps([op])).toBe(1)
+    expect(await applyOps([op])).toBe(0)
+    expect((await dbx.products.get('p1'))!.stock).toBe(7)
+  })
+
+  it('sale.commit remote: thêm đơn + trừ kho theo items + cộng nợ/totalSpent khách', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 0, totalSpent: 0, orderCount: 0 }))
+    const sale: Sale = {
+      id: 's_remote_1', total: 20000, profit: 8000, discount: 0, payMethod: 'cash',
+      tendered: 5000, change: 0, debtAmount: 15000, customerId: 'c1',
+      date: new Date().toISOString(), synced: false,
+      items: [{ productId: 'p1', name: 'SP', qty: 2, price: 10000, cost: 6000, unit: 'cái', unitRatio: 1 }],
+    }
+    await applyOps([remoteOp('sale.commit', sale)])
+    expect((await dbx.products.get('p1'))!.stock).toBe(8)
+    const c = (await dbx.customers.get('c1'))!
+    expect(c.debt).toBe(15000)
+    expect(c.totalSpent).toBe(20000)
+    expect(c.orderCount).toBe(1)
+    expect(await dbx.sales.get('s_remote_1')).toBeTruthy()
+  })
+
+  it('sale.commit remote đã có sale id local → bỏ qua hoàn toàn (không trừ kho đúp)', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 8 }))
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 15000, totalSpent: 20000, orderCount: 1 }))
+    const sale = mkSale('p1', 2, { id: 's_remote_1', customerId: 'c1', debtAmount: 15000, total: 20000 })
+    await dbx.sales.put(sale)
+    await applyOps([remoteOp('sale.commit', sale)])
+    expect((await dbx.products.get('p1'))!.stock).toBe(8)
+    expect((await dbx.customers.get('c1'))!.orderCount).toBe(1)
+  })
+
+  it('sale.void remote: hoàn kho, hoàn nợ, đánh dấu voided; đơn đã voided thì bỏ qua', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 8 }))
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 15000, totalSpent: 20000, orderCount: 1 }))
+    const sale: Sale = {
+      id: 's_remote_1', total: 20000, profit: 8000, discount: 0, payMethod: 'cash',
+      tendered: 5000, change: 0, debtAmount: 15000, customerId: 'c1',
+      date: new Date().toISOString(), synced: false,
+      items: [{ productId: 'p1', name: 'SP', qty: 2, price: 10000, cost: 6000, unit: 'cái', unitRatio: 1 }],
+    }
+    await dbx.sales.put(sale)
+    await applyOps([remoteOp('sale.void', { saleId: 's_remote_1', reason: 'test' })])
+    expect((await dbx.products.get('p1'))!.stock).toBe(10)
+    expect((await dbx.customers.get('c1'))!.debt).toBe(0)
+    expect((await dbx.customers.get('c1'))!.totalSpent).toBe(0)
+    expect((await dbx.sales.get('s_remote_1'))!.voided).toBe(true)
+    // áp lần 2 với op id khác → không hoàn kho đúp (guard s.voided)
+    await applyOps([remoteOp('sale.void', { saleId: 's_remote_1', reason: 'test2' })])
+    expect((await dbx.products.get('p1'))!.stock).toBe(10)
+  })
+
+  it('stock.adjust giao hoán: [-3, +5] và [+5, -3] cho cùng kết quả', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    await applyOps([
+      remoteOp('stock.adjust', { productId: 'p1', delta: -3, reason: 'a' }),
+      remoteOp('stock.adjust', { productId: 'p1', delta: 5, reason: 'b' }),
+    ])
+    const expected = (await dbx.products.get('p1'))!.stock // 12
+
+    await dbx.products.clear()
+    await dbx.appliedOps.clear()
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    await applyOps([
+      remoteOp('stock.adjust', { productId: 'p1', delta: 5, reason: 'b' }),
+      remoteOp('stock.adjust', { productId: 'p1', delta: -3, reason: 'a' }),
+    ])
+    expect((await dbx.products.get('p1'))!.stock).toBe(expected)
+  })
+
+  it('product.upsert field-level: hai op từng phần giữ cả name lẫn price, stock không đổi', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', name: 'Cũ', price: 5000, stock: 10 }))
+    await applyOps([
+      remoteOp('product.upsert', { product: { id: 'p1', name: 'A' } }, hlcString(2000, 0, 'dev_x')),
+      remoteOp('product.upsert', { product: { id: 'p1', price: 9000 } }, hlcString(3000, 0, 'dev_y')),
+    ])
+    const p = (await dbx.products.get('p1'))!
+    expect(p.name).toBe('A')
+    expect(p.price).toBe(9000)
+    expect(p.stock).toBe(10)
+  })
+
+  it('device.upsert đặt isThis theo máy này; device.remove không gỡ máy này', async () => {
+    const thisId = (await dbx.meta.get('deviceId'))!.value as string
+    await applyOps([
+      remoteOp('device.upsert', { device: {
+        id: 'pd1', deviceId: thisId, name: 'Máy này', platform: 'Windows',
+        pairedAt: 1, lastSeen: 1, isThis: false,
+      } }),
+      remoteOp('device.upsert', { device: {
+        id: 'pd2', deviceId: 'dev_other', name: 'Máy kia', platform: 'iOS',
+        pairedAt: 1, lastSeen: 1,
+      } }),
+    ])
+    expect((await dbx.devices.get('pd1'))!.isThis).toBe(true)
+    expect((await dbx.devices.get('pd2'))!.isThis).toBe(false)
+    await applyOps([remoteOp('device.remove', { deviceId: thisId })])
+    expect(await dbx.devices.get('pd1')).toBeTruthy()
+    await applyOps([remoteOp('device.remove', { deviceId: 'dev_other' })])
+    expect(await dbx.devices.get('pd2')).toBeUndefined()
+  })
+
+  it('product.upsert LWW: op hlc mới hơn thắng; KHÔNG đè stock/batches local', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10, hlc: hlcString(1000, 0, 'dev_a') }))
+    const newer = remoteOp('product.upsert',
+      { product: { id: 'p1', name: 'Tên mới', price: 9000 } },
+      hlcString(9_999_999_999_999, 0, 'dev_remote'))
+    await applyOps([newer])
+    const p = (await dbx.products.get('p1'))!
+    expect(p.name).toBe('Tên mới')
+    expect(p.stock).toBe(10) // stock local bất khả xâm phạm
+    const older = remoteOp('product.upsert', { product: { id: 'p1', name: 'Tên cũ' } }, hlcString(1, 0, 'dev_z'))
+    await applyOps([older])
+    expect((await dbx.products.get('p1'))!.name).toBe('Tên mới') // cùng field: op cũ hơn thua
+  })
+
+  it('product.upsert: op tên cũ hơn vẫn vào khi máy này mới sửa giá', async () => {
+    const priceHlc = hlcString(5000, 0, 'dev_local')
+    await dbx.products.put(mkProduct({
+      id: 'p1', name: 'Cũ', price: 12000, stock: 18,
+      hlc: priceHlc, fieldHlc: { price: priceHlc, updatedAt: priceHlc },
+    }))
+    await applyOps([
+      remoteOp('product.upsert', { product: { id: 'p1', name: 'LOOP20 nước A' } }, hlcString(2000, 0, 'dev_a')),
+    ])
+    const p = (await dbx.products.get('p1'))!
+    expect(p.name).toBe('LOOP20 nước A')
+    expect(p.price).toBe(12000)
+    expect(p.stock).toBe(18)
+  })
+
+  it('stocktake.commit remote không hoàn đơn máy kia đã áp (hết trong outbox)', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 17 }))
+    await dbx.sales.put(mkSale('p1', 1, { id: 's_a' }))
+    const st = remoteOp('stocktake.commit', {
+      id: 'st_stale', date: '2026-08-18',
+      rows: [{ productId: 'p1', name: 'SP', system: 18, actual: 18, diff: 0 }],
+      note: 'máy kia đếm khi chưa thấy đơn đã đẩy', ts: Date.now(),
+    })
+    await applyOps([st])
+    expect((await dbx.products.get('p1'))!.stock).toBe(17)
+  })
+
+  it('stocktake.commit remote KHÔNG nuốt delta local chưa đẩy (quy tắc delta treo)', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 8 }))
+    await enqueueOp('sale.commit', mkSale('p1', 2)) // outbox local có op trừ 2
+    const st = remoteOp('stocktake.commit', {
+      id: 'st1', date: '2026-08-14',
+      rows: [{ productId: 'p1', name: 'SP', system: 10, actual: 100, diff: 90 }],
+      note: '', ts: Date.now(),
+    })
+    await applyOps([st])
+    expect((await dbx.products.get('p1'))!.stock).toBe(98)
+    expect(await dbx.stocktakes.get('st1')).toBeTruthy()
+  })
+
+  it('debt.pay remote: thêm phiếu thu + trừ nợ; trùng id phiếu → bỏ qua', async () => {
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 15000 }))
+    const dp: DebtPayment = { id: 'dp1', customerId: 'c1', amount: 10000, date: new Date().toISOString(), note: 'test' }
+    await applyOps([remoteOp('debt.pay', dp)])
+    expect((await dbx.customers.get('c1'))!.debt).toBe(5000)
+    expect(await dbx.debtPayments.get('dp1')).toBeTruthy()
+    await applyOps([remoteOp('debt.pay', dp)])
+    expect((await dbx.customers.get('c1'))!.debt).toBe(5000)
+  })
+
+  it('gr.commit remote: cộng kho theo patches, chèn batch/priceLog GIỮ NGUYÊN id, đè cost theo grHlc LWW', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10, cost: 3000 }))
+    const batch: ProductBatch = { id: 'bt1', qty: 5, remain: 5, cost: 4000, expiry: '2026-12-31', date: '2026-08-14' }
+    const pl: PriceLogEntry = { id: 'pl1', productId: 'p1', supId: 'sp1', supName: 'NCC A', cost: 4000, ts: Date.now() }
+    const gr: GoodsReceipt = {
+      id: 'gr1', code: 'NK-1', supplier: 'NCC A', supplierId: 'sp1', date: '2026-08-14',
+      expiry: '2026-12-31', note: '', rows: [], total: 20000, ts: Date.now(),
+    }
+    const payload: GrCommitPayload = {
+      gr,
+      patches: [{ productId: 'p1', addQty: 5, newCost: 4000, newPrice: 9000, expiry: '2026-12-31', batches: [batch], priceLogRows: [pl] }],
+    }
+    await applyOps([remoteOp('gr.commit', payload)])
+    const p = (await dbx.products.get('p1'))!
+    expect(p.stock).toBe(15)
+    expect(p.cost).toBe(4000)
+    expect(p.price).toBe(9000)
+    expect(await dbx.batches.get('bt1')).toBeTruthy()
+    expect(await dbx.priceLog.get('pl1')).toBeTruthy()
+    expect(await dbx.goodsReceipts.get('gr1')).toBeTruthy()
+  })
+
+  it('settings.set LWW theo meta hlc:settings', async () => {
+    await applyOps([remoteOp('settings.set', { key: 'settings', value: { theme: 'dark' } }, hlcString(2000, 0, 'dev_x'))])
+    expect((await dbx.meta.get('settings'))!.value).toEqual({ theme: 'dark' })
+    await applyOps([remoteOp('settings.set', { key: 'settings', value: { theme: 'light' } }, hlcString(1000, 0, 'dev_y'))])
+    expect((await dbx.meta.get('settings'))!.value).toEqual({ theme: 'dark' })
+    await applyOps([remoteOp('settings.set', { key: 'settings', value: { theme: 'system' } }, hlcString(3000, 0, 'dev_z'))])
+    expect((await dbx.meta.get('settings'))!.value).toEqual({ theme: 'system' })
+  })
+
+  it('note.upsert LWW + note.delete', async () => {
+    const n1: Note = { id: 'n1', text: 'ghi chú mới', date: new Date().toISOString(), type: 'note', done: false, pinned: false }
+    await applyOps([remoteOp('note.upsert', n1, hlcString(2000, 0, 'dev_x'))])
+    expect((await dbx.notes.get('n1'))!.text).toBe('ghi chú mới')
+    await applyOps([remoteOp('note.upsert', { ...n1, text: 'cũ hơn' }, hlcString(1000, 0, 'dev_y'))])
+    expect((await dbx.notes.get('n1'))!.text).toBe('ghi chú mới')
+    await applyOps([remoteOp('note.delete', { noteId: 'n1' })])
+    expect((await dbx.notes.get('n1'))!.deleted).toBe(true)
+  })
+
+  it('customer.upsert LWW không đè nợ/totalSpent/orderCount; customer.delete soft', async () => {
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 1000, totalSpent: 5000, orderCount: 2 }))
+    await applyOps([remoteOp('customer.upsert', { customer: { id: 'c1', name: 'Khách mới', phone: '1', note: '', wholesale: false } }, hlcString(2000, 0, 'dev_x'))])
+    const c = (await dbx.customers.get('c1'))!
+    expect(c.name).toBe('Khách mới')
+    expect(c.debt).toBe(1000)
+    expect(c.totalSpent).toBe(5000)
+    expect(c.orderCount).toBe(2)
+    await applyOps([remoteOp('customer.delete', { customerId: 'c1' }, hlcString(3000, 0, 'dev_x'))])
+    expect((await dbx.customers.get('c1'))!.deleted).toBe(true)
+  })
+
+  it('product.delete soft; supplier.upsert LWW không đè công nợ', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1' }))
+    await applyOps([remoteOp('product.delete', { productId: 'p1' }, hlcString(2000, 0, 'dev_x'))])
+    expect((await dbx.products.get('p1'))!.deleted).toBe(true)
+
+    const sup: Supplier = { id: 'sp1', name: 'NCC cũ', phone: '', address: '', note: '', leadDays: 0, debt: 5000, totalPurchased: 10000, orderCount: 3, createdAt: 1, updatedAt: 1 }
+    await dbx.suppliers.put(sup)
+    await applyOps([remoteOp('supplier.upsert', { supplier: { id: 'sp1', name: 'NCC mới', phone: '', address: '', note: '', leadDays: 0 } }, hlcString(2500, 0, 'dev_x'))])
+    const got = (await dbx.suppliers.get('sp1'))!
+    expect(got.name).toBe('NCC mới')
+    expect(got.debt).toBe(5000)
+    expect(got.totalPurchased).toBe(10000)
+    expect(got.orderCount).toBe(3)
+  })
+
+  it('user.upsert LWW + user.password + user.delete soft', async () => {
+    const user: User = {
+      id: 'u1', username: 'an', name: 'An', email: '', role: 'staff',
+      passwordHash: 'h1', salt: 's1', passwordNeedsReset: true, perms: { sell: true },
+      active: true, createdAt: 1, updatedAt: 1,
+    }
+    await applyOps([remoteOp('user.upsert', { user }, hlcString(2000, 0, 'dev_x'))])
+    expect((await dbx.users.get('u1'))!.name).toBe('An')
+    await applyOps([remoteOp('user.upsert', { user: { ...user, name: 'cũ hơn' } }, hlcString(1000, 0, 'dev_y'))])
+    expect((await dbx.users.get('u1'))!.name).toBe('An')
+    await applyOps([remoteOp('user.password', {
+      userId: 'u1', passwordHash: 'h2', salt: 's2', passwordNeedsReset: false, updatedAt: 9,
+    }, hlcString(3000, 0, 'dev_z'))])
+    const afterPw = (await dbx.users.get('u1'))!
+    expect(afterPw.passwordHash).toBe('h2')
+    expect(afterPw.salt).toBe('s2')
+    expect(afterPw.passwordNeedsReset).toBe(false)
+    expect(afterPw.name).toBe('An')
+    await applyOps([remoteOp('user.delete', { userId: 'u1' }, hlcString(4000, 0, 'dev_x'))])
+    const gone = (await dbx.users.get('u1'))!
+    expect(gone.deleted).toBe(true)
+    expect(gone.active).toBe(false)
+  })
+
+  it('po.upsert LWW + supplier.pay trùng id bỏ qua', async () => {
+    const po: PurchaseOrder = {
+      id: 'po1', code: 'PO-1', supplierId: 'sp1', supplierName: 'NCC A',
+      rows: [{ productId: 'p1', name: 'SP', unit: 'cái', qty: 2, cost: 4000, receivedQty: 0 }],
+      total: 8000, status: 'ordered', note: '', date: '2026-08-18', ts: 1,
+    }
+    await applyOps([remoteOp('po.upsert', po, hlcString(2000, 0, 'dev_x'))])
+    expect((await dbx.purchaseOrders.get('po1'))!.status).toBe('ordered')
+    await applyOps([remoteOp('po.upsert', { ...po, status: 'cancelled', note: 'cũ' }, hlcString(1000, 0, 'dev_y'))])
+    expect((await dbx.purchaseOrders.get('po1'))!.status).toBe('ordered')
+    await applyOps([remoteOp('po.upsert', { ...po, status: 'received' }, hlcString(3000, 0, 'dev_z'))])
+    expect((await dbx.purchaseOrders.get('po1'))!.status).toBe('received')
+
+    const pay: SupplierPayment = { id: 'spay1', supplierId: 'sp1', amount: 3000, date: '2026-08-18', note: 'trả' }
+    await applyOps([remoteOp('supplier.pay', pay)])
+    expect(await dbx.supplierPayments.get('spay1')).toBeTruthy()
+    await applyOps([remoteOp('supplier.pay', { ...pay, amount: 9999 })])
+    expect((await dbx.supplierPayments.get('spay1'))!.amount).toBe(3000)
+  })
+
+  it('invoice.upsert LWW + invoice.delete; pricing.upsert LWW + pricing.delete', async () => {
+    const inv: InvoiceRecord = {
+      id: 'inv1', code: 'HD-1', type: 'import', date: '2026-08-18',
+      amount: 10000, tax: 0, status: 'draft', data: {}, ts: 1,
+    }
+    await applyOps([remoteOp('invoice.upsert', inv, hlcString(2000, 0, 'dev_x'))])
+    expect((await dbx.invoices.get('inv1'))!.status).toBe('draft')
+    await applyOps([remoteOp('invoice.upsert', { ...inv, status: 'cancelled' }, hlcString(1000, 0, 'dev_y'))])
+    expect((await dbx.invoices.get('inv1'))!.status).toBe('draft')
+    await applyOps([remoteOp('invoice.delete', { invoiceId: 'inv1' })])
+    expect((await dbx.invoices.get('inv1'))!.deleted).toBe(true)
+
+    const rule: PricingRule = { id: 'pr1', name: 'Cafe 40%', cat: 'Cafe', marginPct: 40, roundTo: 1000, active: true }
+    await applyOps([remoteOp('pricing.upsert', rule, hlcString(4000, 0, 'dev_x'))])
+    expect((await dbx.pricingRules.get('pr1'))!.active).toBe(true)
+    await applyOps([remoteOp('pricing.upsert', { ...rule, active: false }, hlcString(3500, 0, 'dev_y'))])
+    expect((await dbx.pricingRules.get('pr1'))!.active).toBe(true)
+    await applyOps([remoteOp('pricing.delete', { ruleId: 'pr1' })])
+    expect((await dbx.pricingRules.get('pr1'))!.deleted).toBe(true)
+  })
+
+  it('sale.commit thiếu SP → đánh applied + poison, không ném ra applyOps', async () => {
+    const sale = mkSale('p-missing', 1)
+    await expect(applyOps([remoteOp('sale.commit', sale)])).resolves.toBe(0)
+    expect(await dbx.appliedOps.count()).toBe(1)
+    expect(await dbx.sales.count()).toBe(0)
+  })
+})
+
+describe('pendingStockDelta', () => {
+  it('tính delta treo từ outbox cho 1 SP', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    await enqueueOp('sale.commit', mkSale('p1', 3))
+    await enqueueOp('stock.adjust', { productId: 'p1', delta: 5, reason: 'x' })
+    expect(await pendingStockDelta('p1')).toBe(2) // -3 + 5
+  })
+})

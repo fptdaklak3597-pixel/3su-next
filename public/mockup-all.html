@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="vi" data-shell="web">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3SU — Bộ thiết kế chi tiết tất cả các tính năng</title>
+  <style>
+    :root {
+      --font-text: "SF Pro Text", "SF Pro Icons", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Inter, "Segoe UI", Arial, sans-serif;
+      --font-display: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Inter, "Segoe UI", Arial, sans-serif;
+      
+      --blue: #1E40AF;
+      --blue-hover: #1D4ED8;
+      --blue-soft: #EFF6FF;
+      --orange: #EA580C;
+      --kv-bg: #F6F8FB;
+      --kv-surface: #FFFFFF;
+      --kv-surface-2: #F8FAFC;
+      --kv-fg: #0F172A;
+      --kv-muted: #475569;
+      --kv-subtle: #7C8B9E;
+      --kv-line: #E2E8F0;
+      --ok: #15803D;
+      --ok-bg: #DCF5E4;
+      --warn: #B45309;
+      --warn-bg: #FEF3DC;
+      --bad: #DC2626;
+      --bad-bg: #FEE2E2;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: var(--font-text);
+      background: var(--kv-bg);
+      color: var(--kv-fg);
+      font-size: 13px;
+      line-height: 1.45;
+      letter-spacing: -0.01em;
+    }
+
+    /* ─── TẦNG 1: WEB-UTIL ─── */
+    .web-util {
+      height: 38px;
+      background: var(--kv-surface);
+      border-bottom: 1px solid var(--kv-line);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+    }
+    .web-logo-text {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 16px;
+      color: var(--blue);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+    .web-util-links { display: flex; align-items: center; gap: 16px; }
+    .web-util-a { font-size: 12px; font-weight: 500; color: var(--kv-subtle); text-decoration: none; }
+    .web-util-r { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 12px; }
+    .web-util-shop { color: var(--kv-muted); }
+    .web-util-shop .ok { color: var(--ok); font-weight: 600; }
+    .avatar-circle { width: 24px; height: 24px; border-radius: 50%; background: var(--blue); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 11px; }
+
+    /* ─── TẦNG 2: WEB-TOPBAR ─── */
+    .web-topbar {
+      height: 44px;
+      background: var(--blue);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      padding: 0 12px 0 16px;
+      justify-content: space-between;
+    }
+    .web-menu-left { display: flex; align-items: center; gap: 2px; }
+    .web-m {
+      height: 32px;
+      padding: 0 12px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, .88);
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .web-m.on, .web-m:hover { background: rgba(255, 255, 255, .2); color: #fff; font-weight: 600; }
+    .web-m .c { font-size: 8px; opacity: .7; }
+    .btn-banhang {
+      height: 30px;
+      padding: 0 14px;
+      border-radius: 6px;
+      background: #22C55E;
+      color: #fff;
+      font-weight: 700;
+      font-size: 12.5px;
+      border: 0;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* ─── MOCKUP TABS SWITCHER (ĐỂ CHỤP TỪNG MÀN) ─── */
+    .demo-bar {
+      background: #0F172A;
+      color: #fff;
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .demo-tab-btn {
+      background: rgba(255,255,255,0.1);
+      color: #94A3B8;
+      border: 1px solid rgba(255,255,255,0.15);
+      padding: 4px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 11.5px;
+    }
+    .demo-tab-btn.active {
+      background: var(--blue);
+      color: #fff;
+      border-color: #3B82F6;
+    }
+
+    /* ─── CONTENT WRAPPERS ─── */
+    .view-section { display: none; padding: 18px 22px; }
+    .view-section.active { display: block; }
+
+    /* Filter + Table layout (Kho & Khách hàng) */
+    .page-layout-filter {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    /* Sidebar Filter */
+    .filter-panel {
+      background: #fff;
+      border: 1px solid var(--kv-line);
+      border-radius: var(--radius);
+      padding: 14px;
+    }
+    .filter-group {
+      margin-bottom: 16px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--kv-line);
+    }
+    .filter-group:last-child { margin-bottom: 0; padding-bottom: 0; border: 0; }
+    .filter-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--kv-fg);
+      text-transform: uppercase;
+      letter-spacing: 0.2px;
+      margin-bottom: 8px;
+    }
+    .filter-radio {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 0;
+      font-size: 12.5px;
+      color: #334155;
+      cursor: pointer;
+    }
+    .filter-radio input { margin-right: 6px; }
+    .count-badge {
+      background: #F1F5F9;
+      color: var(--kv-subtle);
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    /* Action bar & Table */
+    .main-table-wrap {
+      background: #fff;
+      border: 1px solid var(--kv-line);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .table-top-bar {
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--kv-line);
+      background: #FAFBFD;
+    }
+    .search-input-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #fff;
+      border: 1px solid var(--kv-line);
+      padding: 6px 12px;
+      border-radius: 6px;
+      width: 320px;
+    }
+    .search-input-box input {
+      border: none;
+      outline: none;
+      width: 100%;
+      font-size: 12.5px;
+    }
+    .action-btn-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn-green-add {
+      background: #16A34A;
+      color: #fff;
+      font-weight: 600;
+      font-size: 12.5px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-outline {
+      background: #fff;
+      color: #334155;
+      font-weight: 500;
+      font-size: 12px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--kv-line);
+      cursor: pointer;
+    }
+
+    /* Standard Data Table */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      text-align: left;
+    }
+    .data-table th {
+      background: #F8FAFC;
+      color: var(--kv-muted);
+      font-weight: 600;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--kv-line);
+      white-space: nowrap;
+    }
+    .data-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid #F1F5F9;
+      color: #1E293B;
+    }
+    .data-table tr:hover td { background: #F8FAFC; }
+    .data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    
+    .tag-stock {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+    }
+    .tag-stock.ok { background: var(--ok-bg); color: var(--ok); }
+    .tag-stock.warn { background: var(--warn-bg); color: var(--warn); }
+    .tag-stock.bad { background: var(--bad-bg); color: var(--bad); }
+
+    .table-footer {
+      padding: 10px 16px;
+      background: #FAFBFD;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--kv-muted);
+    }
+
+    /* POS Cashier Mockup */
+    .pos-wrap {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 16px;
+      height: calc(100vh - 120px);
+    }
+    .pos-product-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 10px;
+      padding: 12px;
+      background: #fff;
+      border: 1px solid var(--kv-line);
+      border-radius: var(--radius);
+      overflow-y: auto;
+    }
+    .pos-item-card {
+      background: #F8FAFC;
+      border: 1px solid var(--kv-line);
+      border-radius: 8px;
+      padding: 10px;
+      cursor: pointer;
+      text-align: center;
+    }
+    .pos-item-card:hover { border-color: var(--blue); background: var(--blue-soft); }
+    .pos-item-name { font-weight: 600; font-size: 12px; margin-bottom: 4px; color: var(--kv-fg); }
+    .pos-item-price { font-weight: 700; color: var(--blue); font-size: 13px; }
+    
+    .pos-bill-panel {
+      background: #fff;
+      border: 1px solid var(--kv-line);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      padding: 14px;
+    }
+    .bill-rows { flex: 1; overflow-y: auto; margin: 10px 0; }
+    .bill-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px dashed var(--kv-line);
+      font-size: 12.5px;
+    }
+    .bill-total-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--blue);
+      padding: 12px 0;
+      border-top: 2px solid var(--kv-line);
+    }
+    .btn-checkout {
+      width: 100%;
+      background: #16A34A;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Switcher để xem từng màn hình -->
+  <div class="demo-bar">
+    <span style="font-weight:700; color:#38BDF8;">XEM TỪNG MỤC TÍNH NĂNG:</span>
+    <button class="demo-tab-btn active" onclick="showTab('kho')">1. Quản lý Kho hàng (/kho)</button>
+    <button class="demo-tab-btn" onclick="showTab('donhang')">2. Đơn hàng (/don-hang)</button>
+    <button class="demo-tab-btn" onclick="showTab('khachhang')">3. Khách & Công nợ (/khach-hang)</button>
+    <button class="demo-tab-btn" onclick="showTab('pos')">4. Quầy bán hàng POS (/ban-hang)</button>
+  </div>
+
+  <!-- HEADER 2 TẦNG CHUẨN CỦA APP -->
+  <header class="web-util">
+    <a href="#" class="web-logo-text">3SU</a>
+    <div class="web-util-links">
+      <a href="#" class="web-util-a">Máy in</a>
+      <a href="#" class="web-util-a">Thiết bị</a>
+      <a href="#" class="web-util-a">Hỗ trợ</a>
+    </div>
+    <div class="web-util-r">
+      <span class="web-util-shop">Cửa hàng của tôi · <span class="ok">● Đã đồng bộ</span></span>
+      <div class="avatar-circle">H</div>
+    </div>
+  </header>
+
+  <nav class="web-topbar">
+    <div class="web-menu-left">
+      <a class="web-m" id="m-tongquan" onclick="showTab('kho')">Tổng quan</a>
+      <a class="web-m on" id="m-hanghoa" onclick="showTab('kho')">Hàng hóa <span class="c">▾</span></a>
+      <a class="web-m" id="m-giaodich" onclick="showTab('donhang')">Giao dịch <span class="c">▾</span></a>
+      <a class="web-m" id="m-doitac" onclick="showTab('khachhang')">Đối tác <span class="c">▾</span></a>
+      <a class="web-m" id="m-baocao">Báo cáo</a>
+      <a class="web-m" id="m-hethong">Hệ thống <span class="c">▾</span></a>
+    </div>
+    <button class="btn-banhang" onclick="showTab('pos')">🛒 Bán hàng</button>
+  </nav>
+
+  <!-- ════════════════════════════════════════════════════════════════════════════
+       1. MÀN HÌNH QUẢN LÝ KHO HÀNG (/kho)
+       ════════════════════════════════════════════════════════════════════════════ -->
+  <div id="view-kho" class="view-section active">
+    <div class="page-layout-filter">
+      
+      <!-- Bộ lọc bên trái -->
+      <aside class="filter-panel">
+        <div class="filter-group">
+          <div class="filter-title">Trạng thái tồn kho</div>
+          <label class="filter-radio"><span style="font-weight:600;"><input type="radio" name="st" checked> Tất cả</span> <span class="count-badge">48</span></label>
+          <label class="filter-radio"><span><input type="radio" name="st"> Dưới định mức</span> <span class="count-badge">3</span></label>
+          <label class="filter-radio"><span><input type="radio" name="st"> Hết hàng</span> <span class="count-badge">1</span></label>
+          <label class="filter-radio"><span><input type="radio" name="st"> Sắp hết HSD</span> <span class="count-badge">2</span></label>
+        </div>
+
+        <div class="filter-group">
+          <div class="filter-title">Danh mục hàng</div>
+          <label class="filter-radio"><span style="font-weight:600;"><input type="radio" name="cat" checked> Tất cả danh mục</span></label>
+          <label class="filter-radio"><span><input type="radio" name="cat"> Cà phê & Đồ uống</span> <span class="count-badge">18</span></label>
+          <label class="filter-radio"><span><input type="radio" name="cat"> Bánh mì & Ăn nhanh</span> <span class="count-badge">12</span></label>
+          <label class="filter-radio"><span><input type="radio" name="cat"> Bánh ngọt / Snack</span> <span class="count-badge">10</span></label>
+          <label class="filter-radio"><span><input type="radio" name="cat"> Nước ngọt & Đóng chai</span> <span class="count-badge">8</span></label>
+        </div>
+      </aside>
+
+      <!-- Bảng dữ liệu sản phẩm -->
+      <main class="main-table-wrap">
+        <div class="table-top-bar">
+          <div class="search-input-box">
+            <span>🔍</span>
+            <input type="text" placeholder="Tìm theo tên sản phẩm, mã vạch (F3)...">
+          </div>
+          <div class="action-btn-group">
+            <button class="btn-green-add">+ Thêm hàng mới</button>
+            <button class="btn-outline">📥 Nhập Excel</button>
+            <button class="btn-outline">📤 Xuất Excel</button>
+          </div>
+        </div>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:30px;"><input type="checkbox"></th>
+              <th>Mã SP</th>
+              <th>Tên sản phẩm</th>
+              <th>Đơn vị</th>
+              <th class="num">Giá bán</th>
+              <th class="num">Giá vốn</th>
+              <th class="num">Tồn kho</th>
+              <th>Hạn dùng</th>
+              <th>Trạng thái</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><input type="checkbox"></td>
+              <td><strong style="color:var(--blue);">SP001</strong></td>
+              <td><strong>Cà phê sữa đá pha phin</strong></td>
+              <td>Ly</td>
+              <td class="num">25.000 ₫</td>
+              <td class="num">11.000 ₫</td>
+              <td class="num"><strong>120</strong></td>
+              <td>--</td>
+              <td><span class="tag-stock ok">Còn hàng</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox"></td>
+              <td><strong style="color:var(--blue);">SP002</strong></td>
+              <td><strong>Cà phê đen đá Sài Gòn</strong></td>
+              <td>Ly</td>
+              <td class="num">20.000 ₫</td>
+              <td class="num">8.500 ₫</td>
+              <td class="num"><strong>85</strong></td>
+              <td>--</td>
+              <td><span class="tag-stock ok">Còn hàng</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox"></td>
+              <td><strong style="color:var(--blue);">SP003</strong></td>
+              <td><strong>Bánh mì que Pate Hải Phòng</strong></td>
+              <td>Cái</td>
+              <td class="num">15.000 ₫</td>
+              <td class="num">7.000 ₫</td>
+              <td class="num"><strong style="color:var(--warn);">4</strong></td>
+              <td>22/08/2026</td>
+              <td><span class="tag-stock warn">Sắp hết hàng</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox"></td>
+              <td><strong style="color:var(--blue);">SP004</strong></td>
+              <td><strong>Sữa tươi trân châu đường đen</strong></td>
+              <td>Ly</td>
+              <td class="num">32.000 ₫</td>
+              <td class="num">14.000 ₫</td>
+              <td class="num"><strong style="color:var(--bad);">0</strong></td>
+              <td>--</td>
+              <td><span class="tag-stock bad">Hết hàng</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox"></td>
+              <td><strong style="color:var(--blue);">SP005</strong></td>
+              <td><strong>Nước suối Aquafina 500ml</strong></td>
+              <td>Chai</td>
+              <td class="num">10.000 ₫</td>
+              <td class="num">4.500 ₫</td>
+              <td class="num"><strong>240</strong></td>
+              <td>15/12/2027</td>
+              <td><span class="tag-stock ok">Còn hàng</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="table-footer">
+          <div>Tổng tồn: <strong>449 sản phẩm</strong> — Giá trị kho: <strong>48.650.000 ₫</strong></div>
+          <div>Trang 1 / 5 &nbsp; <button class="btn-outline" style="padding:2px 8px;">◀</button> <button class="btn-outline" style="padding:2px 8px;">▶</button></div>
+        </div>
+      </main>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════════════
+       2. MÀN HÌNH ĐƠN HÀNG (/don-hang)
+       ════════════════════════════════════════════════════════════════════════════ -->
+  <div id="view-donhang" class="view-section">
+    <div class="main-table-wrap">
+      <div class="table-top-bar">
+        <div style="display:flex; gap:10px;">
+          <div class="search-input-box" style="width:260px;">
+            <span>🔍</span>
+            <input type="text" placeholder="Tìm theo mã đơn, tên khách...">
+          </div>
+          <select style="border:1px solid var(--kv-line); border-radius:6px; padding:0 10px; font-size:12.5px;">
+            <option>Hôm nay (16/08)</option>
+            <option>7 ngày qua</option>
+            <option>Tháng này</option>
+          </select>
+        </div>
+        <div class="action-btn-group">
+          <button class="btn-outline">📊 Báo cáo doanh số</button>
+          <button class="btn-outline">📤 Xuất file Excel</button>
+        </div>
+      </div>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Mã hóa đơn</th>
+            <th>Thời gian</th>
+            <th>Khách hàng</th>
+            <th>Thu ngân</th>
+            <th class="num">Tổng tiền</th>
+            <th class="num">Giảm giá</th>
+            <th class="num">Khách trả</th>
+            <th>Hình thức</th>
+            <th>Trạng thái</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong style="color:var(--blue);">HD00892</strong></td>
+            <td>15:42 - 16/08</td>
+            <td>Khách lẻ</td>
+            <td>Hoàng Nhân</td>
+            <td class="num"><strong>85.000 ₫</strong></td>
+            <td class="num">0 ₫</td>
+            <td class="num">85.000 ₫</td>
+            <td>Tiền mặt</td>
+            <td><span class="tag-stock ok">Hoàn thành</span></td>
+          </tr>
+          <tr>
+            <td><strong style="color:var(--blue);">HD00891</strong></td>
+            <td>15:20 - 16/08</td>
+            <td>Anh Tuấn (0905***123)</td>
+            <td>Hoàng Nhân</td>
+            <td class="num"><strong>145.000 ₫</strong></td>
+            <td class="num">10.000 ₫</td>
+            <td class="num">135.000 ₫</td>
+            <td>VietQR</td>
+            <td><span class="tag-stock ok">Hoàn thành</span></td>
+          </tr>
+          <tr>
+            <td><strong style="color:var(--blue);">HD00890</strong></td>
+            <td>14:15 - 16/08</td>
+            <td>Chị Lan Cty Mai Linh</td>
+            <td>Hoàng Nhân</td>
+            <td class="num"><strong>320.000 ₫</strong></td>
+            <td class="num">0 ₫</td>
+            <td class="num">0 ₫</td>
+            <td>Ghi nợ</td>
+            <td><span class="tag-stock warn">Chưa thanh toán</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="table-footer">
+        <div>Tổng doanh thu: <strong>550.000 ₫</strong> (3 hóa đơn)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════════════
+       3. MÀN HÌNH KHÁCH HÀNG & CÔNG NỢ (/khach-hang)
+       ════════════════════════════════════════════════════════════════════════════ -->
+  <div id="view-khachhang" class="view-section">
+    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:14px; margin-bottom:16px;">
+      <div style="background:#fff; border:1px solid var(--kv-line); border-radius:var(--radius); padding:14px;">
+        <div style="font-size:11.5px; color:var(--kv-subtle); text-transform:uppercase; font-weight:600;">Tổng số khách hàng</div>
+        <div style="font-size:22px; font-weight:700; color:var(--kv-fg); margin-top:2px;">128</div>
+      </div>
+      <div style="background:#fff; border:1px solid var(--kv-line); border-radius:var(--radius); padding:14px;">
+        <div style="font-size:11.5px; color:var(--kv-subtle); text-transform:uppercase; font-weight:600;">Tổng công nợ cần thu</div>
+        <div style="font-size:22px; font-weight:700; color:var(--bad); margin-top:2px;">14.250.000 ₫</div>
+      </div>
+      <div style="background:#fff; border:1px solid var(--kv-line); border-radius:var(--radius); padding:14px;">
+        <div style="font-size:11.5px; color:var(--kv-subtle); text-transform:uppercase; font-weight:600;">Doanh số tháng này</div>
+        <div style="font-size:22px; font-weight:700; color:var(--ok); margin-top:2px;">42.800.000 ₫</div>
+      </div>
+    </div>
+
+    <div class="main-table-wrap">
+      <div class="table-top-bar">
+        <div class="search-input-box">
+          <span>🔍</span>
+          <input type="text" placeholder="Tìm theo tên khách, số điện thoại...">
+        </div>
+        <button class="btn-green-add">+ Thêm khách hàng</button>
+      </div>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Mã KH</th>
+            <th>Tên khách hàng</th>
+            <th>Điện thoại</th>
+            <th>Địa chỉ / Ghi chú</th>
+            <th class="num">Tổng chi tiêu</th>
+            <th class="num">Nợ hiện tại</th>
+            <th>Hành động</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong style="color:var(--blue);">KH001</strong></td>
+            <td><strong>Anh Tuấn (Cty Thiết Kế)</strong></td>
+            <td>0905 123 456</td>
+            <td>Tầng 3 Tòa nhà VCB</td>
+            <td class="num">4.250.000 ₫</td>
+            <td class="num"><strong style="color:var(--bad);">1.200.000 ₫</strong></td>
+            <td><button class="btn-outline" style="color:var(--blue); font-weight:600;">Thu nợ</button></td>
+          </tr>
+          <tr>
+            <td><strong style="color:var(--blue);">KH002</strong></td>
+            <td><strong>Chị Lan (Mai Linh Taxi)</strong></td>
+            <td>0914 987 654</td>
+            <td>Khách quen ca sáng</td>
+            <td class="num">8.900.000 ₫</td>
+            <td class="num"><strong style="color:var(--bad);">320.000 ₫</strong></td>
+            <td><button class="btn-outline" style="color:var(--blue); font-weight:600;">Thu nợ</button></td>
+          </tr>
+          <tr>
+            <td><strong style="color:var(--blue);">KH003</strong></td>
+            <td><strong>Bác Hùng</strong></td>
+            <td>0935 333 444</td>
+            <td>--</td>
+            <td class="num">1.450.000 ₫</td>
+            <td class="num">0 ₫</td>
+            <td><span style="color:var(--ok); font-weight:600; font-size:12px;">Đã hết nợ</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════════════
+       4. MÀN HÌNH BÁN HÀNG THU NGÂN (POS)
+       ════════════════════════════════════════════════════════════════════════════ -->
+  <div id="view-pos" class="view-section">
+    <div class="pos-wrap">
+      
+      <!-- Trái: Lưới chọn món -->
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <div style="background:#fff; border:1px solid var(--kv-line); border-radius:8px; padding:8px 12px; display:flex; gap:10px;">
+          <input style="border:none; outline:none; width:100%; font-size:13px;" placeholder="🔍 Quét mã vạch hoặc gõ tên món (F3)..." autofocus>
+          <span style="font-weight:600; font-size:12px; color:var(--kv-muted);">Tất cả (48) ▾</span>
+        </div>
+
+        <div class="pos-product-grid">
+          <div class="pos-item-card">
+            <div class="pos-item-name">Cà phê sữa đá</div>
+            <div class="pos-item-price">25.000 ₫</div>
+          </div>
+          <div class="pos-item-card">
+            <div class="pos-item-name">Cà phê đen đá</div>
+            <div class="pos-item-price">20.000 ₫</div>
+          </div>
+          <div class="pos-item-card">
+            <div class="pos-item-name">Bạc xỉu 3 tầng</div>
+            <div class="pos-item-price">28.000 ₫</div>
+          </div>
+          <div class="pos-item-card">
+            <div class="pos-item-name">Bánh mì que</div>
+            <div class="pos-item-price">15.000 ₫</div>
+          </div>
+          <div class="pos-item-card">
+            <div class="pos-item-name">Trà đào cam sả</div>
+            <div class="pos-item-price">35.000 ₫</div>
+          </div>
+          <div class="pos-item-card">
+            <div class="pos-item-name">Nước suối 500ml</div>
+            <div class="pos-item-price">10.000 ₫</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Phải: Hóa đơn thanh toán -->
+      <div class="pos-bill-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--kv-line); padding-bottom:8px;">
+          <strong style="font-size:14px;">Hóa đơn 1</strong>
+          <span style="font-size:12px; color:var(--kv-muted);">Khách lẻ ▾</span>
+        </div>
+
+        <div class="bill-rows">
+          <div class="bill-row">
+            <div>
+              <div style="font-weight:600;">Cà phê sữa đá</div>
+              <div style="font-size:11.5px; color:var(--kv-muted);">25.000 × 2</div>
+            </div>
+            <strong style="font-size:13px;">50.000 ₫</strong>
+          </div>
+          <div class="bill-row">
+            <div>
+              <div style="font-weight:600;">Bánh mì que Pate</div>
+              <div style="font-size:11.5px; color:var(--kv-muted);">15.000 × 1</div>
+            </div>
+            <strong style="font-size:13px;">15.000 ₫</strong>
+          </div>
+        </div>
+
+        <div>
+          <div class="bill-total-row">
+            <span>TỔNG TIỀN</span>
+            <span>65.000 ₫</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:12px;">
+            <span>Khách đưa:</span>
+            <strong>100.000 ₫</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:14px; color:var(--ok);">
+            <span>Tiền thừa:</span>
+            <strong>35.000 ₫</strong>
+          </div>
+
+          <button class="btn-checkout">⚡ THANH TOÁN & IN (F9)</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    function showTab(viewName) {
+      document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.demo-tab-btn').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.web-m').forEach(el => el.classList.remove('on'));
+      
+      const target = document.getElementById('view-' + viewName);
+      if (target) target.classList.add('active');
+
+      if (viewName === 'kho') {
+        document.getElementById('m-hanghoa').classList.add('on');
+      } else if (viewName === 'donhang') {
+        document.getElementById('m-giaodich').classList.add('on');
+      } else if (viewName === 'khachhang') {
+        document.getElementById('m-doitac').classList.add('on');
+      }
+    }
+  </script>
+
+</body>
+</html>
