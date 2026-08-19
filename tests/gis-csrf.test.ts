@@ -18,7 +18,6 @@ function gisRequest(over: {
   cookieCsrf?: string
   method?: string
   contentType?: string
-  contentLength?: number
 } = {}): Request {
   const form = new URLSearchParams({
     credential: over.credential ?? CREDENTIAL,
@@ -28,7 +27,6 @@ function gisRequest(over: {
     'content-type': over.contentType ?? 'application/x-www-form-urlencoded;charset=UTF-8',
     cookie: `other=x; g_csrf_token=${encodeURIComponent(over.cookieCsrf ?? 'csrf-token-123')}; tail=y`,
   })
-  if (over.contentLength !== undefined) headers.set('content-length', String(over.contentLength))
   return new Request('https://app.example/__/gis', {
     method: over.method ?? 'POST',
     headers,
@@ -78,7 +76,8 @@ describe('GIS CSRF primitives', () => {
     const html = gisCallbackPage(CREDENTIAL, nonce)
     const headers = gisResponseHeaders(nonce)
     expect(html).toContain(`nonce="${nonce}"`)
-    expect(html).toContain("sessionStorage.setItem(\"3su:gisId\"")
+    expect(html).toContain('sessionStorage.setItem("3su:gisId"')
+    expect(html).toContain('</script>')
     expect(html).toContain(CREDENTIAL)
     expect(headers['content-security-policy']).toContain(`script-src 'nonce-${nonce}'`)
     expect(headers['cache-control']).toContain('no-store')
@@ -111,9 +110,9 @@ describe('Cloudflare GIS callback', () => {
     expect((await onRequest({ request: gisRequest({ contentType: 'application/json' }) })).status).toBe(415)
   })
 
-  it('từ chối body vượt giới hạn trước khi parse', async () => {
+  it('từ chối body thực tế vượt giới hạn trước khi parse', async () => {
     const response = await onRequest({
-      request: gisRequest({ contentLength: MAX_GIS_POST_BYTES + 1 }),
+      request: gisRequest({ bodyCsrf: 'x'.repeat(MAX_GIS_POST_BYTES + 1) }),
     })
     expect(response.status).toBe(413)
   })
