@@ -96,6 +96,10 @@ export async function pendingStockDelta(productId: string): Promise<number> {
   return d
 }
 
+function lineMoveId(opId: string, productId: string, index: number): string {
+  return `mv_${opId}_${productId}_${index}`
+}
+
 async function applyOne(op: SyncOp): Promise<void> {
   switch (op.type) {
     case 'sale.commit': {
@@ -103,6 +107,9 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (await dbx.sales.get(sale.id)) return
       if (!sale.items?.length) throw new Error('sale.commit thiếu dòng hàng')
       for (const it of sale.items) {
+        if (!Number.isFinite(it.qty) || !Number.isFinite(it.unitRatio) || it.qty <= 0 || it.unitRatio <= 0) {
+          throw new Error('sale.commit có số lượng không hợp lệ')
+        }
         const p = await dbx.products.get(it.productId)
         if (!p) throw new Error('sale.commit thiếu SP ' + it.productId)
       }
@@ -111,7 +118,7 @@ async function applyOne(op: SyncOp): Promise<void> {
         if (!c) throw new Error('sale.commit thiếu khách ' + sale.customerId)
       }
       await dbx.sales.add(sale)
-      for (const it of sale.items) {
+      for (const [lineIndex, it] of sale.items.entries()) {
         const p = await dbx.products.get(it.productId)
         if (!p) throw new Error('sale.commit thiếu SP ' + it.productId)
         const deducted = it.qty * it.unitRatio
@@ -119,13 +126,13 @@ async function applyOne(op: SyncOp): Promise<void> {
         p.updatedAt = Date.now()
         if (p.batches?.length) {
           p.batches = consumeBatchesFefo(p.batches, deducted).batches
-          p.expiry = liveBatchExpiry(p.batches) || p.expiry
+          p.expiry = liveBatchExpiry(p.batches)
           for (const b of p.batches) await dbx.batches.put(b)
         }
         await dbx.products.put(p)
         await dbx.stockMoves.add({
-          id: 'mv_' + op.id + '_' + it.productId, productId: it.productId, type: 'sale',
-          qty: -(it.qty * it.unitRatio), cost: it.cost, note: 'Bán: ' + it.name,
+          id: lineMoveId(op.id, it.productId, lineIndex), productId: it.productId, type: 'sale',
+          qty: -deducted, cost: it.cost, note: 'Bán: ' + it.name,
           refId: sale.id, date: sale.date, ts: Date.now(),
         })
       }
@@ -155,7 +162,7 @@ async function applyOne(op: SyncOp): Promise<void> {
       sale.voidReason = reason ?? ''
       await dbx.sales.put(sale)
 
-      for (const it of sale.items) {
+      for (const [lineIndex, it] of sale.items.entries()) {
         const p = await dbx.products.get(it.productId)
         if (p) {
           const add = it.qty * it.unitRatio
@@ -163,13 +170,13 @@ async function applyOne(op: SyncOp): Promise<void> {
           p.updatedAt = Date.now()
           if (p.batches?.length) {
             p.batches = restoreBatchesFefo(p.batches, add)
-            p.expiry = liveBatchExpiry(p.batches) || p.expiry
+            p.expiry = liveBatchExpiry(p.batches)
             for (const b of p.batches) await dbx.batches.put(b)
           }
           await dbx.products.put(p)
         }
         await dbx.stockMoves.add({
-          id: 'mv_' + op.id + '_' + it.productId, productId: it.productId, type: 'void_restore',
+          id: lineMoveId(op.id, it.productId, lineIndex), productId: it.productId, type: 'void_restore',
           qty: it.qty * it.unitRatio, cost: it.cost, note: 'Hoàn kho do hủy đơn',
           refId: sale.id, date: new Date().toISOString(), ts: Date.now(),
         })
@@ -179,7 +186,7 @@ async function applyOne(op: SyncOp): Promise<void> {
         const c = await dbx.customers.get(sale.customerId)
         if (c) {
           if (sale.debtAmount > 0) c.debt = Math.max(0, c.debt - sale.debtAmount)
-          c.totalSpent -= sale.total
+          c.totalSpent = Math.max(0, c.totalSpent - sale.total)
           c.orderCount = Math.max(0, c.orderCount - 1)
           c.updatedAt = Date.now()
           await dbx.customers.put(c)
@@ -232,7 +239,7 @@ async function applyOne(op: SyncOp): Promise<void> {
     case 'stocktake.commit': {
       const rec = op.payload as StocktakeRecord
       if (!(await dbx.stocktakes.get(rec.id))) await dbx.stocktakes.add(rec)
-      for (const row of rec.rows) {
+      for (const [rowIndex, row] of rec.rows.entries()) {
         const p = await dbx.products.get(row.productId)
         if (!p) throw new Error('stocktake thiếu SP ' + row.productId)
         if (p.stockSetHlc && compareHlc(op.hlc, p.stockSetHlc) <= 0) continue
@@ -247,7 +254,7 @@ async function applyOne(op: SyncOp): Promise<void> {
           await dbx.products.put(p)
           continue
         }
-        const mvId = 'mv_' + op.id + '_' + row.productId
+        const mvId = lineMoveId(op.id, row.productId, rowIndex)
         if (await dbx.stockMoves.get(mvId)) continue
         p.stock += diff
         await applyStockDeltaToBatches(p, diff)
@@ -277,7 +284,7 @@ async function applyOne(op: SyncOp): Promise<void> {
       const { gr, patches, supplierDelta } = op.payload as GrCommitPayload
       if (await dbx.goodsReceipts.get(gr.id)) return
       await dbx.goodsReceipts.add(gr)
-      for (const pt of patches) {
+      for (const [patchIndex, pt] of patches.entries()) {
         const p = await dbx.products.get(pt.productId)
         if (!p) throw new Error('gr.commit thiếu SP ' + pt.productId)
         p.stock += pt.addQty
@@ -297,7 +304,7 @@ async function applyOne(op: SyncOp): Promise<void> {
         await dbx.products.put(p)
         for (const pl of pt.priceLogRows) if (!(await dbx.priceLog.get(pl.id))) await dbx.priceLog.add(pl)
         await dbx.stockMoves.add({
-          id: 'mv_' + op.id + '_' + pt.productId, productId: pt.productId, type: 'purchase',
+          id: lineMoveId(op.id, pt.productId, patchIndex), productId: pt.productId, type: 'purchase',
           qty: pt.addQty, cost: pt.newCost, note: 'Nhập: ' + gr.code, refId: gr.id, date: gr.date, ts: Date.now(),
         })
       }
