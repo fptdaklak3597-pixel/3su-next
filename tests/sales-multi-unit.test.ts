@@ -3,13 +3,20 @@ import { dbx, DEFAULT_SETTINGS } from '@/core/db'
 import { confirmSale } from '@/core/domain/sales'
 import { applyOps } from '@/core/sync/apply'
 import { initSyncEngine, makeOp } from '@/core/sync/engine'
-import type { Product, Sale, SyncOp } from '@/core/types'
+import type { Customer, Product, Sale, SyncOp } from '@/core/types'
 
 function product(stock: number): Product {
   return {
     id: 'p1', name: 'Nước ngọt', cat: 'Nước', price: 10000, cost: 6000, stock,
     unit: 'chai', barcode: '', expiry: '', units: [{ n: 'lốc', r: 6 }],
     wholesalePrice: 0, batches: [], createdAt: 1, updatedAt: 1,
+  }
+}
+
+function customer(): Customer {
+  return {
+    id: 'c1', name: 'Khách thử', phone: '', note: '', debt: 0, totalSpent: 0,
+    orderCount: 0, createdAt: 1, updatedAt: 1,
   }
 }
 
@@ -64,18 +71,22 @@ describe('confirmSale multi-unit', () => {
     expect(await dbx.stockMoves.count()).toBe(2)
   })
 
-  it('kẹp discount âm về 0 và bỏ tendered không hữu hạn', async () => {
+  it('kẹp discount âm về 0 và chuyển tendered không hữu hạn thành phần nợ có khách', async () => {
     const p = product(10)
+    const c = customer()
     await dbx.products.put(p)
+    await dbx.customers.put(c)
 
     const { sale } = await confirmSale({
       items: [{ productId: p.id, qty: 1, unitName: 'chai', unitRatio: 1 }],
       products: [p], discount: -5000, payMethod: 'cash', tendered: Number.NaN,
-      customerId: null, wholesale: false,
+      customerId: c.id, wholesale: false,
     })
 
     expect(sale.discount).toBe(0)
     expect(sale.tendered).toBe(0)
+    expect(sale.debtAmount).toBe(10000)
+    expect((await dbx.customers.get(c.id))?.debt).toBe(10000)
   })
 })
 
