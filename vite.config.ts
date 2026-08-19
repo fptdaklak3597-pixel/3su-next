@@ -3,6 +3,14 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'node:path'
 import { existsSync, renameSync } from 'node:fs'
+import {
+  gisCallbackPage,
+  gisErrorPage,
+  gisResponseHeaders,
+  MAX_GIS_POST_BYTES,
+  randomNonce,
+  validateGisSubmission,
+} from './functions/__/gis-core.js'
 
 /**
  * 3SU Next — Cấu hình Vite đa ứng dụng
@@ -102,17 +110,23 @@ const APP_CONFIG = {
   },
 } satisfies Record<AppName, unknown>
 
-/* ------------------------------------------------------------------ *
- * mobile.html phải phục vụ tại `/` — cả khi dev lẫn khi build.
- * ------------------------------------------------------------------ */
-function gisCallbackPage(cred: string): string {
-  return `<!doctype html><meta charset="utf-8"><title>3SU</title><script>
-try{sessionStorage.setItem('3su:gisId',${JSON.stringify(cred)})}catch(e){}
-location.replace('/')
-</script>`
+function setGisHeaders(res: import('node:http').ServerResponse, nonce = ''): void {
+  for (const [key, value] of Object.entries(gisResponseHeaders(nonce))) res.setHeader(key, value)
+  res.setHeader('allow', 'POST')
 }
 
-/** POST /__/gis — Google redirect (Cursor không giữ popup). */
+function endGisResponse(
+  res: import('node:http').ServerResponse,
+  status: number,
+  html: string,
+  nonce = '',
+): void {
+  res.statusCode = status
+  setGisHeaders(res, nonce)
+  res.end(html)
+}
+
+/** POST /__/gis — mô phỏng chính xác callback Cloudflare trong dev. */
 function gisLogin(): Plugin {
   return {
     name: '3su-gis-login',
@@ -121,19 +135,54 @@ function gisLogin(): Plugin {
         const pathname = (req.url ?? '/').split('?')[0] ?? '/'
         if (pathname !== '/__/gis') return next()
         if (req.method !== 'POST') {
-          res.statusCode = 302
-          res.setHeader('Location', '/')
-          res.end()
+          endGisResponse(res, 405, gisErrorPage('Phương thức không được hỗ trợ'))
           return
         }
+        const contentType = String(req.headers['content-type'] || '').toLowerCase()
+        if (!contentType.startsWith('application/x-www-form-urlencoded')) {
+          endGisResponse(res, 415, gisErrorPage('Định dạng yêu cầu không hợp lệ'))
+          return
+        }
+        const contentLength = Number(req.headers['content-length'] || 0)
+        if (Number.isFinite(contentLength) && contentLength > MAX_GIS_POST_BYTES) {
+          endGisResponse(res, 413, gisErrorPage('Yêu cầu đăng nhập quá lớn'))
+          return
+        }
+
         const chunks: Buffer[] = []
-        req.on('data', (c) => { chunks.push(Buffer.from(c)) })
+        let size = 0
+        let tooLarge = false
+        req.on('data', (chunk) => {
+          const next = Buffer.from(chunk)
+          size += next.byteLength
+          if (size > MAX_GIS_POST_BYTES) {
+            tooLarge = true
+            chunks.length = 0
+            return
+          }
+          if (!tooLarge) chunks.push(next)
+        })
+        req.on('error', () => {
+          if (!res.writableEnded) endGisResponse(res, 400, gisErrorPage('Không đọc được yêu cầu đăng nhập'))
+        })
         req.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8')
-          const cred = new URLSearchParams(body).get('credential') || ''
-          res.statusCode = 200
-          res.setHeader('content-type', 'text/html; charset=utf-8')
-          res.end(gisCallbackPage(cred))
+          if (res.writableEnded) return
+          if (tooLarge) {
+            endGisResponse(res, 413, gisErrorPage('Yêu cầu đăng nhập quá lớn'))
+            return
+          }
+          const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'))
+          const result = validateGisSubmission({
+            credential: form.get('credential'),
+            bodyCsrf: form.get('g_csrf_token'),
+            cookieHeader: req.headers.cookie,
+          })
+          if (!result.ok) {
+            endGisResponse(res, result.status, gisErrorPage(result.message))
+            return
+          }
+          const nonce = randomNonce()
+          endGisResponse(res, 200, gisCallbackPage(result.credential, nonce), nonce)
         })
       })
     },
@@ -235,7 +284,7 @@ export default defineConfig(({ mode }) => {
         workbox: {
           globPatterns: ['**/*.{js,css,html,svg,png,webp,woff2}'],
           navigateFallback: 'index.html',
-          navigateFallbackDenylist: [/^\/__\/auth/],
+          navigateFallbackDenylist: [/^\/__\/auth/, /^\/__\/gis/],
           cleanupOutdatedCaches: true,
           skipWaiting: false,
           clientsClaim: false,
