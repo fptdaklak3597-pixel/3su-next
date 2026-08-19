@@ -42,7 +42,7 @@ export function PurchaseOrdersPage() {
 
   const rows = useMemo(() => {
     let list = aggregatePurchases(receipts, pos)
-    if (tab === 'pending') list = list.filter((r) => r.kind === 'po' && r.debt > 0)
+    if (tab === 'pending') list = list.filter((r) => r.kind === 'po')
     if (query.trim()) list = list.filter((r) => matchesSearch(r.code + ' ' + r.supplierName, query))
     return list
   }, [receipts, pos, tab, query])
@@ -60,7 +60,7 @@ export function PurchaseOrdersPage() {
       setCancelTarget(null)
     } catch (e) {
       logError(e, 'po.cancel')
-      showToast('Lỗi khi hủy', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi hủy', 'bad')
     }
   }
 
@@ -134,10 +134,7 @@ export function PurchaseOrdersPage() {
       </div>
 
       <CreatePoSheet open={showCreate} onClose={() => setShowCreate(false)} />
-
-      {receiveTarget && (
-        <ReceiveSheet po={receiveTarget} onClose={() => setReceiveTarget(null)} />
-      )}
+      {receiveTarget && <ReceiveSheet po={receiveTarget} onClose={() => setReceiveTarget(null)} />}
 
       <ConfirmDialog
         open={!!cancelTarget}
@@ -171,7 +168,17 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
   function addRow(p: Product) {
     setRows((rs) => {
       if (rs.some((r) => r.productId === p.id)) { showToast('Đã có trong đơn', 'bad'); return rs }
-      return [...rs, { key: p.id + '_' + Date.now(), productId: p.id, name: p.name, unit: p.unit, qty: 1, cost: p.cost || 0 }]
+      const key = p.id + '_' + Date.now()
+      return [...rs, {
+        key,
+        lineId: key,
+        productId: p.id,
+        name: p.name,
+        unit: p.unit,
+        unitRatio: 1,
+        qty: 1,
+        cost: p.cost || 0,
+      }]
     })
     setPickerOpen(false)
     setQuery('')
@@ -188,7 +195,7 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
       const po = await createPurchaseOrder({
         supplierId: supplier.id,
         supplierName: supplier.name,
-        rows: rows.map(({ key, ...r }) => r),
+        rows: rows.map(({ key: _key, ...r }) => r),
         note,
         date: today(),
       })
@@ -260,6 +267,10 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
   )
 }
 
+function receiveRowKey(row: PurchaseOrderRow, index: number): string {
+  return row.lineId || `${row.productId}#${index}`
+}
+
 /* ─── Nhận hàng vào kho ─── */
 function ReceiveSheet({ po, onClose }: { po: PurchaseOrder; onClose: () => void }) {
   const navigate = useNavigate()
@@ -269,8 +280,13 @@ function ReceiveSheet({ po, onClose }: { po: PurchaseOrder; onClose: () => void 
   const [expiry, setExpiry] = useState('')
   const [busy, setBusy] = useState(false)
   const [qtys, setQtys] = useState<Record<string, number>>(() =>
-    Object.fromEntries(po.rows.map((r) => [r.productId, Math.max(0, r.qty - (r.receivedQty || 0))])),
+    Object.fromEntries(po.rows.map((r, index) => [receiveRowKey(r, index), Math.max(0, r.qty - (r.receivedQty || 0))])),
   )
+
+  const receiveTotal = po.rows.reduce((sum, row, index) => {
+    const qty = qtys[receiveRowKey(row, index)] ?? 0
+    return sum + Math.max(0, qty) * row.cost
+  }, 0)
 
   async function handleReceive() {
     setBusy(true)
@@ -291,20 +307,23 @@ function ReceiveSheet({ po, onClose }: { po: PurchaseOrder; onClose: () => void 
     <Sheet open onClose={onClose} title={`Nhận hàng — ${po.code}`}>
       <div className="flex flex-col gap-3">
         <div className="card p-3 max-h-[28vh] overflow-y-auto">
-          {po.rows.map((r) => (
-            <div key={r.productId} className="flex items-center justify-between text-sm py-1 gap-2" style={{ borderBottom: '0.5px solid var(--hair-2)' }}>
-              <span className="flex-1" style={{ color: 'var(--ink-2)' }}>{r.name} <span style={{ color: 'var(--mute)' }}>({r.receivedQty || 0}/{r.qty})</span></span>
-              <input
-                className="field-input !w-16 !py-1"
-                type="number"
-                value={qtys[r.productId] ?? 0}
-                onChange={(e) => setQtys((q) => ({ ...q, [r.productId]: Number(e.target.value) || 0 }))}
-              />
-            </div>
-          ))}
+          {po.rows.map((r, index) => {
+            const key = receiveRowKey(r, index)
+            return (
+              <div key={key} className="flex items-center justify-between text-sm py-1 gap-2" style={{ borderBottom: '0.5px solid var(--hair-2)' }}>
+                <span className="flex-1" style={{ color: 'var(--ink-2)' }}>{r.name} <span style={{ color: 'var(--mute)' }}>({r.receivedQty || 0}/{r.qty} {r.unit})</span></span>
+                <input
+                  className="field-input !w-16 !py-1"
+                  type="number"
+                  value={qtys[key] ?? 0}
+                  onChange={(e) => setQtys((q) => ({ ...q, [key]: Number(e.target.value) || 0 }))}
+                />
+              </div>
+            )
+          })}
           <div className="flex justify-between text-sm font-medium pt-2">
-            <span style={{ color: 'var(--ink)' }}>Tổng</span>
-            <span style={{ color: 'var(--ink)' }}>{fmt(po.total)}</span>
+            <span style={{ color: 'var(--ink)' }}>Giá trị nhận lần này</span>
+            <span style={{ color: 'var(--ink)' }}>{fmt(receiveTotal)}</span>
           </div>
         </div>
 
@@ -323,10 +342,10 @@ function ReceiveSheet({ po, onClose }: { po: PurchaseOrder; onClose: () => void 
 
         {payMethod !== 'debt' && (
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs" style={{ color: 'var(--mute)' }}>Số tiền đã trả</span>
+            <span className="text-xs" style={{ color: 'var(--mute)' }}>Số tiền đã trả (0 = ghi nợ hết)</span>
             <input className="field-input text-center" type="number" inputMode="numeric" value={paid || ''} placeholder="0" onChange={(e) => setPaid(Number(e.target.value) || 0)} />
             <div className="flex gap-2">
-              <button className="chip flex-1 justify-center" onClick={() => setPaid(po.total)}>Trả đủ</button>
+              <button className="chip flex-1 justify-center" onClick={() => setPaid(receiveTotal)}>Trả đủ</button>
               <button className="chip flex-1 justify-center" onClick={() => setPaid(0)}>Chưa trả</button>
             </div>
           </div>
