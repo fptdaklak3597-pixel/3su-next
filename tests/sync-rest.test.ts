@@ -1,5 +1,5 @@
 /**
- * Đợt 2 — S3 poison / M12 seed / M8+L8 restore file.
+ * Đợt 2 — sync errors / M12 seed / M8+L8 restore file.
  * Chạy: npx vitest run tests/sync-rest.test.ts
  */
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -7,7 +7,12 @@ import { dbx, restoreBackup, restoreLocalBackup, type BackupData } from '@/core/
 import { parseRestoreFile } from '@/core/domain/trial'
 import { seedCatalog } from '@/core/domain/seed'
 import { initSyncEngine, makeOp } from '@/core/sync/engine'
-import { applyOps, getPoisonedOps } from '@/core/sync/apply'
+import {
+  applyOps,
+  getBlockedOps,
+  getPoisonedOps,
+  SyncDependencyError,
+} from '@/core/sync/apply'
 import type { Product, Sale, SyncOp } from '@/core/types'
 
 function mkProduct(over: Partial<Product> = {}): Product {
@@ -32,8 +37,8 @@ beforeEach(async () => {
   await initSyncEngine()
 })
 
-describe('S3 — op độc không chặn op sau', () => {
-  it('sale.commit thiếu SP rồi stock.adjust → adjust vẫn áp, poisoned ghi meta', async () => {
+describe('S3 — dependency lỗi không chặn op tốt phía sau', () => {
+  it('sale.commit thiếu SP rồi stock.adjust → adjust vẫn áp, sale bị blocked để retry', async () => {
     await dbx.products.add(mkProduct({ id: 'p1', stock: 10 }))
     const badSale: Sale = {
       id: 's_bad',
@@ -43,17 +48,19 @@ describe('S3 — op độc không chặn op sau', () => {
       date: '2026-08-18',
     }
     const bad = remoteOp('sale.commit', badSale)
-    const good = remoteOp('stock.adjust', { productId: 'p1', delta: -3, reason: 'sau độc' })
-    await expect(applyOps([bad, good])).resolves.toBe(1)
+    const good = remoteOp('stock.adjust', { productId: 'p1', delta: -3, reason: 'sau dependency' })
+
+    await expect(applyOps([bad, good])).rejects.toBeInstanceOf(SyncDependencyError)
     expect(await dbx.sales.count()).toBe(0)
     expect((await dbx.products.get('p1'))!.stock).toBe(7)
-    expect(await dbx.appliedOps.get(bad.id)).toBeTruthy()
+    expect(await dbx.appliedOps.get(bad.id)).toBeUndefined()
     expect(await dbx.appliedOps.get(good.id)).toBeTruthy()
-    const poisoned = await getPoisonedOps()
-    expect(poisoned).toHaveLength(1)
-    expect(poisoned[0]!.id).toBe(bad.id)
-    expect(poisoned[0]!.type).toBe('sale.commit')
-    expect(poisoned[0]!.message).toMatch(/thiếu SP/)
+    expect((await getPoisonedOps()).find((op) => op.id === bad.id)).toBeUndefined()
+    const blocked = await getBlockedOps()
+    expect(blocked).toHaveLength(1)
+    expect(blocked[0]!.id).toBe(bad.id)
+    expect(blocked[0]!.type).toBe('sale.commit')
+    expect(blocked[0]!.message).toMatch(/thiếu SP/)
   })
 })
 

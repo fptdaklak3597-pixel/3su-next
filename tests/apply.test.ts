@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { dbx } from '@/core/db'
 import { initSyncEngine, makeOp, enqueueOp } from '@/core/sync/engine'
-import { applyOps, pendingStockDelta } from '@/core/sync/apply'
+import {
+  applyOps,
+  getBlockedOps,
+  getPoisonedOps,
+  pendingStockDelta,
+  SyncDependencyError,
+} from '@/core/sync/apply'
 import { hlcString } from '@/core/sync/hlc'
 import type {
   Product, Customer, Sale, SyncOp, DebtPayment, GoodsReceipt,
@@ -107,7 +113,6 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect((await dbx.customers.get('c1'))!.debt).toBe(0)
     expect((await dbx.customers.get('c1'))!.totalSpent).toBe(0)
     expect((await dbx.sales.get('s_remote_1'))!.voided).toBe(true)
-    // áp lần 2 với op id khác → không hoàn kho đúp (guard s.voided)
     await applyOps([remoteOp('sale.void', { saleId: 's_remote_1', reason: 'test2' })])
     expect((await dbx.products.get('p1'))!.stock).toBe(10)
   })
@@ -118,7 +123,7 @@ describe('applyOps — idempotent + delta + LWW', () => {
       remoteOp('stock.adjust', { productId: 'p1', delta: -3, reason: 'a' }),
       remoteOp('stock.adjust', { productId: 'p1', delta: 5, reason: 'b' }),
     ])
-    const expected = (await dbx.products.get('p1'))!.stock // 12
+    const expected = (await dbx.products.get('p1'))!.stock
 
     await dbx.products.clear()
     await dbx.appliedOps.clear()
@@ -170,10 +175,10 @@ describe('applyOps — idempotent + delta + LWW', () => {
     await applyOps([newer])
     const p = (await dbx.products.get('p1'))!
     expect(p.name).toBe('Tên mới')
-    expect(p.stock).toBe(10) // stock local bất khả xâm phạm
+    expect(p.stock).toBe(10)
     const older = remoteOp('product.upsert', { product: { id: 'p1', name: 'Tên cũ' } }, hlcString(1, 0, 'dev_z'))
     await applyOps([older])
-    expect((await dbx.products.get('p1'))!.name).toBe('Tên mới') // cùng field: op cũ hơn thua
+    expect((await dbx.products.get('p1'))!.name).toBe('Tên mới')
   })
 
   it('product.upsert: op tên cũ hơn vẫn vào khi máy này mới sửa giá', async () => {
@@ -205,7 +210,7 @@ describe('applyOps — idempotent + delta + LWW', () => {
 
   it('stocktake.commit remote KHÔNG nuốt delta local chưa đẩy (quy tắc delta treo)', async () => {
     await dbx.products.put(mkProduct({ id: 'p1', stock: 8 }))
-    await enqueueOp('sale.commit', mkSale('p1', 2)) // outbox local có op trừ 2
+    await enqueueOp('sale.commit', mkSale('p1', 2))
     const st = remoteOp('stocktake.commit', {
       id: 'st1', date: '2026-08-14',
       rows: [{ productId: 'p1', name: 'SP', system: 10, actual: 100, diff: 90 }],
@@ -359,11 +364,46 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect((await dbx.pricingRules.get('pr1'))!.deleted).toBe(true)
   })
 
-  it('sale.commit thiếu SP → đánh applied + poison, không ném ra applyOps', async () => {
+  it('dependency thiếu không bị đánh applied hoặc poison và có thể retry sau khi sửa dữ liệu', async () => {
     const sale = mkSale('p-missing', 1)
-    await expect(applyOps([remoteOp('sale.commit', sale)])).resolves.toBe(0)
-    expect(await dbx.appliedOps.count()).toBe(1)
-    expect(await dbx.sales.count()).toBe(0)
+    const op = remoteOp('sale.commit', sale)
+
+    await expect(applyOps([op])).rejects.toBeInstanceOf(SyncDependencyError)
+    expect(await dbx.appliedOps.get(op.id)).toBeUndefined()
+    expect(await dbx.sales.get(sale.id)).toBeUndefined()
+    expect((await getPoisonedOps()).find((p) => p.id === op.id)).toBeUndefined()
+    expect((await getBlockedOps()).find((p) => p.id === op.id)).toBeTruthy()
+
+    await dbx.products.put(mkProduct({ id: 'p-missing', stock: 5 }))
+    expect(await applyOps([op])).toBe(1)
+    expect(await dbx.sales.get(sale.id)).toBeTruthy()
+    expect((await getBlockedOps()).find((p) => p.id === op.id)).toBeUndefined()
+  })
+
+  it('dependency nằm sau trong cùng page được áp rồi retry tự động', async () => {
+    const sale = mkSale('p-late', 1, { id: 'sale-before-product' })
+    const saleOp = remoteOp('sale.commit', sale)
+    const productOp = remoteOp('product.upsert', {
+      product: {
+        id: 'p-late', name: 'SP đến sau', cat: 'Khác', price: 10000, cost: 6000,
+        unit: 'cái', barcode: '', expiry: '', units: [], wholesalePrice: 0,
+        createdAt: 1, updatedAt: 1,
+      },
+    })
+
+    expect(await applyOps([saleOp, productOp])).toBe(2)
+    expect(await dbx.sales.get(sale.id)).toBeTruthy()
+    expect((await dbx.products.get('p-late'))?.stock).toBe(-1)
+    expect(await getBlockedOps()).toEqual([])
+  })
+
+  it('payload terminal bị quarantine và đánh applied để batch tiếp tục', async () => {
+    const bad = remoteOp('sale.commit', { id: 'bad', items: [] })
+
+    await expect(applyOps([bad])).resolves.toBe(0)
+    expect(await dbx.appliedOps.get(bad.id)).toBeTruthy()
+    expect((await getPoisonedOps()).find((p) => p.id === bad.id)).toBeTruthy()
+    expect((await getBlockedOps()).find((p) => p.id === bad.id)).toBeUndefined()
   })
 })
 
@@ -372,6 +412,6 @@ describe('pendingStockDelta', () => {
     await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
     await enqueueOp('sale.commit', mkSale('p1', 3))
     await enqueueOp('stock.adjust', { productId: 'p1', delta: 5, reason: 'x' })
-    expect(await pendingStockDelta('p1')).toBe(2) // -3 + 5
+    expect(await pendingStockDelta('p1')).toBe(2)
   })
 })
