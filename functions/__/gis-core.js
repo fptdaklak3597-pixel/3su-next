@@ -57,23 +57,17 @@ export function validateGisSubmission({ credential, bodyCsrf, cookieHeader }) {
   return { ok: true, status: 200, credential: cleanCredential }
 }
 
-function base64Url(bytes) {
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-}
-
 export function randomNonce() {
   if (!globalThis.crypto?.getRandomValues) throw new Error('Secure random unavailable')
   const bytes = new Uint8Array(18)
   globalThis.crypto.getRandomValues(bytes)
-  return base64Url(bytes)
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 export function gisCallbackPage(credential, nonce) {
   if (!isGisCredential(credential)) throw new Error('Invalid GIS credential')
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(String(nonce || ''))) throw new Error('Invalid CSP nonce')
-  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3SU</title></head><body><p>Đang hoàn tất đăng nhập…</p><script nonce="${nonce}">try{sessionStorage.setItem(${JSON.stringify(GIS_STORAGE_KEY)},${JSON.stringify(credential)})}catch(e){}location.replace('/')<\/script></body></html>`
+  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3SU</title></head><body><p>Đang hoàn tất đăng nhập…</p><script nonce="${nonce}">try{sessionStorage.setItem(${JSON.stringify(GIS_STORAGE_KEY)},${JSON.stringify(credential)})}catch(e){}location.replace('/')</script></body></html>`
 }
 
 function escapeHtml(value) {
