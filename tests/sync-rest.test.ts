@@ -109,28 +109,67 @@ describe('L8 — parseRestoreFile', () => {
     expect(() => parseRestoreFile('{"sales":[],"customers":[]}')).toThrow(/products/)
   })
   it('JSON đủ mảng bắt buộc → trả BackupData', () => {
-    const d = parseRestoreFile('{"products":[],"sales":[],"customers":[]}')
+    const d = parseRestoreFile('{"products":[],"sales":[],"customers":[],"sourceShopId":"shop-a"}')
     expect(d.products).toEqual([])
+    expect(d.sourceShopId).toBe('shop-a')
   })
 })
 
-describe('M8 — restoreLocalBackup xóa outbox, restoreBackup thì không', () => {
-  it('file restore xóa syncQueue, giữ lastSeq', async () => {
+describe('M8 — restore safety', () => {
+  it('file local restore tách khỏi cloud và xóa toàn bộ sync state cũ', async () => {
+    const deviceId = (await dbx.meta.get('deviceId'))!.value
+    const pending = remoteOp('stock.adjust', { productId: 'p1', delta: 1, reason: 'cũ' })
     await dbx.products.add(mkProduct())
-    await dbx.syncQueue.add(remoteOp('stock.adjust', { productId: 'p1', delta: 1, reason: 'cũ' }))
-    await dbx.meta.put({ key: 'sync:lastSeq', value: 40 })
+    await dbx.syncQueue.add(pending)
+    await dbx.appliedOps.add({ id: pending.id })
+    await dbx.meta.bulkPut([
+      { key: 'currentUser', value: { id: 'u-old' } },
+      { key: 'cloud:shopId', value: 'shop-old' },
+      { key: 'cloud:role', value: 'owner' },
+      { key: 'cloud:license', value: { status: 'active' } },
+      { key: 'sync:lastSeq', value: 40 },
+      { key: 'sync:lastSnapshotAt', value: 123 },
+      { key: 'sync:lastSnapshotSeq', value: 30 },
+      { key: 'sync:poisoned', value: [{ id: 'bad' }] },
+      { key: 'sync:blocked', value: [{ id: 'wait' }] },
+    ])
+
     await restoreLocalBackup(emptyBackup({
+      sourceShopId: 'shop-backup',
       products: [mkProduct({ id: 'p9', name: 'Từ file', stock: 1 })],
     }))
+
     expect(await dbx.syncQueue.count()).toBe(0)
-    expect((await dbx.meta.get('sync:lastSeq'))!.value).toBe(40)
+    expect(await dbx.appliedOps.count()).toBe(0)
+    expect(await dbx.meta.get('sync:lastSeq')).toBeUndefined()
+    expect(await dbx.meta.get('sync:lastSnapshotAt')).toBeUndefined()
+    expect(await dbx.meta.get('sync:lastSnapshotSeq')).toBeUndefined()
+    expect(await dbx.meta.get('sync:poisoned')).toBeUndefined()
+    expect(await dbx.meta.get('sync:blocked')).toBeUndefined()
+    expect(await dbx.meta.get('currentUser')).toBeUndefined()
+    expect(await dbx.meta.get('cloud:shopId')).toBeUndefined()
+    expect(await dbx.meta.get('cloud:role')).toBeUndefined()
+    expect(await dbx.meta.get('cloud:license')).toBeUndefined()
+    expect((await dbx.meta.get('cloud:paused'))?.value).toBe(true)
+    expect((await dbx.meta.get('deviceId'))?.value).toBe(deviceId)
+    expect((await dbx.meta.get('restore:last'))?.value).toMatchObject({
+      sourceShopId: 'shop-backup',
+      detachedFromShopId: 'shop-old',
+    })
     expect(await dbx.products.get('p9')).toBeTruthy()
     expect(await dbx.products.get('p1')).toBeUndefined()
   })
 
-  it('restoreBackup (snapshot cloud) không xóa syncQueue', async () => {
-    await dbx.syncQueue.add(remoteOp('stock.adjust', { productId: 'p1', delta: 1, reason: 'pending' }))
+  it('restoreBackup dùng cho snapshot cloud không xóa outbox/cursor/appliedOps', async () => {
+    const pending = remoteOp('stock.adjust', { productId: 'p1', delta: 1, reason: 'pending' })
+    await dbx.syncQueue.add(pending)
+    await dbx.appliedOps.add({ id: pending.id })
+    await dbx.meta.put({ key: 'sync:lastSeq', value: 40 })
+
     await restoreBackup(emptyBackup())
+
     expect(await dbx.syncQueue.count()).toBe(1)
+    expect(await dbx.appliedOps.count()).toBe(1)
+    expect((await dbx.meta.get('sync:lastSeq'))?.value).toBe(40)
   })
 })
