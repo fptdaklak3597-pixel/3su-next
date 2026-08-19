@@ -10,6 +10,7 @@ import { dbx, getSettings, getShop, getCurrentUser, getTrial } from '@/core/db'
 import { onSyncState, startSyncLoop } from '@/core/sync/engine'
 import { useOnline, useServiceWorkerUpdate } from '@/shared/pwa'
 import { ToastHost, CelebrationHost, OfflineBar, UpdateBanner } from '@/shared/components'
+import { PermissionRoute } from '@/shared/PermissionRoute'
 import { MobileShell } from './layout/MobileShell'
 import { HomePage } from './pages/HomePage'
 import { SalePage } from './pages/SalePage'
@@ -52,12 +53,10 @@ export function MobileApp() {
   const online = useOnline()
   const { updateReady, applyUpdate } = useServiceWorkerUpdate()
 
-  // Chữ lớn: áp cho toàn app, đổi ngay khi bật/tắt trong Cài đặt
   useEffect(() => {
     document.documentElement.toggleAttribute('data-font-large', largeText === true)
   }, [largeText])
 
-  // Boot: nạp settings/shop/user từ IndexedDB
   useEffect(() => {
     let cancelled = false
     async function boot() {
@@ -94,19 +93,17 @@ export function MobileApp() {
     }
   }, [liveShopRow, setShop])
 
-  // Sync: theo dõi trạng thái (engine v2 khởi động ở main.tsx)
   useEffect(() => {
     startSyncLoop()
     const unsub = onSyncState(setSync)
     return unsub
   }, [setSync])
 
-  // Online status → store
   useEffect(() => { setOnline(online) }, [online, setOnline])
 
   const cloud = useCloudSession()
-  const usersCount = useLiveQuery(() => dbx.users.filter((u) => !u.deleted).count(), [], 0)
-  // Dev-only: ?preview=1 bỏ qua cổng cloud để soi UI local (không dùng production).
+  // Dùng tổng record, kể cả user đã xóa mềm: không được mở lại bootstrap hoặc bỏ qua login.
+  const usersCount = useLiveQuery(() => dbx.users.count(), [], 0)
   const uiPreview = import.meta.env.DEV && typeof window !== 'undefined'
     && new URLSearchParams(window.location.search).get('preview') === '1'
   const needsStaff = ready && usersCount > 0 && !user && !uiPreview
@@ -134,33 +131,54 @@ export function MobileApp() {
         ) : needsStaff ? (
           <LoginPage />
         ) : (
-        <Routes>
-          <Route element={<MobileShell />}>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/ban-hang" element={<SalePage />} />
-            <Route path="/thanh-toan" element={<CheckoutPage />} />
-            <Route path="/don-hang" element={<OrdersPage />} />
-            <Route path="/don-hang/:id" element={<OrderDetailPage />} />
-            <Route path="/kho" element={<InventoryPage />} />
-            <Route path="/kho/:id" element={<ProductDetailPage />} />
-            <Route path="/nhap-hang" element={<GoodsReceiptPage />} />
-            <Route path="/don-mua" element={<PurchaseOrdersPage />} />
-            <Route path="/kiem-ke" element={<StocktakePage />} />
-            <Route path="/khach-hang" element={<CustomersPage />} />
-            <Route path="/bao-cao" element={<ReportsPage />} />
-            <Route path="/cai-dat" element={<SettingsPage />} />
-            <Route path="/them" element={<MorePage />} />
-            <Route path="/nha-cung-cap" element={<SuppliersPage />} />
-            <Route path="/nguoi-dung" element={<UsersPage />} />
-            {/* Route cũ → core */}
-            <Route path="/thiet-bi" element={<DevicesPage />} />
-            <Route path="/nhap-hang/hoa-don" element={<Navigate to="/nhap-hang" replace />} />
-            <Route path="/hoa-don" element={<InvoicesPage />} />
-            <Route path="/cong-cu" element={<ToolsPage />} />
-            <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+          <Routes>
+            <Route element={<MobileShell />}>
+              <Route path="/" element={<HomePage />} />
+              <Route path="/them" element={<MorePage />} />
+
+              <Route element={<PermissionRoute permission="sell" />}>
+                <Route path="/ban-hang" element={<SalePage />} />
+                <Route path="/thanh-toan" element={<CheckoutPage />} />
+                <Route path="/don-hang" element={<OrdersPage />} />
+                <Route path="/don-hang/:id" element={<OrderDetailPage />} />
+                <Route path="/khach-hang" element={<CustomersPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="inventory" />}>
+                <Route path="/kho" element={<InventoryPage />} />
+                <Route path="/kho/:id" element={<ProductDetailPage />} />
+                <Route path="/nhap-hang" element={<GoodsReceiptPage />} />
+                <Route path="/don-mua" element={<PurchaseOrdersPage />} />
+                <Route path="/kiem-ke" element={<StocktakePage />} />
+                <Route path="/cong-cu" element={<ToolsPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="reports" />}>
+                <Route path="/bao-cao" element={<ReportsPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="settings" />}>
+                <Route path="/cai-dat" element={<SettingsPage />} />
+                <Route path="/thiet-bi" element={<DevicesPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="suppliers" />}>
+                <Route path="/nha-cung-cap" element={<SuppliersPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="users" />}>
+                <Route path="/nguoi-dung" element={<UsersPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="invoices" />}>
+                <Route path="/hoa-don" element={<InvoicesPage />} />
+              </Route>
+
+              <Route path="/nhap-hang/hoa-don" element={<Navigate to="/nhap-hang" replace />} />
+              <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         )}
         <ToastHost />
         <CelebrationHost />

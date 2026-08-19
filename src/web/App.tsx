@@ -11,6 +11,7 @@ import { dbx, getSettings, getShop, getCurrentUser, getTrial } from '@/core/db'
 import { onSyncState, startSyncLoop } from '@/core/sync/engine'
 import { useOnline, useServiceWorkerUpdate } from '@/shared/pwa'
 import { ToastHost, CelebrationHost, OfflineBar, UpdateBanner } from '@/shared/components'
+import { PermissionRoute } from '@/shared/PermissionRoute'
 import { WebShell } from './layout/WebShell'
 import { WebHomePage } from './pages/HomePage'
 import { WebSalePage } from './pages/SalePage'
@@ -54,7 +55,6 @@ export function WebApp() {
   const online = useOnline()
   const { updateReady, applyUpdate } = useServiceWorkerUpdate()
 
-  // Chữ lớn: áp cho toàn app, đổi ngay khi bật/tắt trong Cài đặt
   useEffect(() => {
     document.documentElement.toggleAttribute('data-font-large', largeText === true)
   }, [largeText])
@@ -71,7 +71,6 @@ export function WebApp() {
         setShop(shop)
         setUser(user)
         setTrial(trial)
-        // Web UI chuẩn light theo mockup; dark chỉ khi user chủ động chọn sau migration.
         setTheme(settings.theme === 'dark' ? 'light' : settings.theme)
       } catch (e) {
         console.error('Boot failed', e)
@@ -105,8 +104,8 @@ export function WebApp() {
   useEffect(() => { setOnline(online) }, [online, setOnline])
 
   const cloud = useCloudSession()
-  const usersCount = useLiveQuery(() => dbx.users.filter((u) => !u.deleted).count(), [], 0)
-  // Dev-only: ?preview=1 bỏ qua cổng cloud để soi UI local (không dùng production).
+  // Dùng tổng record, kể cả user đã xóa mềm: không được mở lại bootstrap hoặc bỏ qua login.
+  const usersCount = useLiveQuery(() => dbx.users.count(), [], 0)
   const uiPreview = import.meta.env.DEV && typeof window !== 'undefined'
     && new URLSearchParams(window.location.search).get('preview') === '1'
   const needsStaff = ready && usersCount > 0 && !user && !uiPreview
@@ -134,36 +133,60 @@ export function WebApp() {
         ) : needsStaff ? (
           <LoginPage />
         ) : (
-        <Routes>
-          <Route path="/may-in" element={<WebPrintAgentPage />} />
+          <Routes>
+            <Route element={<PermissionRoute permission="settings" />}>
+              <Route path="/may-in" element={<WebPrintAgentPage />} />
+            </Route>
+
             <Route element={<WebShell />}>
               <Route path="/" element={<WebHomePage />} />
-              <Route path="/ban-hang" element={<WebSalePage />} />
-              <Route path="/thanh-toan" element={<Navigate to="/ban-hang" replace />} />
-              <Route path="/don-hang" element={<WebOrdersPage />} />
-              <Route path="/don-hang/:id" element={<WebOrderDetailPage />} />
-              <Route path="/kho" element={<WebInventoryPage />} />
-              <Route path="/kho/:id" element={<WebProductDetailPage />} />
-              <Route path="/nhap-hang" element={<WebGoodsReceiptPage />} />
-              <Route path="/don-mua" element={<WebPurchaseOrdersPage />} />
-              <Route path="/kiem-ke" element={<WebStocktakePage />} />
-              <Route path="/khach-hang" element={<WebCustomersPage />} />
-              <Route path="/nha-cung-cap" element={<WebSuppliersPage />} />
-              <Route path="/bao-cao" element={<WebReportsPage />} />
-              <Route path="/cai-dat" element={<WebSettingsPage />} />
+
+              <Route element={<PermissionRoute permission="sell" />}>
+                <Route path="/ban-hang" element={<WebSalePage />} />
+                <Route path="/thanh-toan" element={<Navigate to="/ban-hang" replace />} />
+                <Route path="/don-hang" element={<WebOrdersPage />} />
+                <Route path="/don-hang/:id" element={<WebOrderDetailPage />} />
+                <Route path="/khach-hang" element={<WebCustomersPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="inventory" />}>
+                <Route path="/kho" element={<WebInventoryPage />} />
+                <Route path="/kho/:id" element={<WebProductDetailPage />} />
+                <Route path="/nhap-hang" element={<WebGoodsReceiptPage />} />
+                <Route path="/don-mua" element={<WebPurchaseOrdersPage />} />
+                <Route path="/kiem-ke" element={<WebStocktakePage />} />
+                <Route path="/cong-cu" element={<WebToolsPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="suppliers" />}>
+                <Route path="/nha-cung-cap" element={<WebSuppliersPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="reports" />}>
+                <Route path="/bao-cao" element={<WebReportsPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="settings" />}>
+                <Route path="/cai-dat" element={<WebSettingsPage />} />
+                <Route path="/thiet-bi" element={<WebDevicesPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="users" />}>
+                <Route path="/nguoi-dung" element={<WebUsersPage />} />
+              </Route>
+
+              <Route element={<PermissionRoute permission="invoices" />}>
+                <Route path="/hoa-don" element={<WebInvoicesPage />} />
+              </Route>
+
               <Route path="/tai-khoan" element={<WebAccountPage />} />
-              <Route path="/thiet-bi" element={<WebDevicesPage />} />
-              <Route path="/nguoi-dung" element={<WebUsersPage />} />
               <Route path="/ghi-chu" element={<WebNotesPage />} />
-              {/* Route cũ → chuyển về luồng core, không còn menu riêng */}
               <Route path="/nhap-hang/hoa-don" element={<Navigate to="/nhap-hang" replace />} />
-              <Route path="/hoa-don" element={<WebInvoicesPage />} />
-              <Route path="/cong-cu" element={<WebToolsPage />} />
               <Route path="/doi-soat" element={<Navigate to="/cai-dat" replace />} />
               <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
-        </Routes>
+          </Routes>
         )}
         <ToastHost />
         <CelebrationHost />

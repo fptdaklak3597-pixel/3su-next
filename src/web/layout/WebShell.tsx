@@ -118,29 +118,33 @@ export function WebShell() {
               </NavDrop>
             )}
 
-            <NavDrop k="giao" open={open} label="Giao dịch" active={onGiao} onToggle={toggle}>
-              {can('sell') && <button type="button" onClick={() => go('/don-hang')}>Đơn hàng<small>Lịch sử + hủy hoàn kho</small></button>}
-              {can('inventory') && <button type="button" onClick={() => go('/nhap-hang')}>Nhập hàng<small>Phiếu nhập kho</small></button>}
-              {can('inventory') && <button type="button" onClick={() => go('/don-mua')}>Đơn mua<small>Đặt NCC rồi nhận vào kho</small></button>}
-              {can('invoices') && <button type="button" onClick={() => go('/hoa-don')}>Hóa đơn<small>Sổ hóa đơn GDT / nhập</small></button>}
-            </NavDrop>
+            {(can('sell') || can('inventory') || can('invoices')) && (
+              <NavDrop k="giao" open={open} label="Giao dịch" active={onGiao} onToggle={toggle}>
+                {can('sell') && <button type="button" onClick={() => go('/don-hang')}>Đơn hàng<small>Lịch sử + hủy hoàn kho</small></button>}
+                {can('inventory') && <button type="button" onClick={() => go('/nhap-hang')}>Nhập hàng<small>Phiếu nhập kho</small></button>}
+                {can('inventory') && <button type="button" onClick={() => go('/don-mua')}>Đơn mua<small>Đặt NCC rồi nhận vào kho</small></button>}
+                {can('invoices') && <button type="button" onClick={() => go('/hoa-don')}>Hóa đơn<small>Sổ hóa đơn GDT / nhập</small></button>}
+              </NavDrop>
+            )}
 
-            <NavDrop k="doi" open={open} label="Đối tác" active={onDoi} onToggle={toggle}>
-              {can('sell') && <button type="button" onClick={() => go('/khach-hang')}>Khách hàng<small>Nợ, VIP, giá sỉ</small></button>}
-              {can('suppliers') && <button type="button" onClick={() => go('/nha-cung-cap')}>Nhà cung cấp<small>Công nợ nhập</small></button>}
-            </NavDrop>
+            {(can('sell') || can('suppliers')) && (
+              <NavDrop k="doi" open={open} label="Đối tác" active={onDoi} onToggle={toggle}>
+                {can('sell') && <button type="button" onClick={() => go('/khach-hang')}>Khách hàng<small>Nợ, VIP, giá sỉ</small></button>}
+                {can('suppliers') && <button type="button" onClick={() => go('/nha-cung-cap')}>Nhà cung cấp<small>Công nợ nhập</small></button>}
+              </NavDrop>
+            )}
 
             {can('reports') && (
               <button type="button" className={`web-m ${onBao ? 'on' : ''}`} onClick={() => go('/bao-cao')}>Báo cáo</button>
             )}
 
             <NavDrop k="he" open={open} label="Hệ thống" active={onHe} onToggle={toggle}>
-              {can('settings') && <button type="button" onClick={() => go('/tai-khoan')}>Tài khoản<small>Cùng email = đồng bộ</small></button>}
+              <button type="button" onClick={() => go('/tai-khoan')}>Tài khoản<small>Đăng nhập, đăng xuất và cửa hàng cloud</small></button>
               <button type="button" onClick={() => go('/ghi-chu')}>Ghi chú<small>Việc cần làm, ý tưởng</small></button>
               {can('settings') && <button type="button" onClick={() => go('/cai-dat')}>Cài đặt<small>Shop, in, sao lưu</small></button>}
               {can('settings') && <button type="button" onClick={() => go('/may-in')}>Máy in<small>Trang in bill trên máy này</small></button>}
               {can('settings') && <button type="button" onClick={() => go('/thiet-bi')}>Thiết bị<small>Kéo / đẩy bản sao cửa hàng</small></button>}
-              <button type="button" onClick={() => go('/cong-cu')}>Quy tắc giá<small>Gợi ý giá bán theo biên lợi nhuận</small></button>
+              {can('inventory') && <button type="button" onClick={() => go('/cong-cu')}>Quy tắc giá<small>Gợi ý giá bán theo biên lợi nhuận</small></button>}
               {can('users') && <button type="button" onClick={() => go('/nguoi-dung')}>Người dùng<small>PIN ca + phân quyền</small></button>}
             </NavDrop>
 
@@ -159,12 +163,16 @@ export function WebShell() {
                 <span className="web-top-shop-name">{shop.name || 'Cửa hàng'}</span>
                 <span className={`web-sync-status ${syncClass}`}>● {syncLabel}</span>
               </span>
-              <button type="button" className="web-ico" onClick={() => go('/may-in')} aria-label="Máy in" title="Máy in">
-                <Printer size={16} />
-              </button>
-              <button type="button" className="web-ico" onClick={() => go('/cai-dat')} aria-label="Cài đặt" title="Cài đặt">
-                <Settings size={16} />
-              </button>
+              {can('settings') && (
+                <button type="button" className="web-ico" onClick={() => go('/may-in')} aria-label="Máy in" title="Máy in">
+                  <Printer size={16} />
+                </button>
+              )}
+              {can('settings') && (
+                <button type="button" className="web-ico" onClick={() => go('/cai-dat')} aria-label="Cài đặt" title="Cài đặt">
+                  <Settings size={16} />
+                </button>
+              )}
               <button
                 type="button"
                 className="web-av web-av-btn"

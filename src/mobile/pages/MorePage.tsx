@@ -1,5 +1,5 @@
 /**
- * Menu "Thêm" — chỉ giữ tính năng core.
+ * Menu "Thêm" — chỉ giữ tính năng core và mục user được cấp quyền.
  */
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
@@ -39,19 +39,19 @@ export function MorePage() {
   const custDebt = totalDebt(customers)
 
   const items: MenuItem[] = [
-    { path: '/nhap-hang', label: 'Nhập hàng', desc: 'Phiếu nhập kho nhanh', icon: <ClipboardList size={18} />, color: 'var(--up)' },
-    { path: '/don-mua', label: 'Đơn mua', desc: 'Đặt NCC rồi nhận vào kho', icon: <ClipboardList size={18} />, color: 'var(--gold)' },
+    { path: '/nhap-hang', label: 'Nhập hàng', desc: 'Phiếu nhập kho nhanh', icon: <ClipboardList size={18} />, color: 'var(--up)', perm: 'inventory' },
+    { path: '/don-mua', label: 'Đơn mua', desc: 'Đặt NCC rồi nhận vào kho', icon: <ClipboardList size={18} />, color: 'var(--gold)', perm: 'inventory' },
     { path: '/hoa-don', label: 'Hóa đơn', desc: 'Sổ hóa đơn GDT / nhập', icon: <FileText size={18} />, color: 'var(--ink-2)', perm: 'invoices' },
     { path: '/nha-cung-cap', label: 'Nhà cung cấp', desc: supDebt > 0 ? `${suppliers.length} NCC · nợ ${fmtShort(supDebt)}đ` : `${suppliers.length} nhà cung cấp`, icon: <Truck size={18} />, color: 'var(--gold)', perm: 'suppliers' },
-    { path: '/cong-cu', label: 'Quy tắc giá', desc: 'Gợi ý giá bán theo biên lợi nhuận', icon: <Tags size={18} />, color: 'var(--gold)' },
-    { path: '/khach-hang', label: 'Khách hàng', desc: custDebt > 0 ? `${customers.length} khách · nợ ${fmtShort(custDebt)}đ` : `${customers.length} khách hàng`, icon: <Users size={18} />, color: 'var(--ink-3)' },
+    { path: '/cong-cu', label: 'Quy tắc giá', desc: 'Gợi ý giá bán theo biên lợi nhuận', icon: <Tags size={18} />, color: 'var(--gold)', perm: 'inventory' },
+    { path: '/khach-hang', label: 'Khách hàng', desc: custDebt > 0 ? `${customers.length} khách · nợ ${fmtShort(custDebt)}đ` : `${customers.length} khách hàng`, icon: <Users size={18} />, color: 'var(--ink-3)', perm: 'sell' },
     { path: '/bao-cao', label: 'Báo cáo', desc: 'Doanh thu, lời, xu hướng', icon: <BarChart3 size={18} />, color: 'var(--up)', perm: 'reports' },
     { path: '/nguoi-dung', label: 'Người dùng', desc: `${users.length} tài khoản`, icon: <UserCog size={18} />, color: 'var(--ink-2)', perm: 'users' },
-    { path: '/thiet-bi', label: 'Thiết bị', desc: 'Kéo / đẩy bản sao cửa hàng', icon: <Smartphone size={18} />, color: 'var(--ink-2)' },
+    { path: '/thiet-bi', label: 'Thiết bị', desc: 'Kéo / đẩy bản sao cửa hàng', icon: <Smartphone size={18} />, color: 'var(--ink-2)', perm: 'settings' },
     { path: '/cai-dat', label: 'Cài đặt', desc: 'Shop, in, sao lưu', icon: <Settings size={18} />, color: 'var(--mute)', perm: 'settings' },
   ]
 
-  const visible = items.filter((it) => !it.perm || hasPerm(me, it.perm))
+  const visible = items.filter((it) => !it.perm || !me || hasPerm(me, it.perm))
 
   return (
     <div className="flex flex-col h-full">
