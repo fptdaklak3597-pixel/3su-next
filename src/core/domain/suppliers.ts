@@ -235,7 +235,7 @@ export interface SupplierPaymentInput {
 }
 
 /**
- * Ghi khoản trả riêng cho NCC. Trả vượt nợ không bị mất: số dư âm trở thành credit.
+ * Ghi khoản trả riêng cho NCC. Trả vượt nợ không bị mất: số dư âm trở thành credit trong ledger.
  */
 export async function recordSupplierPayment(input: SupplierPaymentInput): Promise<SupplierPayment> {
   if (!Number.isFinite(input.amount) || input.amount <= 0) throw new Error('Cần số tiền hợp lệ')
@@ -254,9 +254,6 @@ export async function recordSupplierPayment(input: SupplierPaymentInput): Promis
     }
     const op = makeOp('supplier.pay', pay)
     await dbx.supplierPayments.put(pay)
-    sup.debt = (Number.isFinite(sup.debt) ? sup.debt : 0) - amount
-    sup.updatedAt = Date.now()
-    await dbx.suppliers.put(sup)
     await persistOp(op)
   })
   requestFlush()
@@ -294,16 +291,13 @@ export function compareSupplierPrices(
     for (const row of r.rows) {
       if (!row.productId || !row.qty) continue
       if (!byProduct.has(row.productId)) byProduct.set(row.productId, new Map())
-      const supMap = byProduct.get(r.supplierId) ?? new Map<string, { cost: number; qty: number }>()
-      if (!byProduct.has(r.supplierId)) { /* giữ tương thích, nhánh dưới đặt đúng map */ }
-      const productMap = byProduct.get(row.productId)!
-      const cur = productMap.get(r.supplierId) ?? { cost: 0, qty: 0 }
+      const supMap = byProduct.get(row.productId)!
+      const cur = supMap.get(r.supplierId) ?? { cost: 0, qty: 0 }
       const base = row.qty * (row.unitRatio || 1)
       if (!Number.isFinite(base) || base <= 0) continue
       cur.cost += row.cost * row.qty
       cur.qty += base
-      productMap.set(r.supplierId, cur)
-      void supMap
+      supMap.set(r.supplierId, cur)
     }
   }
   const supName = (id: string) => suppliers.find((s) => s.id === id)?.name ?? '(NCC)'
