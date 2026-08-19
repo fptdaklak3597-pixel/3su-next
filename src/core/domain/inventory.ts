@@ -365,14 +365,13 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
   if (input.supplierId) {
     const sup = await dbx.suppliers.get(input.supplierId)
     if (!sup || sup.deleted) throw new Error('Không tìm thấy nhà cung cấp')
-    sup.debt = (Number.isFinite(sup.debt) ? sup.debt : 0) + payment.outstanding
     sup.totalPurchased = (Number.isFinite(sup.totalPurchased) ? sup.totalPurchased : 0) + total
     sup.orderCount = (Number.isFinite(sup.orderCount) ? sup.orderCount : 0) + 1
     sup.updatedAt = Date.now()
     await dbx.suppliers.put(sup)
     supplierDelta = {
       supplierId: input.supplierId,
-      debtDelta: payment.outstanding,
+      debtDelta: 0,
       purchasedDelta: total,
     }
   }
