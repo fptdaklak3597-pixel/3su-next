@@ -1,9 +1,17 @@
 /**
- * Chưa có shop: tạo mới trước, vào bằng mã sau.
- * Email đã có shop thì vào thẳng — không hiện form.
+ * Chưa có shop: chọn shop đã có, tạo mới hoặc vào bằng mã.
+ * Không tự lấy shop đầu tiên khi tài khoản thuộc nhiều cửa hàng.
  */
 import { useEffect, useState } from 'react'
-import { connectCloud, createCloudShop, enterExistingCloudShop, redeemPairCode } from '@/core/sync/cloud'
+import {
+  connectCloud,
+  createCloudShop,
+  enterExistingCloudShop,
+  listCloudShops,
+  redeemPairCode,
+  selectCloudShop,
+  type CloudShopRow,
+} from '@/core/sync/cloud'
 import { markCloudShopEntered } from './useCloudSession'
 
 export function CloudShopJoin({
@@ -17,16 +25,21 @@ export function CloudShopJoin({
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(true)
   const [error, setError] = useState('')
+  const [shops, setShops] = useState<CloudShopRow[]>([])
 
   useEffect(() => {
     let cancelled = false
-    void enterExistingCloudShop()
+    void listCloudShops()
+      .then((rows) => { if (!cancelled) setShops(rows) })
+      .then(() => enterExistingCloudShop())
       .then((id) => {
         if (cancelled || !id) return
         markCloudShopEntered()
         onReady(id)
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (!cancelled) fail(e)
+      })
       .finally(() => { if (!cancelled) setChecking(false) })
     return () => { cancelled = true }
   }, [])
@@ -46,7 +59,7 @@ export function CloudShopJoin({
   }
 
   async function done(id: string) {
-    await connectCloud()
+    await connectCloud({ resume: true })
     markCloudShopEntered()
     onReady(id)
   }
@@ -54,13 +67,32 @@ export function CloudShopJoin({
   if (checking) {
     return (
       <div className="auth-form">
-        <p className="auth-lead">Đang mở cửa hàng…</p>
+        <p className="auth-lead">Đang kiểm tra cửa hàng…</p>
       </div>
     )
   }
 
   return (
     <div className="auth-form">
+      {shops.length > 0 && (
+        <>
+          <p className="auth-lead">Chọn cửa hàng đã có</p>
+          {shops.map((shop) => (
+            <button
+              key={shop.shopId}
+              type="button"
+              className="auth-btn"
+              data-busy={busy || undefined}
+              disabled={busy}
+              onClick={() => void withBusy(async () => { await done(await selectCloudShop(shop.shopId)) })}
+            >
+              {shop.name || shop.shopId}{shop.role ? ` · ${shop.role}` : ''}
+            </button>
+          ))}
+          <p className="auth-or"><span>HOẶC</span></p>
+        </>
+      )}
+
       <button
         type="button"
         className="auth-btn auth-btn-pri"
