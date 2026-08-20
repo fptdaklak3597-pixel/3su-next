@@ -18,7 +18,7 @@ import {
   supplierDebt,
 } from '@/core/domain/suppliers'
 import { initSyncEngine } from '@/core/sync/engine'
-import type { Product } from '@/core/types'
+import type { Product, SupplierPayment } from '@/core/types'
 
 function product(id = 'p1', stock = 0): Product {
   return {
@@ -198,8 +198,8 @@ describe('purchase order receiving', () => {
   })
 })
 
-describe('supplier credit ledger', () => {
-  it('giữ phần trả dư dưới dạng credit thay vì làm mất', async () => {
+describe('supplier payment balance', () => {
+  it('command từ chối trả dư và không tạo payment/outbox', async () => {
     const p = product()
     await dbx.products.put(p)
     const supplier = await createSupplier({ name: 'NCC A' })
@@ -213,12 +213,31 @@ describe('supplier credit ledger', () => {
       paid: 0,
       payMethod: 'debt',
     })
-    const payment = await recordSupplierPayment({ supplierId: supplier.id, amount: 15_000 })
+    await dbx.syncQueue.clear()
+    await dbx.appliedOps.clear()
 
-    expect(payment.paymentKind).toBe('standalone')
-    expect(supplierBalance(supplier.id, [receipt], [payment])).toBe(-5_000)
-    expect(supplierDebt(supplier.id, [receipt], [payment])).toBe(0)
-    expect(supplierCredit(supplier.id, [receipt], [payment])).toBe(5_000)
+    await expect(recordSupplierPayment({ supplierId: supplier.id, amount: 15_000 }))
+      .rejects.toThrow(/vượt công nợ/)
+
+    expect(await dbx.supplierPayments.count()).toBe(0)
+    expect(await dbx.syncQueue.count()).toBe(0)
+    expect(supplierBalance(supplier.id, [receipt], [])).toBe(10_000)
+    expect(supplierDebt(supplier.id, [receipt], [])).toBe(10_000)
+    expect(supplierCredit(supplier.id, [receipt], [])).toBe(0)
+  })
+
+  it('ledger vẫn biểu diễn credit từ dữ liệu legacy để đối soát', () => {
+    const legacy: SupplierPayment = {
+      id: 'legacy-credit', supplierId: 'sup-legacy', amount: 15_000,
+      date: '2026-08-20', note: '', paymentKind: 'standalone',
+    }
+    const receipt = {
+      id: 'legacy-gr', code: 'NK-LEGACY', supplier: 'NCC legacy', supplierId: 'sup-legacy',
+      date: '2026-08-20', expiry: '', note: '', rows: [], total: 10_000, paid: 0, ts: 1,
+    }
+    expect(supplierBalance('sup-legacy', [receipt], [legacy])).toBe(-5_000)
+    expect(supplierDebt('sup-legacy', [receipt], [legacy])).toBe(0)
+    expect(supplierCredit('sup-legacy', [receipt], [legacy])).toBe(5_000)
   })
 
   it('từ chối payment NaN/Infinity và không ghi outbox', async () => {
