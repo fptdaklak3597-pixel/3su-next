@@ -60,6 +60,7 @@ export function WebSalePage() {
   const [discountKind, setDiscountKind] = useState<DiscountKind>('amount')
   const [processing, setProcessing] = useState(false)
   const [doneSale, setDoneSale] = useState<Sale | null>(null)
+  const [cartOpen, setCartOpen] = useState(false)
   const stopListenRef = useRef<(() => void) | null>(null)
   const confirmGate = useRef(createConfirmGate())
   const scanRef = useRef<ScanHandle | null>(null)
@@ -335,13 +336,13 @@ export function WebSalePage() {
               <button key={c} className={`web-chip ${cat === c ? 'on' : ''}`} onClick={() => setCat(c)}>{c}</button>
             ))}
           </div>
-          <div className="web-plist">
+          <div className={`web-plist ${query.trim() ? 'is-list' : 'is-tiles'}`}>
             {filtered.map((p) => {
               const price = useWs && p.wholesalePrice > 0 ? p.wholesalePrice : p.price
               const units = suggestUnits(p)
               const extra = units.filter((u) => u.r > 1)
               return (
-                <div key={p.id} className="web-pc" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div key={p.id} className="web-pc">
                   <button type="button" className="n" style={{ flex: 1, textAlign: 'left', background: 'none', border: 0, cursor: 'pointer' }} onClick={() => addToCart(p)}>
                     {p.name}
                     <div className="s">
@@ -363,7 +364,16 @@ export function WebSalePage() {
           </div>
         </div>
 
-        <div className="web-pos-r">
+        <div className={`web-pos-r ${cartOpen ? 'is-open' : ''}`}>
+          <button
+            type="button"
+            className="web-cart-toggle"
+            aria-expanded={cartOpen}
+            onClick={() => setCartOpen((v) => !v)}
+          >
+            <span>Giỏ · {cart.length}</span>
+            <span>{fmtNum(final)}</span>
+          </button>
           <h3>
             Giỏ hàng
             <span style={{ fontWeight: 400, color: 'var(--kv-subtle)' }}>
@@ -373,7 +383,7 @@ export function WebSalePage() {
               <button type="button" className="web-chip" style={{ marginLeft: 'auto' }} onClick={() => { clearCart(); setTendered(0) }}>Xóa giỏ</button>
             )}
           </h3>
-          <div className="flex-1 overflow-y-auto min-h-0">
+          <div className="web-pos-lines flex-1 overflow-y-auto min-h-0">
             {cart.map((ci, idx) => (
               <CartRow
                 key={idx}

@@ -29,6 +29,20 @@
   --warn-bg: #fffbeb;
   --safe-top: env(safe-area-inset-top);
   --safe-bot: env(safe-area-inset-bottom);
+
+  /* Thang chữ mobile / chạm — sàn 11px, không nửa pixel. */
+  --fs-caption: 12px;
+  --fs-label: 13px;
+  --fs-body: 16px;
+  --fs-plus: 16px;
+  --fs-title: 20px;
+  --fs-price: 17px;
+  --fs-qr: 20px;
+  --fs-total: 24px;
+  --fs-display: 28px;
+  --hit-qty: 36px;
+  --hit-pay: 44px;
+  --hit-cta: 56px;
 }
 
 [data-theme="dark"] {
@@ -259,7 +273,7 @@
     }
 
   .section-label {
-    font-size: 10px;
+    font-size: var(--fs-caption);
     font-weight: 600;
     color: var(--mute);
     letter-spacing: .22em;
@@ -284,7 +298,7 @@
     border: 0.5px solid var(--hair);
     background: var(--paper-2);
     color: var(--ink);
-    font-size: 15px;
+    font-size: 16px;
     transition: border-color .2s, box-shadow .2s;
   }
   .field-input:focus {
@@ -293,6 +307,12 @@
     outline: none;
   }
   .field-input::placeholder { color: var(--mute-2); }
+  /* Thắng text-sm trên input — iOS zoom nếu < 16px. */
+  input.field-input,
+  textarea.field-input,
+  select.field-input {
+    font-size: 16px !important;
+  }
 
   /* ─── Tab bar ─── */
   .tab-bar {
@@ -309,7 +329,7 @@
     gap: 3px;
     padding: 10px 4px 8px;
     color: var(--mute);
-    font-size: 10px;
+    font-size: var(--fs-caption);
     font-weight: 500;
     transition: color .2s;
     cursor: pointer;
@@ -440,7 +460,7 @@
     border-radius: 999px;
     border: 0.5px solid var(--hair);
     background: var(--paper-2);
-    font-size: 12.5px;
+    font-size: var(--fs-label);
     font-weight: 500;
     color: var(--ink-2);
     white-space: nowrap;
@@ -546,7 +566,7 @@
   }
 
   .side-section {
-    font-size: 10px;
+    font-size: var(--fs-caption);
     font-weight: 600;
     letter-spacing: .18em;
     text-transform: uppercase;
@@ -562,8 +582,8 @@
 
   /* ─── Qty stepper ─── */
   .qty-btn {
-    width: 34px;
-    height: 34px;
+    width: var(--hit-qty);
+    height: var(--hit-qty);
     border-radius: 10px;
     border: 0.5px solid var(--hair);
     background: var(--surface);
@@ -976,7 +996,7 @@
   .asc-sub { font-size: 11px; color: #78716C; }
   .asc-section {
     margin: 12px 2px 8px;
-    font-size: 10px;
+    font-size: var(--fs-caption);
     font-weight: 600;
     letter-spacing: 0.22em;
     text-transform: uppercase;
@@ -1020,7 +1040,7 @@
   .asc-match::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.7; }
   .asc-row-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
   .asc-row-grid span { display: flex; flex-direction: column; gap: 2px; }
-  .asc-row-grid i { font-size: 10px; color: #A8A29E; font-style: normal; }
+  .asc-row-grid i { font-size: var(--fs-caption); color: #A8A29E; font-style: normal; }
   .asc-row-grid b { font-size: 13px; font-weight: 500; }
   .asc-foot {
     margin-top: 12px;

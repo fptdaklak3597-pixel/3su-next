@@ -4,12 +4,12 @@
  */
 import { useEffect, useState, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Printer, Settings } from 'lucide-react'
+import { Menu } from 'lucide-react'
 import { useApp } from '@/core/store'
 import { hasPerm } from '@/core/domain/auth'
 import type { UserPerms } from '@/core/types'
 
-type DropKey = 'hang' | 'giao' | 'doi' | 'he' | null
+type DropKey = 'hang' | 'giao' | 'doi' | 'he' | 'more' | 'user' | null
 
 function NavDrop({
   k,
@@ -108,45 +108,71 @@ export function WebShell() {
           <nav className="web-topbar" aria-label="Thanh công cụ">
             <button type="button" className="web-logo" onClick={() => go('/')}>3SU</button>
 
-            <button type="button" className={`web-m ${onOverview ? 'on' : ''}`} onClick={() => go('/')}>Tổng quan</button>
+            <div className={`web-drop web-burger-wrap ${open === 'more' ? 'open' : ''}`}>
+              <button
+                type="button"
+                className="web-burger"
+                aria-label="Menu"
+                aria-expanded={open === 'more'}
+                aria-haspopup="menu"
+                onClick={() => toggle('more')}
+              >
+                <Menu size={18} />
+              </button>
+              <div className="web-dd" role="menu">
+                <div className="web-dd-menu">
+                  <button type="button" onClick={() => go('/')}>Tổng quan</button>
+                  {can('inventory') && <button type="button" onClick={() => go('/kho')}>Hàng hóa<small>Giá, tồn, HSD</small></button>}
+                  {can('inventory') && <button type="button" onClick={() => go('/kiem-ke')}>Kiểm kê</button>}
+                  {can('sell') && <button type="button" onClick={() => go('/don-hang')}>Đơn hàng</button>}
+                  {can('inventory') && <button type="button" onClick={() => go('/nhap-hang')}>Nhập hàng</button>}
+                  {can('reports') && <button type="button" onClick={() => go('/bao-cao')}>Báo cáo</button>}
+                  {can('settings') && <button type="button" onClick={() => go('/cai-dat')}>Cài đặt</button>}
+                </div>
+              </div>
+            </div>
 
-            {can('inventory') && (
-              <NavDrop k="hang" open={open} label="Hàng hóa" active={onHang} onToggle={toggle}>
-                <button type="button" onClick={() => go('/kho')}>Danh sách hàng hóa<small>Giá lẻ / sỉ, tồn, HSD</small></button>
-                <button type="button" onClick={() => go('/kiem-ke?tab=forecast')}>Dự báo nhập<small>Sắp hết theo tốc độ bán</small></button>
-                <button type="button" onClick={() => go('/kiem-ke')}>Kiểm kê<small>Đối chiếu tồn thực tế</small></button>
+            <div className="web-nav-mid">
+              <button type="button" className={`web-m ${onOverview ? 'on' : ''}`} onClick={() => go('/')}>Tổng quan</button>
+
+              {can('inventory') && (
+                <NavDrop k="hang" open={open} label="Hàng hóa" active={onHang} onToggle={toggle}>
+                  <button type="button" onClick={() => go('/kho')}>Danh sách hàng hóa<small>Giá lẻ / sỉ, tồn, HSD</small></button>
+                  <button type="button" onClick={() => go('/kiem-ke?tab=forecast')}>Dự báo nhập<small>Sắp hết theo tốc độ bán</small></button>
+                  <button type="button" onClick={() => go('/kiem-ke')}>Kiểm kê<small>Đối chiếu tồn thực tế</small></button>
+                </NavDrop>
+              )}
+
+              {(can('sell') || can('inventory') || can('invoices')) && (
+                <NavDrop k="giao" open={open} label="Giao dịch" active={onGiao} onToggle={toggle}>
+                  {can('sell') && <button type="button" onClick={() => go('/don-hang')}>Đơn hàng<small>Lịch sử + hủy hoàn kho</small></button>}
+                  {can('inventory') && <button type="button" onClick={() => go('/nhap-hang')}>Nhập hàng<small>Phiếu nhập kho</small></button>}
+                  {can('inventory') && <button type="button" onClick={() => go('/don-mua')}>Đơn mua<small>Đặt NCC rồi nhận vào kho</small></button>}
+                  {can('invoices') && <button type="button" onClick={() => go('/hoa-don')}>Hóa đơn<small>Sổ hóa đơn GDT / nhập</small></button>}
+                </NavDrop>
+              )}
+
+              {(can('sell') || can('suppliers')) && (
+                <NavDrop k="doi" open={open} label="Đối tác" active={onDoi} onToggle={toggle}>
+                  {can('sell') && <button type="button" onClick={() => go('/khach-hang')}>Khách hàng<small>Nợ, VIP, giá sỉ</small></button>}
+                  {can('suppliers') && <button type="button" onClick={() => go('/nha-cung-cap')}>Nhà cung cấp<small>Công nợ nhập</small></button>}
+                </NavDrop>
+              )}
+
+              {can('reports') && (
+                <button type="button" className={`web-m ${onBao ? 'on' : ''}`} onClick={() => go('/bao-cao')}>Báo cáo</button>
+              )}
+
+              <NavDrop k="he" open={open} label="Hệ thống" active={onHe} onToggle={toggle}>
+                <button type="button" onClick={() => go('/tai-khoan')}>Tài khoản<small>Đăng nhập, đăng xuất và cửa hàng cloud</small></button>
+                <button type="button" onClick={() => go('/ghi-chu')}>Ghi chú<small>Việc cần làm, ý tưởng</small></button>
+                {can('settings') && <button type="button" onClick={() => go('/cai-dat')}>Cài đặt<small>Shop, in, sao lưu</small></button>}
+                {can('settings') && <button type="button" onClick={() => go('/may-in')}>Máy in<small>Trang in bill trên máy này</small></button>}
+                {can('settings') && <button type="button" onClick={() => go('/thiet-bi')}>Thiết bị<small>Kéo / đẩy bản sao cửa hàng</small></button>}
+                {can('inventory') && <button type="button" onClick={() => go('/cong-cu')}>Quy tắc giá<small>Gợi ý giá bán theo biên lợi nhuận</small></button>}
+                {can('users') && <button type="button" onClick={() => go('/nguoi-dung')}>Người dùng<small>PIN ca + phân quyền</small></button>}
               </NavDrop>
-            )}
-
-            {(can('sell') || can('inventory') || can('invoices')) && (
-              <NavDrop k="giao" open={open} label="Giao dịch" active={onGiao} onToggle={toggle}>
-                {can('sell') && <button type="button" onClick={() => go('/don-hang')}>Đơn hàng<small>Lịch sử + hủy hoàn kho</small></button>}
-                {can('inventory') && <button type="button" onClick={() => go('/nhap-hang')}>Nhập hàng<small>Phiếu nhập kho</small></button>}
-                {can('inventory') && <button type="button" onClick={() => go('/don-mua')}>Đơn mua<small>Đặt NCC rồi nhận vào kho</small></button>}
-                {can('invoices') && <button type="button" onClick={() => go('/hoa-don')}>Hóa đơn<small>Sổ hóa đơn GDT / nhập</small></button>}
-              </NavDrop>
-            )}
-
-            {(can('sell') || can('suppliers')) && (
-              <NavDrop k="doi" open={open} label="Đối tác" active={onDoi} onToggle={toggle}>
-                {can('sell') && <button type="button" onClick={() => go('/khach-hang')}>Khách hàng<small>Nợ, VIP, giá sỉ</small></button>}
-                {can('suppliers') && <button type="button" onClick={() => go('/nha-cung-cap')}>Nhà cung cấp<small>Công nợ nhập</small></button>}
-              </NavDrop>
-            )}
-
-            {can('reports') && (
-              <button type="button" className={`web-m ${onBao ? 'on' : ''}`} onClick={() => go('/bao-cao')}>Báo cáo</button>
-            )}
-
-            <NavDrop k="he" open={open} label="Hệ thống" active={onHe} onToggle={toggle}>
-              <button type="button" onClick={() => go('/tai-khoan')}>Tài khoản<small>Đăng nhập, đăng xuất và cửa hàng cloud</small></button>
-              <button type="button" onClick={() => go('/ghi-chu')}>Ghi chú<small>Việc cần làm, ý tưởng</small></button>
-              {can('settings') && <button type="button" onClick={() => go('/cai-dat')}>Cài đặt<small>Shop, in, sao lưu</small></button>}
-              {can('settings') && <button type="button" onClick={() => go('/may-in')}>Máy in<small>Trang in bill trên máy này</small></button>}
-              {can('settings') && <button type="button" onClick={() => go('/thiet-bi')}>Thiết bị<small>Kéo / đẩy bản sao cửa hàng</small></button>}
-              {can('inventory') && <button type="button" onClick={() => go('/cong-cu')}>Quy tắc giá<small>Gợi ý giá bán theo biên lợi nhuận</small></button>}
-              {can('users') && <button type="button" onClick={() => go('/nguoi-dung')}>Người dùng<small>PIN ca + phân quyền</small></button>}
-            </NavDrop>
+            </div>
 
             {can('sell') && (
               <button
@@ -163,24 +189,25 @@ export function WebShell() {
                 <span className="web-top-shop-name">{shop.name || 'Cửa hàng'}</span>
                 <span className={`web-sync-status ${syncClass}`}>● {syncLabel}</span>
               </span>
-              {can('settings') && (
-                <button type="button" className="web-ico" onClick={() => go('/may-in')} aria-label="Máy in" title="Máy in">
-                  <Printer size={16} />
+              <div className={`web-drop web-user-menu ${open === 'user' ? 'open' : ''}`}>
+                <button
+                  type="button"
+                  className="web-av web-av-btn"
+                  title={user?.name || shop.name || 'Tài khoản'}
+                  aria-expanded={open === 'user'}
+                  aria-haspopup="menu"
+                  onClick={() => toggle('user')}
+                >
+                  {initial}
                 </button>
-              )}
-              {can('settings') && (
-                <button type="button" className="web-ico" onClick={() => go('/cai-dat')} aria-label="Cài đặt" title="Cài đặt">
-                  <Settings size={16} />
-                </button>
-              )}
-              <button
-                type="button"
-                className="web-av web-av-btn"
-                title={user?.name || shop.name || 'Tài khoản'}
-                onClick={() => go('/tai-khoan')}
-              >
-                {initial}
-              </button>
+                <div className="web-dd" role="menu">
+                  <div className="web-dd-menu">
+                    <button type="button" onClick={() => go('/tai-khoan')}>Tài khoản<small>{user?.name || shop.name || 'Cửa hàng'}</small></button>
+                    {can('settings') && <button type="button" onClick={() => go('/may-in')}>Máy in<small>Trang in bill trên máy này</small></button>}
+                    {can('settings') && <button type="button" onClick={() => go('/cai-dat')}>Cài đặt<small>Shop, in, sao lưu</small></button>}
+                  </div>
+                </div>
+              </div>
             </div>
           </nav>
         </header>

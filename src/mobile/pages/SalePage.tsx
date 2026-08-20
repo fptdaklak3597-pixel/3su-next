@@ -362,8 +362,8 @@ export function SalePage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <button className="qty-btn !w-7 !h-7 !text-sm" onClick={() => changeQty(idx, -1)}>
-                      <Minus size={12} />
+                    <button className="qty-btn" onClick={() => changeQty(idx, -1)}>
+                      <Minus size={16} />
                     </button>
                     <input
                       className="w-8 text-center text-sm font-medium bg-transparent"
@@ -372,8 +372,8 @@ export function SalePage() {
                       value={ci.qty}
                       onChange={(e) => setCart(setCartLineQty(cart, idx, Number(e.target.value) || 0))}
                     />
-                    <button className="qty-btn !w-7 !h-7 !text-sm" onClick={() => changeQty(idx, 1)}>
-                      <Plus size={12} />
+                    <button className="qty-btn" onClick={() => changeQty(idx, 1)}>
+                      <Plus size={16} />
                     </button>
                   </div>
                   <div className="w-16 text-right text-[13px] font-medium stat-num" style={{ color: 'var(--ink)' }}>
