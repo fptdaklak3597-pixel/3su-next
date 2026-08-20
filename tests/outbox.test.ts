@@ -215,12 +215,12 @@ describe('outbox — op sinh atomic trong domain', () => {
   })
 
   it('createUser / changePassword / deleteUser phát op user.*', async () => {
-    const owner = await createUser({ username: 'owner', name: 'Chủ', password: '1234', role: 'owner' })
+    const owner = await createUser({ username: 'owner', name: 'Chủ', password: 'owner-1234', role: 'owner' })
     await setCurrentUser(owner)
     await dbx.syncQueue.clear()
     await dbx.appliedOps.clear()
 
-    const u = await createUser({ username: 'an', name: 'An', password: '1111', role: 'staff' })
+    const u = await createUser({ username: 'an', name: 'An', password: 'staff1', role: 'staff' })
     const created = (await dbx.syncQueue.toArray()).find((o) => o.type === 'user.upsert')
     expect(created).toBeTruthy()
     expect((created!.payload as { user: { id: string } }).user.id).toBe(u.id)
@@ -228,7 +228,7 @@ describe('outbox — op sinh atomic trong domain', () => {
 
     await dbx.syncQueue.clear()
     await dbx.appliedOps.clear()
-    await changePassword(u.id, '2222')
+    await changePassword(u.id, 'staff2')
     const pw = (await dbx.syncQueue.toArray()).find((o) => o.type === 'user.password')
     expect(pw).toBeTruthy()
     expect((pw!.payload as { userId: string }).userId).toBe(u.id)
@@ -266,6 +266,10 @@ describe('outbox — op sinh atomic trong domain', () => {
 
   it('recordSupplierPayment phát supplier.pay', async () => {
     const s = await createSupplier({ name: 'NCC trả' })
+    await dbx.goodsReceipts.put({
+      id: 'gr-pay', code: 'NK-PAY', supplier: s.name, supplierId: s.id,
+      date: '2026-08-20', expiry: '', note: '', rows: [], total: 3000, paid: 0, ts: Date.now(),
+    })
     await dbx.syncQueue.clear()
     await dbx.appliedOps.clear()
     const pay = await recordSupplierPayment({ supplierId: s.id, amount: 3000, note: 'trả 3k' })
