@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 async function headersFile(): Promise<string> {
-  return readFile(new URL('../public/_headers', import.meta.url), 'utf8')
+  return readFile(resolve(process.cwd(), 'public', '_headers'), 'utf8')
 }
 
 describe('Cloudflare Pages security headers', () => {
