@@ -18,7 +18,7 @@ describe('owner bootstrap', () => {
     const owner = await createUser({
       username: 'owner',
       name: 'Chủ cửa hàng',
-      password: '1234',
+      password: 'owner-1234',
       role: 'owner',
     })
 
@@ -27,12 +27,12 @@ describe('owner bootstrap', () => {
   })
 
   it('từ chối tạo owner thứ hai', async () => {
-    await createUser({ username: 'owner', name: 'Chủ', password: '1234', role: 'owner' })
+    await createUser({ username: 'owner', name: 'Chủ', password: 'owner-1234', role: 'owner' })
 
     await expect(createUser({
       username: 'owner2',
       name: 'Chủ giả',
-      password: '5678',
+      password: 'owner-5678',
       role: 'owner',
     })).rejects.toThrow(/chỉ được tạo/)
 
@@ -40,13 +40,13 @@ describe('owner bootstrap', () => {
   })
 
   it('không mở lại bootstrap khi user cũ đã bị xóa mềm', async () => {
-    const owner = await createUser({ username: 'owner', name: 'Chủ', password: '1234', role: 'owner' })
+    const owner = await createUser({ username: 'owner', name: 'Chủ', password: 'owner-1234', role: 'owner' })
     await dbx.users.update(owner.id, { deleted: true, active: false })
 
     await expect(createUser({
       username: 'new-owner',
       name: 'Chủ mới',
-      password: '5678',
+      password: 'owner-5678',
       role: 'owner',
     })).rejects.toThrow(/chỉ được tạo/)
 
@@ -54,20 +54,20 @@ describe('owner bootstrap', () => {
   })
 
   it('từ chối tạo staff khi chưa có actor quản lý đã đăng nhập', async () => {
-    await createUser({ username: 'owner', name: 'Chủ', password: '1234', role: 'owner' })
+    await createUser({ username: 'owner', name: 'Chủ', password: 'owner-1234', role: 'owner' })
 
     await expect(createUser({
       username: 'staff',
       name: 'Nhân viên',
-      password: '5678',
+      password: 'staff1',
       role: 'staff',
     })).rejects.toThrow(/quyền quản lý/)
   })
 
   it('cho phép owner đã đăng nhập tạo tài khoản không phải owner', async () => {
-    const owner = await createUser({ username: 'owner', name: 'Chủ', password: '1234', role: 'owner' })
+    const owner = await createUser({ username: 'owner', name: 'Chủ', password: 'owner-1234', role: 'owner' })
     await setCurrentUser(owner)
-    const staff = await createUser({ username: 'staff', name: 'Nhân viên', password: '5678', role: 'staff' })
+    const staff = await createUser({ username: 'staff', name: 'Nhân viên', password: 'staff1', role: 'staff' })
 
     expect(staff.role).toBe('staff')
     expect(await dbx.users.count()).toBe(2)
