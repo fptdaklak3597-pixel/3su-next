@@ -36,11 +36,22 @@ function sessionUserId(value: unknown): string {
   return typeof id === 'string' ? id : ''
 }
 
-/**
- * Session chỉ lưu stable user ID. Reader vẫn hiểu object legacy, nhưng luôn đọc
- * record mới nhất và tự xóa session khi user bị khóa/xóa/không còn tồn tại.
- */
+/** Read-only để dùng an toàn trong Dexie liveQuery. */
 export async function getCurrentUser(): Promise<User | null> {
+  return dbx.transaction('r', [dbx.meta, dbx.users], async () => {
+    const row = await dbx.meta.get('currentUser')
+    const id = sessionUserId(row?.value)
+    if (!id) return null
+    const user = await dbx.users.get(id)
+    return user && !user.deleted && user.active ? user : null
+  })
+}
+
+/**
+ * Chạy ngoài liveQuery: migrate object legacy về ID và xóa session khi user bị
+ * khóa/xóa/mất record. Trả record mới nhất để caller đồng bộ UI nếu cần.
+ */
+export async function normalizeCurrentUserSession(): Promise<User | null> {
   return dbx.transaction('rw', [dbx.meta, dbx.users], async () => {
     const row = await dbx.meta.get('currentUser')
     const id = sessionUserId(row?.value)
