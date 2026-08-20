@@ -3,7 +3,13 @@
  * Port từ 19b-trial.js. Bản gốc đã chuyển MIỄN PHÍ TRỌN ĐỜI nên trial chỉ còn
  * là cờ license; phần giá trị giữ lại: validate backup + sao lưu tự động hằng ngày.
  */
-import { getMeta, setMeta, exportBackup, type BackupData } from '../db'
+import {
+  getMeta,
+  setMeta,
+  exportBackup,
+  stripBackupCredentials,
+  type BackupData,
+} from '../db'
 import { today } from '../format'
 
 /** App MIỄN PHÍ TRỌN ĐỜI — mọi shop coi như đã cấp phép (giống getTrialInfo gốc). */
@@ -36,6 +42,12 @@ export function validateBackupSchema(data: unknown): void {
   if (d.sourceShopId != null && typeof d.sourceShopId !== 'string') {
     throw new Error('sourceShopId phải là string')
   }
+  if (d.credentialPolicy != null
+    && d.credentialPolicy !== 'excluded'
+    && d.credentialPolicy !== 'staff-only'
+    && d.credentialPolicy !== 'legacy') {
+    throw new Error('credentialPolicy không hợp lệ')
+  }
   if (d.settings != null && (typeof d.settings !== 'object' || Array.isArray(d.settings))) {
     throw new Error('settings phải là object')
   }
@@ -48,12 +60,15 @@ export function validateBackupSchema(data: unknown): void {
   if (sampleSale && typeof sampleSale.total !== 'number') throw new Error('sales[].total phải là number')
 }
 
-/** Parse + xác thực file sao lưu local trước khi hỏi confirm khôi phục. */
+/**
+ * File local không phải phương tiện chuyển tài khoản. Kể cả backup legacy có
+ * users/hash/salt, parser chỉ trả dữ liệu nghiệp vụ đã loại credential.
+ */
 export function parseRestoreFile(raw: string): BackupData {
   let data: unknown
   try { data = JSON.parse(raw) } catch { throw new Error('File sao lưu không hợp lệ') }
   validateBackupSchema(data)
-  return data as BackupData
+  return stripBackupCredentials(data as BackupData)
 }
 
 /* ─── Sao lưu tự động (giữ 3 bản gần nhất, mỗi ngày 1 bản) ─── */
@@ -62,8 +77,23 @@ export interface AutoBackup {
   data: BackupData
 }
 
+function autoBackupNeedsScrub(backup: AutoBackup): boolean {
+  return backup.data.credentialPolicy !== 'excluded'
+    || Array.isArray(backup.data.users)
+    || Number(backup.data.version) < 6
+}
+
+/** Đọc đồng thời migrate/scrub ba auto-backup legacy ngay trên thiết bị. */
 export async function getAutoBackups(): Promise<AutoBackup[]> {
-  return getMeta<AutoBackup[]>('backups', [])
+  const backups = await getMeta<AutoBackup[]>('backups', [])
+  if (!Array.isArray(backups)) return []
+  const safe = backups
+    .filter((backup): backup is AutoBackup => !!backup && typeof backup.date === 'string' && !!backup.data)
+    .map((backup) => ({ ...backup, data: stripBackupCredentials(backup.data) }))
+  if (backups.length !== safe.length || backups.some(autoBackupNeedsScrub)) {
+    await setMeta('backups', safe)
+  }
+  return safe
 }
 
 /** Tạo bản sao tự động (bỏ qua nếu đã có bản trong hôm nay, trừ khi force). */
