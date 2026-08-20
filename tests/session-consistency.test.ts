@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { dbx, getCurrentUser, setCurrentUser } from '@/core/db'
+import {
+  dbx,
+  getCurrentUser,
+  normalizeCurrentUserSession,
+  setCurrentUser,
+} from '@/core/db'
 import {
   startCurrentUserSessionSync,
   stopCurrentUserSessionSync,
@@ -66,25 +71,30 @@ describe('stable local session identity', () => {
     await dbx.meta.put({ key: 'currentUser', value: cached })
 
     expect(await getCurrentUser()).toEqual(fresh)
+    expect((await dbx.meta.get('currentUser'))?.value).toEqual(cached)
+    expect(await normalizeCurrentUserSession()).toEqual(fresh)
     expect((await dbx.meta.get('currentUser'))?.value).toBe(fresh.id)
   })
 
-  it('user bị khóa, xóa mềm hoặc mất record sẽ mất session', async () => {
+  it('user bị khóa, xóa mềm hoặc mất record sẽ mất session khi normalize', async () => {
     const current = user()
     await dbx.users.put(current)
     await setCurrentUser(current)
 
     await dbx.users.update(current.id, { active: false })
     expect(await getCurrentUser()).toBeNull()
+    expect(await normalizeCurrentUserSession()).toBeNull()
     expect(await dbx.meta.get('currentUser')).toBeUndefined()
 
     await dbx.users.put(user({ active: true, deleted: true }))
     await dbx.meta.put({ key: 'currentUser', value: current.id })
-    expect(await getCurrentUser()).toBeNull()
+    expect(await normalizeCurrentUserSession()).toBeNull()
+    expect(await dbx.meta.get('currentUser')).toBeUndefined()
 
     await dbx.users.clear()
     await dbx.meta.put({ key: 'currentUser', value: current.id })
-    expect(await getCurrentUser()).toBeNull()
+    expect(await normalizeCurrentUserSession()).toBeNull()
+    expect(await dbx.meta.get('currentUser')).toBeUndefined()
   })
 
   it('từ chối tạo session cho record không hoạt động', async () => {
@@ -119,6 +129,8 @@ describe('live Zustand session synchronization', () => {
     await vi.waitFor(() => {
       expect(useApp.getState().user).toBeNull()
     })
-    expect(await dbx.meta.get('currentUser')).toBeUndefined()
+    await vi.waitFor(async () => {
+      expect(await dbx.meta.get('currentUser')).toBeUndefined()
+    })
   })
 })
