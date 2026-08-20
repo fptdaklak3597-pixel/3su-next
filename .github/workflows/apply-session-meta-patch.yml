@@ -1,0 +1,35 @@
+name: Apply stable-ID session patch
+
+on:
+  push:
+    branches:
+      - agent/session-consistency-v2
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[session-patched]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/session-consistency-v2
+          fetch-depth: 0
+
+      - name: Apply patch
+        run: node scripts/patch-session-meta.mjs
+
+      - name: Remove one-shot patch files
+        run: rm -- scripts/patch-session-meta.mjs .github/workflows/apply-session-meta-patch.yml
+
+      - name: Commit generated change
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src/core/domain/auth.ts scripts/patch-session-meta.mjs .github/workflows/apply-session-meta-patch.yml
+          git commit -m 'Store stable user IDs after self updates [session-patched]'
+          git push origin HEAD:agent/session-consistency-v2
