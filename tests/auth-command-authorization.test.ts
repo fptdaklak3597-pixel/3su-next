@@ -86,4 +86,12 @@ describe('user management invariants', () => {
 
     await expect(login('staff', 'staff2')).resolves.toMatchObject({ id: staff.id })
   })
+
+  it('logout xóa vé đổi mật khẩu — không đổi được khi đã đăng xuất', async () => {
+    await setCurrentUser(null)
+    await login('staff', 'staff1')
+    await setCurrentUser(null)
+
+    await expect(changePassword(staff.id, 'staff99')).rejects.toThrow(/không có quyền/)
+  })
 })

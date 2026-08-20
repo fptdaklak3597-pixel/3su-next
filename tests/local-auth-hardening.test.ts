@@ -100,6 +100,58 @@ describe('privileged verifier isolation', () => {
     expect(op.payload).toMatchObject({ userId: owner.id, clearVerifier: true })
   })
 
+  it('user.upsert remote không trồng hash owner; giữ verifier local', async () => {
+    const owner = await createUser({
+      username: 'owner', name: 'Chủ', password: 'owner-pass', role: 'owner',
+    })
+    const localHash = owner.passwordHash
+    const op: SyncOp = {
+      ...makeOp('user.upsert', {
+        user: { ...owner, name: 'Tên từ máy khác', passwordHash: 'stolen-hash', salt: 'stolen-salt' },
+      }),
+      deviceId: 'remote-device',
+    }
+    await applyOps([op])
+    const after = (await dbx.users.get(owner.id))!
+    expect(after.name).toBe('Tên từ máy khác')
+    expect(after.passwordHash).toBe(localHash)
+    expect(after.salt).toBe(owner.salt)
+  })
+
+  it('user.password remote mang hash owner bị bỏ, không ghi đè', async () => {
+    const owner = await createUser({
+      username: 'owner', name: 'Chủ', password: 'owner-pass', role: 'owner',
+    })
+    const localHash = owner.passwordHash
+    const op: SyncOp = {
+      ...makeOp('user.password', {
+        userId: owner.id, passwordHash: 'evil-hash', salt: 'evil-salt', passwordNeedsReset: false,
+      }),
+      deviceId: 'remote-device',
+    }
+    await applyOps([op])
+    const after = (await dbx.users.get(owner.id))!
+    expect(after.passwordHash).toBe(localHash)
+    expect(after.salt).toBe(owner.salt)
+  })
+
+  it('máy mới nhận user.upsert owner có hash thì vẫn redacted', async () => {
+    const incoming: User = {
+      id: 'owner-remote', username: 'remote', name: 'Chủ remote', email: '', role: 'owner',
+      passwordHash: 'planted-hash', salt: 'planted-salt', passwordNeedsReset: false,
+      perms: { all: true }, active: true, createdAt: 1, updatedAt: 1,
+    }
+    const op: SyncOp = {
+      ...makeOp('user.upsert', { user: incoming }),
+      deviceId: 'remote-device',
+    }
+    await applyOps([op])
+    const after = (await dbx.users.get(incoming.id))!
+    expect(after.passwordHash).toBe('')
+    expect(after.salt).toBe('')
+    expect(after.passwordNeedsReset).toBe(true)
+  })
+
   it('remote clearVerifier làm verifier privileged không còn dùng được', async () => {
     const remote: User = {
       id: 'owner-remote', username: 'remote', name: 'Chủ remote', email: '', role: 'owner',

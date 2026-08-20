@@ -9,6 +9,11 @@ import { dbx } from '../db'
 import { uid } from '../format'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
 import type { User, UserRole, UserPerms } from '../types'
+import {
+  forgetRecentlyVerifiedUser,
+  isRecentlyVerifiedUser,
+  markRecentlyVerifiedUser,
+} from './authTicket'
 
 /* ─── Hash mật khẩu ─── */
 
@@ -335,8 +340,6 @@ export async function createUser(input: NewUserInput): Promise<User> {
   return persistNewUser(u, input.role === 'owner')
 }
 
-let recentlyVerifiedUserId = ''
-
 async function refreshCredentialAfterLogin(user: User, password: string): Promise<User> {
   const needsUpgrade = passwordHashNeedsUpgrade(user.passwordHash)
   const weakPassword = !passwordMeetsPolicy(password, user.role)
@@ -386,7 +389,7 @@ export async function login(username: string, password: string): Promise<User> {
   await clearLoginFailures(clean)
   let refreshed = u
   try { refreshed = await refreshCredentialAfterLogin(u, password) } catch { /* đăng nhập vẫn hợp lệ; lần sau thử nâng lại */ }
-  recentlyVerifiedUserId = refreshed.id
+  markRecentlyVerifiedUser(refreshed.id)
   return refreshed
 }
 
@@ -402,7 +405,7 @@ export async function changePassword(userId: string, newPassword: string): Promi
     if (!cur || cur.deleted || !cur.active) throw new Error('Không tìm thấy tài khoản đang hoạt động')
     validatePassword(newPassword, cur.role)
     const actor = await currentActorInTransaction()
-    const verifiedSelf = recentlyVerifiedUserId === userId
+    const verifiedSelf = isRecentlyVerifiedUser(userId)
     const signedInSelf = actor?.id === userId
     if (!verifiedSelf && !signedInSelf) {
       if (!actor || !hasPerm(actor, 'users')) throw new Error('Bạn không có quyền đổi mật khẩu tài khoản này')
@@ -422,7 +425,7 @@ export async function changePassword(userId: string, newPassword: string): Promi
     if (actor?.id === userId) await dbx.meta.put({ key: 'currentUser', value: next })
     await persistOp(op)
   })
-  if (recentlyVerifiedUserId === userId) recentlyVerifiedUserId = ''
+  if (isRecentlyVerifiedUser(userId)) forgetRecentlyVerifiedUser()
   requestFlush()
 }
 

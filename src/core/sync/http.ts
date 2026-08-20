@@ -132,6 +132,7 @@ export function createHttpTransport(opts: HttpTransportOpts): SyncTransport {
   }
 
   return {
+    confirmsAppliedOpsGc: true,
     async pushOps(ops: SyncOp[]): Promise<PushResult> {
       const res = await fetchWithTimeout(url('/ops'), {
         method: 'POST', headers: await headers(), body: JSON.stringify({ ops }),
@@ -152,7 +153,11 @@ export function createHttpTransport(opts: HttpTransportOpts): SyncTransport {
       if (!Array.isArray(body.ops) || !Number.isSafeInteger(body.seq) || body.seq < 0) {
         throw new Error('Phản hồi pull không hợp lệ')
       }
-      return body
+      const watermark = body.appliedGcBeforeMs
+      if (Number.isSafeInteger(watermark) && watermark! > 0 && watermark! <= Date.now()) {
+        return { ops: body.ops, seq: body.seq, appliedGcBeforeMs: watermark }
+      }
+      return { ops: body.ops, seq: body.seq }
     },
     async pushSnapshot(s: SnapshotFile, upToSeq: number): Promise<void> {
       const gzipBase64 = await gzipJson(s)

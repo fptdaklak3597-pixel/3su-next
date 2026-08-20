@@ -25,6 +25,8 @@ import { setPrintAgentOnline } from '../browser/printPresence'
 const RETRY_INTERVAL = 30_000
 const PULL_PAGE = 500
 const MAX_PULL_PAGES = 200
+/** Khi đã bắt kịp server mà cloud chưa gửi mốc: giữ marker 7 ngày. */
+const APPLIED_OP_CATCH_UP_LAG_MS = 7 * 86_400_000
 
 let deviceId = ''
 let clock: HlcClock | null = null
@@ -284,6 +286,7 @@ function pageFingerprint(ops: SyncOp[]): string {
 async function pullSince(): Promise<void> {
   let pages = 0
   let previousFullPage = ''
+  let last: { ops: { length: number }; seq: number; appliedGcBeforeMs?: number } | null = null
 
   for (;;) {
     pages += 1
@@ -312,9 +315,16 @@ async function pullSince(): Promise<void> {
       throw new Error('Đồng bộ không tiến cursor; đã dừng để tránh vòng lặp vô hạn')
     }
     if (upTo > since) await setMeta('sync:lastSeq', upTo)
+    last = res
+    await ingestAppliedOpsGcWatermark(res.appliedGcBeforeMs)
     if (!fullPage) break
 
     previousFullPage = fingerprint
+  }
+
+  if (last && last.ops.length < PULL_PAGE && !last.appliedGcBeforeMs && transport.confirmsAppliedOpsGc) {
+    const lag = Date.now() - APPLIED_OP_CATCH_UP_LAG_MS
+    if (lag > 0) await setAppliedOpsGcWatermark(lag)
   }
 }
 
@@ -348,6 +358,12 @@ export function stopSyncLoop(): void {
     window.removeEventListener('online', onlineHandler)
     onlineHandler = null
   }
+}
+
+async function ingestAppliedOpsGcWatermark(value: unknown): Promise<void> {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) return
+  if ((value as number) > Date.now()) return
+  await setAppliedOpsGcWatermark(value as number)
 }
 
 const APPLIED_GC_WATERMARK_KEY = 'sync:appliedGcBeforeMs'

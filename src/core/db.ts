@@ -5,8 +5,10 @@ import {
   exportBackup as exportBackupCore,
   getMeta,
   restoreBackup as restoreBackupCore,
+  setCurrentUser as setCurrentUserCore,
   type BackupData as CoreBackupData,
 } from './db-core'
+import { forgetRecentlyVerifiedUser } from './domain/authTicket'
 import type { User } from './types'
 
 export type BackupCredentialPolicy = 'excluded' | 'staff-only' | 'legacy'
@@ -48,6 +50,33 @@ function privileged(user: User): boolean {
   return user.role === 'owner' || user.role === 'admin'
 }
 
+/** Logout hoặc đổi user phải hủy vé đổi mật khẩu của lần login trước. */
+export async function setCurrentUser(u: User | null): Promise<void> {
+  forgetRecentlyVerifiedUser()
+  await setCurrentUserCore(u)
+}
+
+/**
+ * Owner/admin không nhận hash từ máy khác. Giữ verifier local nếu cùng id.
+ */
+export function retainLocalPrivilegedVerifier(incoming: User, local?: User | null): User {
+  if (!privileged(incoming)) return { ...incoming }
+  if (local && local.id === incoming.id && privileged(local) && local.passwordHash && local.salt) {
+    return {
+      ...incoming,
+      passwordHash: local.passwordHash,
+      salt: local.salt,
+      passwordNeedsReset: local.passwordNeedsReset ?? false,
+    }
+  }
+  return {
+    ...incoming,
+    passwordHash: '',
+    salt: '',
+    passwordNeedsReset: true,
+  }
+}
+
 /** Hồ sơ snapshot không bao giờ mang verifier owner/admin sang thiết bị khác. */
 export function userForSnapshot(user: User): User {
   if (!privileged(user)) return { ...user }
@@ -77,19 +106,7 @@ export function stripBackupCredentials(data: CoreBackupData | BackupData): Backu
  */
 export function mergeSnapshotUsers(localUsers: User[], incomingUsers: User[]): User[] {
   const localById = new Map(localUsers.map((user) => [user.id, user]))
-  return incomingUsers.map((incoming) => {
-    const local = localById.get(incoming.id)
-    const incomingRedacted = privileged(incoming) && (!incoming.passwordHash || !incoming.salt)
-    if (incomingRedacted && local && privileged(local) && local.passwordHash && local.salt) {
-      return {
-        ...incoming,
-        passwordHash: local.passwordHash,
-        salt: local.salt,
-        passwordNeedsReset: local.passwordNeedsReset ?? false,
-      }
-    }
-    return { ...incoming }
-  })
+  return incomingUsers.map((incoming) => retainLocalPrivilegedVerifier(incoming, localById.get(incoming.id)))
 }
 
 /**

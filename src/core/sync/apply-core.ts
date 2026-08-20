@@ -7,7 +7,7 @@
  * - Chứng từ (sale/gr/stocktake/debtPayment) immutable append, chống trùng theo id.
  * - Kiểm kê cộng diff (actual − system): không nuốt đơn máy kia đã áp, cũng không nuốt delta local khi localStock = system + pending.
  */
-import { dbx } from '../db'
+import { dbx, retainLocalPrivilegedVerifier } from '../db'
 import { applyStockDeltaToBatches, consumeBatchesFefo, liveBatchExpiry, restoreBatchesFefo } from '../domain/inventory'
 import { getThisDeviceId } from '../domain/devices'
 import { compareHlc } from './hlc'
@@ -709,7 +709,7 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (!user?.id) payloadError('user.upsert thiếu id')
       const cur = await dbx.users.get(user.id)
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
-      await dbx.users.put({ ...user, hlc: op.hlc })
+      await dbx.users.put(retainLocalPrivilegedVerifier({ ...user, hlc: op.hlc }, cur))
       return
     }
     case 'user.password': {
@@ -723,6 +723,9 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (!p?.userId || !p.passwordHash || !p.salt) payloadError('user.password thiếu dữ liệu')
       const cur = await dbx.users.get(p.userId)
       if (!cur) dependencyError('user.password thiếu user ' + p.userId)
+      if (cur.role === 'owner' || cur.role === 'admin') {
+        payloadError('user.password hash không được áp cho owner/admin')
+      }
       if (cur.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
       await dbx.users.put({
         ...cur,

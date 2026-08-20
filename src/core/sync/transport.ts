@@ -7,7 +7,12 @@ import type { SyncOp } from '../types'
 import type { SnapshotFile } from './snapshot'
 
 export interface PushResult { acked: string[]; seq: number }
-export interface PullResult { ops: SyncOp[]; seq: number }
+export interface PullResult {
+  ops: SyncOp[]
+  seq: number
+  /** Mốc server xác nhận: marker HLC cũ hơn có thể xóa. */
+  appliedGcBeforeMs?: number
+}
 
 export type ServerMsg =
   | { t: 'bump'; seq: number }
@@ -22,6 +27,8 @@ export interface SyncTransport {
   pullSnapshot(): Promise<{ snapshot: SnapshotFile; upToSeq: number } | null>
   connect(onMsg: (m: ServerMsg) => void): void
   disconnect(): void
+  /** Transport đã nói chuyện với server — được phép tiến watermark GC. */
+  confirmsAppliedOpsGc?: boolean
 }
 
 export const nullTransport: SyncTransport = {

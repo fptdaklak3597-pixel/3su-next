@@ -7,12 +7,16 @@ import {
   type BackupData,
 } from '@/core/db'
 import {
+  flushQueue,
   gcAppliedOps,
   getAppliedOpsGcWatermark,
   initSyncEngine,
   setAppliedOpsGcWatermark,
   setCloudPaused,
+  setSyncMode,
+  setTransport,
 } from '@/core/sync/engine'
+import { nullTransport } from '@/core/sync/transport'
 
 function opId(ms: number, counter = 0): string {
   return `${String(ms).padStart(13, '0')}-${String(counter).padStart(4, '0')}-device`
@@ -34,6 +38,8 @@ function emptyBackup(): BackupData {
 
 beforeEach(async () => {
   setCloudPaused(false)
+  setSyncMode('local')
+  setTransport(nullTransport)
   await Promise.all([dbx.appliedOps.clear(), dbx.meta.clear(), dbx.syncQueue.clear()])
   await initSyncEngine()
 })
@@ -80,6 +86,27 @@ describe('applied-op retention watermark', () => {
     expect(await dbx.appliedOps.get(boundaryId)).toBeTruthy()
     expect(await dbx.appliedOps.get(newId)).toBeTruthy()
     expect(await dbx.appliedOps.get(legacyId)).toBeTruthy()
+  })
+
+  it('pull có appliedGcBeforeMs thì tiến watermark và xóa marker cũ', async () => {
+    const watermark = Date.now() - 10_000
+    const oldId = opId(watermark - 1)
+    const keepId = opId(watermark + 1)
+    await dbx.appliedOps.bulkPut([{ id: oldId }, { id: keepId }])
+    setCloudPaused(false)
+    setSyncMode('sync')
+    setTransport({
+      ...nullTransport,
+      async pullOps() {
+        return { ops: [], seq: 1, appliedGcBeforeMs: watermark }
+      },
+    })
+
+    await flushQueue()
+
+    expect(await getAppliedOpsGcWatermark()).toBe(watermark)
+    expect(await dbx.appliedOps.get(oldId)).toBeUndefined()
+    expect(await dbx.appliedOps.get(keepId)).toBeTruthy()
   })
 
   it('local restore xóa watermark của tenant cũ', async () => {

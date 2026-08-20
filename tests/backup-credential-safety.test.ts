@@ -138,10 +138,35 @@ describe('cloud snapshot credential policy', () => {
     })
   })
 
+  it('snapshot vẫn chứa hash owner thì không ghi lên máy', async () => {
+    await dbx.users.put(user({ passwordHash: 'local-owner-hash', salt: 'local-owner-salt' }))
+    await restoreBackup(backup({
+      credentialPolicy: 'staff-only',
+      users: [user({ name: 'Tên độc', passwordHash: 'cloud-stolen-hash', salt: 'cloud-stolen-salt', updatedAt: 9 })],
+    }), { userMode: 'snapshot' })
+
+    expect(await dbx.users.get('u-owner')).toMatchObject({
+      name: 'Tên độc',
+      passwordHash: 'local-owner-hash',
+      salt: 'local-owner-salt',
+    })
+  })
+
   it('máy mới không nhận verifier privileged từ snapshot', async () => {
     await restoreBackup(backup({
       credentialPolicy: 'staff-only',
       users: [user({ passwordHash: '', salt: '', passwordNeedsReset: true })],
+    }), { userMode: 'snapshot' })
+
+    expect(await dbx.users.get('u-owner')).toMatchObject({
+      passwordHash: '', salt: '', passwordNeedsReset: true,
+    })
+  })
+
+  it('máy trống không nhận hash owner dù snapshot còn hash', async () => {
+    await restoreBackup(backup({
+      credentialPolicy: 'staff-only',
+      users: [user({ passwordHash: 'cloud-hash', salt: 'cloud-salt' })],
     }), { userMode: 'snapshot' })
 
     expect(await dbx.users.get('u-owner')).toMatchObject({
