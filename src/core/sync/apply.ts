@@ -1,12 +1,17 @@
 /**
  * Public reducer facade.
  *
- * The historical reducer lives in `apply-core.ts`. This facade intercepts the
- * credential-redaction form of `user.password` without duplicating the large
- * business reducer, then delegates all other operations unchanged.
+ * The historical reducer lives in `apply-core.ts`. This facade adds narrowly
+ * scoped reducers that must share newer security/inventory invariants, then
+ * delegates all other operations unchanged.
  */
 import { dbx } from '../db'
-import type { SyncOp, User } from '../types'
+import type { GrCommitPayload, Sale, StocktakeRecord, SyncOp, User } from '../types'
+import {
+  applyStockDeltaToCanonicalBatchesInTx,
+  reconcileProductBatchProjections,
+  syncProductBatchProjectionInTx,
+} from '../domain/batchProjection'
 import { compareHlc } from './hlc'
 import { observeRemoteHlc } from './engine'
 import {
@@ -26,9 +31,20 @@ interface ClearVerifierPayload {
   updatedAt?: number
 }
 
+interface StockAdjustPayload {
+  productId?: string
+  delta?: number
+  reason?: string
+  refId?: string
+}
+
 function isClearVerifierOp(op: SyncOp): boolean {
   if (op.type !== 'user.password' || !op.payload || typeof op.payload !== 'object') return false
   return (op.payload as ClearVerifierPayload).clearVerifier === true
+}
+
+function isCanonicalStockAdjustOp(op: SyncOp): boolean {
+  return op.type === 'stock.adjust'
 }
 
 async function clearBlockedDiagnostic(opId: string): Promise<void> {
@@ -90,16 +106,157 @@ async function applyClearVerifier(op: SyncOp): Promise<number> {
   }
 }
 
+async function applyCanonicalStockAdjust(op: SyncOp): Promise<number> {
+  if (await dbx.appliedOps.get(op.id)) {
+    await clearBlockedDiagnostic(op.id)
+    observeRemoteHlc(op.hlc)
+    return 0
+  }
+
+  const payload = op.payload as StockAdjustPayload | null
+  try {
+    await dbx.transaction(
+      'rw',
+      [dbx.products, dbx.batches, dbx.stockMoves, dbx.appliedOps],
+      async () => {
+        if (await dbx.appliedOps.get(op.id)) return
+        if (!payload?.productId || !Number.isFinite(payload.delta)) {
+          throw new SyncPayloadError('stock.adjust thiếu productId hoặc delta')
+        }
+        const delta = payload.delta as number
+        const product = await dbx.products.get(payload.productId)
+        if (!product) throw new SyncDependencyError('stock.adjust thiếu SP ' + payload.productId)
+
+        const moveId = 'mv_' + op.id
+        if (await dbx.stockMoves.get(moveId)) {
+          const projection = await syncProductBatchProjectionInTx(product)
+          if (projection.changed) await dbx.products.put(product)
+          await dbx.appliedOps.add({ id: op.id })
+          return
+        }
+
+        const nextStock = product.stock + delta
+        if (!Number.isFinite(nextStock)) throw new SyncPayloadError('stock.adjust làm tồn kho không hợp lệ')
+        product.stock = nextStock
+        product.updatedAt = Date.now()
+        await applyStockDeltaToCanonicalBatchesInTx(product, delta)
+        await dbx.products.put(product)
+        await dbx.stockMoves.add({
+          id: moveId,
+          productId: payload.productId,
+          type: 'adjust',
+          qty: delta,
+          cost: product.cost,
+          note: payload.reason ?? '',
+          refId: payload.refId ?? '',
+          date: new Date().toISOString(),
+          ts: Date.now(),
+        })
+        await dbx.appliedOps.add({ id: op.id })
+      },
+    )
+    await clearBlockedDiagnostic(op.id)
+    observeRemoteHlc(op.hlc)
+    return 1
+  } catch (error) {
+    if (error instanceof SyncDependencyError) {
+      await recordBlockedOp(op, error)
+      observeRemoteHlc(op.hlc)
+      throw error
+    }
+    if (error instanceof SyncPayloadError) {
+      if (!(await dbx.appliedOps.get(op.id))) await dbx.appliedOps.add({ id: op.id })
+      await recordPoisonedOp(op, error)
+      await clearBlockedDiagnostic(op.id)
+      observeRemoteHlc(op.hlc)
+      return 0
+    }
+    throw error
+  }
+}
+
+function payloadProductIds(op: SyncOp): string[] {
+  if (op.type === 'sale.commit') {
+    const sale = op.payload as Partial<Sale> | null
+    return Array.isArray(sale?.items)
+      ? sale.items.map((item) => item?.productId).filter((id): id is string => typeof id === 'string' && !!id)
+      : []
+  }
+  if (op.type === 'stocktake.commit') {
+    const record = op.payload as Partial<StocktakeRecord> | null
+    return Array.isArray(record?.rows)
+      ? record.rows.map((row) => row?.productId).filter((id): id is string => typeof id === 'string' && !!id)
+      : []
+  }
+  if (op.type === 'gr.commit') {
+    const commit = op.payload as Partial<GrCommitPayload> | null
+    return Array.isArray(commit?.patches)
+      ? commit.patches.map((patch) => patch?.productId).filter((id): id is string => typeof id === 'string' && !!id)
+      : []
+  }
+  return []
+}
+
+async function reconcileAffectedProjection(op: SyncOp): Promise<void> {
+  const ids = payloadProductIds(op)
+  if (op.type === 'sale.void' && op.payload && typeof op.payload === 'object') {
+    const saleId = (op.payload as { saleId?: unknown }).saleId
+    if (typeof saleId === 'string') {
+      const sale = await dbx.sales.get(saleId)
+      if (sale) ids.push(...sale.items.map((item) => item.productId))
+    }
+  }
+  if (ids.length > 0) await reconcileProductBatchProjections(ids)
+}
+
 /**
- * Apply ordinary operations with the established reducer first so a user
- * profile arriving later in the same page can satisfy a verifier-clear op.
- * HLC comparison preserves the intended ordering even though clear operations
- * are applied after the ordinary page contents.
+ * Apply each op in page order and retry dependencies after later ops have had
+ * a chance to create them. This keeps batch mutations ordered while retaining
+ * the original dependency/poison behavior.
  */
 export async function applyOps(ops: SyncOp[]): Promise<number> {
-  const ordinary = ops.filter((op) => !isClearVerifierOp(op))
-  const clearOps = ops.filter(isClearVerifierOp)
-  let applied = ordinary.length > 0 ? await applyCoreOps(ordinary) : 0
-  for (const op of clearOps) applied += await applyClearVerifier(op)
+  let applied = 0
+  let pending = [...ops]
+
+  while (pending.length > 0) {
+    let progressed = false
+    const deferred: Array<{ op: SyncOp; error: SyncDependencyError }> = []
+
+    for (const op of pending) {
+      if (await dbx.appliedOps.get(op.id)) {
+        await reconcileAffectedProjection(op)
+        await clearBlockedDiagnostic(op.id)
+        observeRemoteHlc(op.hlc)
+        progressed = true
+        continue
+      }
+
+      try {
+        if (isClearVerifierOp(op)) applied += await applyClearVerifier(op)
+        else if (isCanonicalStockAdjustOp(op)) applied += await applyCanonicalStockAdjust(op)
+        else {
+          applied += await applyCoreOps([op])
+          await reconcileAffectedProjection(op)
+        }
+        progressed = true
+      } catch (error) {
+        if (error instanceof SyncDependencyError) {
+          deferred.push({ op, error })
+          continue
+        }
+        throw error
+      }
+    }
+
+    if (deferred.length === 0) break
+    if (!progressed) {
+      const first = deferred[0]!
+      throw new SyncDependencyError(
+        `Đồng bộ đang chờ dependency cho ${first.op.type} (${first.op.id}): ${first.error.message}`,
+      )
+    }
+    pending = deferred.map((entry) => entry.op)
+  }
+
   return applied
 }
