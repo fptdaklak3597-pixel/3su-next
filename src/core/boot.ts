@@ -8,9 +8,11 @@ import { registerThisDevice } from './domain/devices'
 import { scheduleAutoBackup } from './domain/trial'
 import { clampNegativeCustomerDebts } from './domain/customers'
 import { reconcileAllBatchProjections } from './domain/batchProjection'
+import { startCurrentUserSessionSync } from './session'
 
 export async function bootApp(): Promise<void> {
   await initSyncEngine()
+  startCurrentUserSessionSync()
   // Product.batches là canonical. Rebuild mirror trước khi bất kỳ pull/push cloud nào chạy.
   await reconcileAllBatchProjections()
   void clampNegativeCustomerDebts().catch((e) => console.error('clampNegDebt', e))

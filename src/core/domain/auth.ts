@@ -419,7 +419,7 @@ export async function changePassword(userId: string, newPassword: string): Promi
     }
     op.payload = passwordPayloadForSync(next)
     await dbx.users.put(next)
-    if (actor?.id === userId) await dbx.meta.put({ key: 'currentUser', value: next })
+    if (actor?.id === userId) await dbx.meta.put({ key: 'currentUser', value: next.id })
     await persistOp(op)
   })
   if (recentlyVerifiedUserId === userId) recentlyVerifiedUserId = ''
@@ -453,7 +453,7 @@ export async function updateUser(
     next.hlc = op.hlc
     op.payload = { user: userForSync(next) }
     await dbx.users.put(next)
-    if (actor.id === userId) await dbx.meta.put({ key: 'currentUser', value: next })
+    if (actor.id === userId) await dbx.meta.put({ key: 'currentUser', value: next.id })
     await persistOp(op)
   })
   requestFlush()

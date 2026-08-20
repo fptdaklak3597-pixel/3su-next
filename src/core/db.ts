@@ -29,6 +29,58 @@ export interface RestoreBackupOptions {
   userMode?: 'snapshot' | 'preserve-local'
 }
 
+function sessionUserId(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (!value || typeof value !== 'object') return ''
+  const id = (value as { id?: unknown }).id
+  return typeof id === 'string' ? id : ''
+}
+
+/** Read-only để dùng an toàn trong Dexie liveQuery. */
+export async function getCurrentUser(): Promise<User | null> {
+  return dbx.transaction('r', [dbx.meta, dbx.users], async () => {
+    const row = await dbx.meta.get('currentUser')
+    const id = sessionUserId(row?.value)
+    if (!id) return null
+    const user = await dbx.users.get(id)
+    return user && !user.deleted && user.active ? user : null
+  })
+}
+
+/**
+ * Chạy ngoài liveQuery: migrate object legacy về ID và xóa session khi user bị
+ * khóa/xóa/mất record. Trả record mới nhất để caller đồng bộ UI nếu cần.
+ */
+export async function normalizeCurrentUserSession(): Promise<User | null> {
+  return dbx.transaction('rw', [dbx.meta, dbx.users], async () => {
+    const row = await dbx.meta.get('currentUser')
+    const id = sessionUserId(row?.value)
+    if (!id) {
+      if (row) await dbx.meta.delete('currentUser')
+      return null
+    }
+    const user = await dbx.users.get(id)
+    if (!user || user.deleted || !user.active) {
+      await dbx.meta.delete('currentUser')
+      return null
+    }
+    if (row?.value !== id) await dbx.meta.put({ key: 'currentUser', value: id })
+    return user
+  })
+}
+
+export async function setCurrentUser(user: User | null): Promise<void> {
+  if (!user) {
+    await dbx.meta.delete('currentUser')
+    return
+  }
+  const current = await dbx.users.get(user.id)
+  if (!current || current.deleted || !current.active) {
+    throw new Error('Không thể tạo session cho tài khoản không hoạt động')
+  }
+  await dbx.meta.put({ key: 'currentUser', value: current.id })
+}
+
 const LOCAL_RESTORE_RESET_KEYS = [
   'currentUser',
   'cloud:shopId',
