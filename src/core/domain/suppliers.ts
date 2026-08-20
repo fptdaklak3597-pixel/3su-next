@@ -38,8 +38,8 @@ export function isOnReceiptPayment(p: SupplierPayment): boolean {
 }
 
 /**
- * Số dư có dấu: dương = còn nợ NCC, âm = đã trả dư/ứng trước.
- * Tiền trả ngay trên phiếu nằm trong GoodsReceipt.paid; supplierPayments chỉ cộng khoản trả riêng.
+ * Số dư có dấu: dương = còn nợ NCC, âm = dữ liệu legacy đã trả dư/ứng trước.
+ * Command mới không cho trả vượt số dư; giá trị âm chỉ được giữ để đọc dữ liệu cũ.
  */
 export function supplierBalance(
   supId: string,
@@ -59,7 +59,7 @@ export function supplierBalance(
   return Math.round(owed - paid)
 }
 
-/** Công nợ phải trả, không bao gồm phần ứng trước. */
+/** Công nợ phải trả, không bao gồm phần ứng trước legacy. */
 export function supplierDebt(
   supId: string,
   receipts: GoodsReceipt[],
@@ -68,7 +68,7 @@ export function supplierDebt(
   return Math.max(0, supplierBalance(supId, receipts, payments))
 }
 
-/** Tiền đã trả dư/ứng trước cho NCC. */
+/** Tiền đã trả dư/ứng trước trong dữ liệu legacy. */
 export function supplierCredit(
   supId: string,
   receipts: GoodsReceipt[],
@@ -81,7 +81,7 @@ export interface SupplierMonthlyStatement {
   purchased: number
   paidOnReceipts: number
   extraPaid: number
-  /** Số dư có dấu trong tháng: dương=nợ, âm=trả dư. */
+  /** Số dư có dấu trong tháng: dương=nợ, âm=dữ liệu legacy trả dư. */
   balance: number
   /** Alias tương thích UI cũ: chỉ phần nợ dương. */
   net: number
@@ -234,28 +234,60 @@ export interface SupplierPaymentInput {
   date?: string
 }
 
+function validIsoDay(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const [year, month, day] = value.split('-').map(Number)
+  const date = new Date(Date.UTC(year!, month! - 1, day!))
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month! - 1
+    && date.getUTCDate() === day
+}
+
 /**
- * Ghi khoản trả riêng cho NCC. Trả vượt nợ không bị mất: số dư âm trở thành credit trong ledger.
+ * Ghi khoản trả riêng cho NCC. Command mới không cho vượt số công nợ hiện tại;
+ * kiểm tra và ghi payment/outbox diễn ra trong cùng transaction để chống trả đúp.
  */
 export async function recordSupplierPayment(input: SupplierPaymentInput): Promise<SupplierPayment> {
+  if (!input.supplierId) throw new Error('Thiếu nhà cung cấp')
   if (!Number.isFinite(input.amount) || input.amount <= 0) throw new Error('Cần số tiền hợp lệ')
   const amount = Math.round(input.amount)
+  if (amount <= 0) throw new Error('Cần số tiền hợp lệ')
+  const date = input.date ?? today()
+  if (!validIsoDay(date)) throw new Error('Ngày thanh toán không hợp lệ')
+  const note = (input.note ?? '').trim()
+  if (note.startsWith(GR_PAY_NOTE_PREFIX)) {
+    throw new Error('Ghi chú dùng định dạng dành riêng cho thanh toán phiếu nhập')
+  }
+
   let pay!: SupplierPayment
-  await dbx.transaction('rw', [dbx.suppliers, dbx.supplierPayments, dbx.syncQueue, dbx.appliedOps], async () => {
-    const sup = await dbx.suppliers.get(input.supplierId)
-    if (!sup || sup.deleted) throw new Error('Không tìm thấy nhà cung cấp')
-    pay = {
-      id: uid('spay'),
-      supplierId: input.supplierId,
-      amount,
-      date: input.date ?? today(),
-      note: (input.note ?? '').trim(),
-      paymentKind: 'standalone',
-    }
-    const op = makeOp('supplier.pay', pay)
-    await dbx.supplierPayments.put(pay)
-    await persistOp(op)
-  })
+  await dbx.transaction(
+    'rw',
+    [dbx.suppliers, dbx.goodsReceipts, dbx.supplierPayments, dbx.syncQueue, dbx.appliedOps],
+    async () => {
+      const sup = await dbx.suppliers.get(input.supplierId)
+      if (!sup || sup.deleted) throw new Error('Không tìm thấy nhà cung cấp')
+
+      const [receipts, payments] = await Promise.all([
+        dbx.goodsReceipts.filter((receipt) => receipt.supplierId === input.supplierId).toArray(),
+        dbx.supplierPayments.where('supplierId').equals(input.supplierId).toArray(),
+      ])
+      const outstanding = supplierDebt(input.supplierId, receipts, payments)
+      if (outstanding <= 0) throw new Error('Nhà cung cấp không còn công nợ')
+      if (amount > outstanding) throw new Error('Số tiền trả vượt công nợ hiện tại')
+
+      pay = {
+        id: uid('spay'),
+        supplierId: input.supplierId,
+        amount,
+        date,
+        note,
+        paymentKind: 'standalone',
+      }
+      const op = makeOp('supplier.pay', pay)
+      await dbx.supplierPayments.add(pay)
+      await persistOp(op)
+    },
+  )
   requestFlush()
   return pay
 }
