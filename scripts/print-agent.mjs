@@ -1,135 +1,364 @@
 #!/usr/bin/env node
 /**
- * Agent in LAN cho 3SU Next — nhận phiếu JSON, mở Chrome in.
- *   node scripts/print-agent.mjs
- *   PORT=9101 node scripts/print-agent.mjs
+ * 3SU Next print agent.
  *
- * Tuỳ chọn poll cloud (điện thoại 4G):
- *   PRINT_API=https://3su-cloud.3suspace.workers.dev
- *   PRINT_SHOP=shop_xxx
- *   PRINT_TOKEN=firebase-id-token
+ * Mặc định chỉ nghe localhost:
+ *   node scripts/print-agent.mjs
+ *
+ * Mở ra LAN bắt buộc có shared secret:
+ *   PRINT_AGENT_LAN=1 PRINT_AGENT_SECRET="mot-secret-dai-it-nhat-16-ky-tu" node scripts/print-agent.mjs
+ *
+ * Cloud polling nên đọc token từ file có quyền hạn chế:
+ *   PRINT_API=https://... PRINT_SHOP=shop_xxx PRINT_TOKEN_FILE=/path/token node scripts/print-agent.mjs
  */
 import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import {
+  MAX_CLOCK_SKEW_MS,
+  MAX_REQUEST_BYTES,
+  PrintQueueFullError,
+  createRateLimiter,
+  createReplayGuard,
+  createSerialQueue,
+  normalizePrintTicket,
+  resolveAgentConfig,
+  ticketHtml,
+  verifyPrintSignature,
+} from './print-agent-core.mjs'
 
-const PORT = Number(process.env.PORT || 9101)
-const ORIGINS = new Set([
+const config = resolveAgentConfig()
+const DEFAULT_ORIGINS = [
   'https://su-next-web.pages.dev',
   'https://su-next-app.pages.dev',
   'http://localhost:5200',
   'http://localhost:5201',
   'http://127.0.0.1:5200',
   'http://127.0.0.1:5201',
-])
+]
+const extraOrigins = String(process.env.PRINT_AGENT_ORIGINS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean)
+const ORIGINS = new Set([...DEFAULT_ORIGINS, ...extraOrigins])
+const replayGuard = createReplayGuard()
+const rateLimiter = createRateLimiter({
+  limit: Number(process.env.PRINT_RATE_LIMIT || 30),
+  windowMs: 60_000,
+})
+const TEMP_PREFIX = '3su-print-'
+const TEMP_MAX_AGE_MS = 60 * 60_000
+const PRINT_FILE_TTL_MS = 2 * 60_000
+const PRINT_HANDOFF_MS = Math.max(250, Math.min(10_000, Number(process.env.PRINT_HANDOFF_MS || 1_500)))
 
-function cors(req, res) {
-  const origin = req.headers.origin || ''
-  if (ORIGINS.has(origin) || /^http:\/\/192\.168\.\d+\.\d+:(5200|5201)$/.test(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin)
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message)
+    this.status = status
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization')
 }
 
 function findChrome() {
   if (process.env.CHROME_PATH) return process.env.CHROME_PATH
-  const cands = [
+  const candidates = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Google\\Chrome\\Application\\chrome.exe'),
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
   ].filter(Boolean)
-  return cands.find((p) => fs.existsSync(p)) || ''
+  return candidates.find((candidate) => fs.existsSync(candidate)) || ''
 }
 
-function ticketHtml(ticket) {
-  const shop = ticket.shop?.name || '3SU'
-  const w = ticket.width === 80 ? 80 : 58
-  if (ticket.kind === 'test') {
-    return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${w}mm auto;margin:0}body{margin:0;width:${w}mm;font:12px sans-serif;padding:4mm;text-align:center}</style></head><body><b>3SU — KIỂM TRA MÁY IN</b><br>${esc(shop)}<br>${new Date().toLocaleString('vi-VN')}</body></html>`
-  }
-  const s = ticket.sale || { items: [], total: 0, id: '' }
-  const rows = (s.items || []).map((it) => `<div>${esc(it.name)} ×${it.qty} — ${it.price}</div>`).join('')
-  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${w}mm auto;margin:0}body{margin:0;width:${w}mm;font:12px sans-serif;padding:4mm}</style></head><body><b>${esc(shop)}</b><div>HĐ ${esc(s.id)}</div>${rows}<div><b>Tổng ${s.total}</b></div></body></html>`
+function cleanupFile(file) {
+  fs.promises.unlink(file).catch(() => {})
 }
 
-function esc(s) {
-  return String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+async function sweepStaleFiles(now = Date.now()) {
+  let names = []
+  try { names = await fs.promises.readdir(os.tmpdir()) } catch { return }
+  await Promise.all(names
+    .filter((name) => name.startsWith(TEMP_PREFIX) && name.endsWith('.html'))
+    .map(async (name) => {
+      const file = path.join(os.tmpdir(), name)
+      try {
+        const stat = await fs.promises.stat(file)
+        if (now - stat.mtimeMs > TEMP_MAX_AGE_MS) await fs.promises.unlink(file)
+      } catch { /* file đã biến mất */ }
+    }))
 }
 
-function printTicket(ticket) {
-  const html = ticketHtml(ticket)
-  const file = path.join(os.tmpdir(), `3su-print-${Date.now()}.html`)
-  fs.writeFileSync(file, html, 'utf8')
+async function handOffToChrome(rawTicket) {
+  const ticket = normalizePrintTicket(rawTicket)
   const chrome = findChrome()
-  if (!chrome) {
-    console.log('Không thấy Chrome — đã ghi', file)
-    return false
+  if (!chrome) throw new Error('Không tìm thấy Chrome. Hãy đặt CHROME_PATH.')
+
+  const file = path.join(os.tmpdir(), `${TEMP_PREFIX}${Date.now()}-${randomUUID()}.html`)
+  await fs.promises.writeFile(file, ticketHtml(ticket), { encoding: 'utf8', mode: 0o600 })
+  const safetyCleanup = setTimeout(() => cleanupFile(file), PRINT_FILE_TTL_MS)
+  safetyCleanup.unref?.()
+
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(chrome, [
+        '--kiosk-printing',
+        '--disable-print-preview',
+        '--no-first-run',
+        pathToFileURL(file).href,
+      ], {
+        detached: false,
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      let settled = false
+      const fail = (error) => {
+        if (settled) return
+        settled = true
+        reject(error)
+      }
+      child.once('error', fail)
+      child.once('spawn', () => {
+        child.unref()
+        const handoff = setTimeout(() => {
+          if (settled) return
+          settled = true
+          resolve()
+        }, PRINT_HANDOFF_MS)
+        handoff.unref?.()
+      })
+      child.once('exit', () => {
+        const delayed = setTimeout(() => cleanupFile(file), 5_000)
+        delayed.unref?.()
+      })
+    })
+    return { ok: true }
+  } catch (error) {
+    cleanupFile(file)
+    throw error
   }
-  spawn(chrome, ['--kiosk-printing', '--disable-print-preview', file], { detached: true, stdio: 'ignore' }).unref()
+}
+
+const printQueue = createSerialQueue(handOffToChrome, { maxPending: config.queueLimit })
+
+function requestOriginAllowed(req, res) {
+  const origin = String(req.headers.origin || '')
+  if (!origin) return true
+  if (!ORIGINS.has(origin)) return false
+  res.setHeader('Access-Control-Allow-Origin', origin)
+  res.setHeader('Vary', 'Origin')
   return true
 }
 
-const server = http.createServer(async (req, res) => {
-  cors(req, res)
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
-  const url = new URL(req.url || '/', `http://127.0.0.1:${PORT}`)
-  if (req.method === 'GET' && url.pathname === '/health') {
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, service: '3su-print-agent' }))
-    return
-  }
-  if (req.method === 'POST' && url.pathname === '/print') {
-    const chunks = []
-    for await (const c of req) chunks.push(c)
-    let body
-    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch {
-      res.writeHead(400); res.end(JSON.stringify({ error: 'JSON' })); return
-    }
-    const ticket = body.ticket || body
-    if (!ticket || ticket.v !== 1) { res.writeHead(400); res.end(JSON.stringify({ error: 'ticket' })); return }
-    const ok = printTicket(ticket)
-    res.writeHead(ok ? 200 : 202, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok }))
-    return
-  }
-  res.writeHead(404); res.end('not found')
-})
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`3SU print agent http://0.0.0.0:${PORT}`)
-  console.log('Cài đặt Next: Agent LAN = http://<IP-máy-này>:9101')
-})
-
-const api = (process.env.PRINT_API || '').replace(/\/+$/, '')
-const shopId = process.env.PRINT_SHOP || ''
-const token = process.env.PRINT_TOKEN || ''
-if (api && shopId && token) {
-  const agentId = 'lan-node'
-  setInterval(async () => {
-    try {
-      const list = await fetch(`${api}/v1/shops/${shopId}/print-jobs`, { headers: { Authorization: `Bearer ${token}` } })
-      if (!list.ok) return
-      const { jobs } = await list.json()
-      for (const job of jobs || []) {
-        const claim = await fetch(`${api}/v1/shops/${shopId}/print-jobs/${job.id}/claim`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ agentId }),
-        })
-        if (!claim.ok) continue
-        const { ticket } = await claim.json()
-        const ok = printTicket(ticket)
-        await fetch(`${api}/v1/shops/${shopId}/print-jobs/${job.id}/ack`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ status: ok ? 'done' : 'error' }),
-        })
-      }
-    } catch (e) {
-      console.error('poll', e.message || e)
-    }
-  }, 2500)
+function setCommonHeaders(res) {
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
 }
+
+function sendJson(res, status, body) {
+  setCommonHeaders(res)
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify(body))
+}
+
+function clientKey(req) {
+  return String(req.socket.remoteAddress || 'unknown')
+}
+
+async function readBody(req, maxBytes = MAX_REQUEST_BYTES) {
+  const declared = Number(req.headers['content-length'])
+  if (Number.isFinite(declared) && declared > maxBytes) throw new HttpError(413, 'body-too-large')
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.length
+    if (size > maxBytes) {
+      req.resume()
+      throw new HttpError(413, 'body-too-large')
+    }
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+function authenticatePrintRequest(req, rawBody) {
+  if (!config.requireAuth) return
+  const timestamp = String(req.headers['x-3su-timestamp'] || '')
+  const nonce = String(req.headers['x-3su-nonce'] || '')
+  const signature = String(req.headers['x-3su-signature'] || '')
+  const verified = verifyPrintSignature({
+    secret: config.secret,
+    timestamp,
+    nonce,
+    signature,
+    body: rawBody,
+  })
+  if (!verified.ok) throw new HttpError(verified.status, `auth-${verified.error}`)
+  if (!replayGuard.consume(nonce, Number(timestamp) + MAX_CLOCK_SKEW_MS)) {
+    throw new HttpError(409, 'replay')
+  }
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    if (!requestOriginAllowed(req, res)) throw new HttpError(403, 'origin')
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-3SU-Timestamp,X-3SU-Nonce,X-3SU-Signature')
+      res.setHeader('Access-Control-Max-Age', '600')
+      setCommonHeaders(res)
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
+    const url = new URL(req.url || '/', `http://${config.host}:${config.port}`)
+    if (req.method === 'GET' && url.pathname === '/health') {
+      sendJson(res, 200, {
+        ok: true,
+        service: '3su-print-agent',
+        auth: config.requireAuth,
+        queue: printQueue.pending(),
+      })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/print') {
+      if (!rateLimiter.allow(clientKey(req))) throw new HttpError(429, 'rate-limit')
+      if (!/^application\/json(?:;|$)/i.test(String(req.headers['content-type'] || ''))) {
+        throw new HttpError(415, 'content-type')
+      }
+      const rawBody = await readBody(req)
+      authenticatePrintRequest(req, rawBody)
+      let parsed
+      try { parsed = JSON.parse(rawBody) } catch { throw new HttpError(400, 'json') }
+      const ticket = normalizePrintTicket(parsed?.ticket ?? parsed)
+      await printQueue.enqueue(ticket)
+      sendJson(res, 200, { ok: true, status: 'sent' })
+      return
+    }
+
+    throw new HttpError(404, 'not-found')
+  } catch (error) {
+    if (error instanceof PrintQueueFullError) {
+      sendJson(res, 429, { ok: false, error: 'queue-full' })
+      return
+    }
+    if (error instanceof HttpError) {
+      sendJson(res, error.status, { ok: false, error: error.message })
+      return
+    }
+    console.error('request', error instanceof Error ? error.message : error)
+    sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : 'request' })
+  }
+})
+
+server.requestTimeout = 15_000
+server.headersTimeout = 10_000
+server.keepAliveTimeout = 5_000
+server.maxRequestsPerSocket = 100
+server.listen(config.port, config.host, () => {
+  console.log(`3SU print agent http://${config.host}:${config.port}`)
+  console.log(config.requireAuth ? 'LAN authentication: required' : 'LAN authentication: localhost-only mode')
+})
+
+void sweepStaleFiles()
+const sweepTimer = setInterval(() => { void sweepStaleFiles() }, 30 * 60_000)
+sweepTimer.unref?.()
+
+const api = String(process.env.PRINT_API || '').replace(/\/+$/, '')
+const shopId = String(process.env.PRINT_SHOP || '')
+const tokenFile = String(process.env.PRINT_TOKEN_FILE || '')
+const legacyToken = String(process.env.PRINT_TOKEN || '')
+const agentId = String(process.env.PRINT_AGENT_ID || `lan-${os.hostname()}`).slice(0, 120)
+
+if (legacyToken && !tokenFile) {
+  console.warn('PRINT_TOKEN là biến môi trường dài hạn. Nên dùng PRINT_TOKEN_FILE và xoay token thường xuyên.')
+}
+
+async function cloudToken() {
+  if (tokenFile) return (await fs.promises.readFile(tokenFile, 'utf8')).trim()
+  return legacyToken
+}
+
+async function fetchDeadline(url, init = {}, timeoutMs = 10_000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try { return await fetch(url, { ...init, signal: controller.signal }) } finally { clearTimeout(timer) }
+}
+
+async function pollCloudOnce() {
+  const token = await cloudToken()
+  if (!token) throw new Error('Thiếu PRINT_TOKEN_FILE/PRINT_TOKEN')
+  const headers = { Authorization: `Bearer ${token}` }
+  const list = await fetchDeadline(`${api}/v1/shops/${encodeURIComponent(shopId)}/print-jobs`, { headers })
+  if (!list.ok) throw new Error(`list ${list.status}`)
+  const payload = await list.json()
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs.slice(0, 100) : []
+
+  for (const job of jobs) {
+    const id = typeof job?.id === 'string' ? job.id : ''
+    if (!id) continue
+    const claim = await fetchDeadline(`${api}/v1/shops/${encodeURIComponent(shopId)}/print-jobs/${encodeURIComponent(id)}/claim`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId }),
+    })
+    if (!claim.ok) continue
+
+    let status = 'error'
+    let error = ''
+    try {
+      const claimed = await claim.json()
+      const ticket = normalizePrintTicket(claimed?.ticket)
+      await printQueue.enqueue(ticket)
+      status = 'done'
+    } catch (cause) {
+      error = String(cause instanceof Error ? cause.message : cause).slice(0, 240)
+    }
+
+    await fetchDeadline(`${api}/v1/shops/${encodeURIComponent(shopId)}/print-jobs/${encodeURIComponent(id)}/ack`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ status, error }),
+    })
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function cloudPollLoop() {
+  let delay = 2_500
+  for (;;) {
+    try {
+      await pollCloudOnce()
+      delay = 2_500
+    } catch (error) {
+      console.error('poll', error instanceof Error ? error.message : error)
+      delay = Math.min(60_000, Math.max(5_000, delay * 2))
+    }
+    await sleep(delay + Math.floor(Math.random() * Math.min(1_000, delay * 0.2)))
+  }
+}
+
+if (api && shopId && (tokenFile || legacyToken)) void cloudPollLoop()
+else if (api || shopId || tokenFile || legacyToken) console.warn('Cloud print cần đủ PRINT_API, PRINT_SHOP và token.')
+
+function shutdown(signal) {
+  console.log(`Nhận ${signal}, đang dừng print agent…`)
+  clearInterval(sweepTimer)
+  server.close(() => process.exit(0))
+  const force = setTimeout(() => process.exit(1), 5_000)
+  force.unref?.()
+}
+process.once('SIGINT', () => shutdown('SIGINT'))
+process.once('SIGTERM', () => shutdown('SIGTERM'))
