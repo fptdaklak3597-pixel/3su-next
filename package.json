@@ -19,7 +19,8 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "audit:security": "npm audit --audit-level=high"
+    "audit:security": "npm audit --audit-level=high",
+    "check:print-agent": "node --check scripts/print-agent-core.mjs && node --check scripts/print-agent.mjs"
   },
   "dependencies": {
     "dexie": "^4.0.11",
