@@ -18,21 +18,21 @@ beforeEach(async () => {
 
 describe('passwordNeedsReset', () => {
   it('chủ cửa hàng không bắt đổi', async () => {
-    const u = await createUser({ username: 'chu', name: 'Chủ', password: '1234', role: 'owner' })
+    const u = await createUser({ username: 'chu', name: 'Chủ', password: 'owner-1234', role: 'owner' })
     expect(u.passwordNeedsReset).toBe(false)
   })
 
   it('nhân viên mới phải đổi mật khẩu', async () => {
-    const owner = await createUser({ username: 'chu', name: 'Chủ', password: '1234', role: 'owner' })
+    const owner = await createUser({ username: 'chu', name: 'Chủ', password: 'owner-1234', role: 'owner' })
     await setCurrentUser(owner)
-    const u = await createUser({ username: 'nv1', name: 'An', password: '1111', role: 'staff' })
+    const u = await createUser({ username: 'nv1', name: 'An', password: 'staff1', role: 'staff' })
     await setCurrentUser(null)
 
     expect(u.passwordNeedsReset).toBe(true)
-    const logged = await login('nv1', '1111')
+    const logged = await login('nv1', 'staff1')
     expect(logged.passwordNeedsReset).toBe(true)
-    await changePassword(u.id, '2222')
-    const after = await login('nv1', '2222')
+    await changePassword(u.id, 'staff2')
+    const after = await login('nv1', 'staff2')
     expect(after.passwordNeedsReset).toBe(false)
   })
 })
