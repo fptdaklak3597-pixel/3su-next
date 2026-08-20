@@ -8,6 +8,12 @@ import type { ReceiptContext } from './print'
 import { printReceiptLocal } from './print'
 import { parsePrintTicket, saleTicketFromContext, testTicket, type PrintTicket } from './printTicket'
 import { isPrintAgentOnline, setPrintAgentOnline } from './printPresence'
+import {
+  getLanPrintSecret,
+  lanAgentNeedsSecret,
+  normalizeLanAgentUrl,
+  signedLanPrintHeaders,
+} from './printAgentAuth'
 
 export type PrintVia = 'lan' | 'cloud' | 'local' | 'none'
 
@@ -16,28 +22,38 @@ export interface PrintDispatchResult {
   error?: string
 }
 
-const LAN_TIMEOUT_MS = 1800
+const LAN_TIMEOUT_MS = 4_000
+const PRINT_WS_RECONNECT_MAX_MS = 30_000
 
 function lanUrl(base: string, path: string): string {
-  return `${base.replace(/\/+$/, '')}${path}`
+  return `${normalizeLanAgentUrl(base).replace(/\/+$/, '')}${path}`
 }
 
 export async function tryLanPrint(agentUrl: string, ticket: PrintTicket): Promise<boolean> {
-  const url = lanUrl(agentUrl, '/print')
-  const ac = new AbortController()
-  const t = setTimeout(() => ac.abort(), LAN_TIMEOUT_MS)
+  const normalizedUrl = normalizeLanAgentUrl(agentUrl)
+  if (!normalizedUrl) return false
+  const normalizedTicket = parsePrintTicket(ticket)
+  const body = JSON.stringify({ ticket: normalizedTicket })
+  const secret = await getLanPrintSecret()
+  if (lanAgentNeedsSecret(normalizedUrl) && !secret) return false
+
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (secret) Object.assign(headers, await signedLanPrintHeaders(secret, body))
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), LAN_TIMEOUT_MS)
   try {
-    const res = await fetch(url, {
+    const response = await fetch(lanUrl(normalizedUrl, '/print'), {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ticket }),
-      signal: ac.signal,
+      headers,
+      body,
+      signal: controller.signal,
     })
-    return res.ok
+    return response.ok
   } catch {
     return false
   } finally {
-    clearTimeout(t)
+    clearTimeout(timer)
   }
 }
 
@@ -173,44 +189,77 @@ export function cloudPrintErrorMessage(e: unknown): string {
 
 /**
  * WS role=print — điện thoại/Cài đặt đọc /print-status từ socket này.
- * Không mở socket này thì chỗ khác vẫn thấy "chưa mở trang Máy in".
+ * Token chỉ nằm trong subprotocol, không fallback sang query string.
  */
 export function connectPrintAgentSocket(onJob: () => void): () => void {
   let stopped = false
   let ws: WebSocket | null = null
   let retry: ReturnType<typeof setTimeout> | null = null
+  let attempts = 0
+  let generation = 0
 
-  async function open() {
-    if (stopped) return
-    const base = apiBase()
-    const shopId = await getCloudShopId()
-    if (!base || !shopId) return
-    const token = await getCloudIdToken()
-    const wsBase = base.replace(/\/+$/, '').replace(/^http/, 'ws')
-    const wsUrl = `${wsBase}/v1/shops/${encodeURIComponent(shopId)}/ws?role=print`
+  function schedule(expectedGeneration: number) {
+    if (stopped || expectedGeneration !== generation || retry) return
+    const base = Math.min(PRINT_WS_RECONNECT_MAX_MS, 1_000 * (2 ** Math.min(attempts, 5)))
+    const delay = base + Math.floor(Math.random() * Math.min(1_000, base * 0.2))
+    attempts += 1
+    retry = setTimeout(() => {
+      retry = null
+      void open(expectedGeneration)
+    }, delay)
+  }
+
+  async function open(expectedGeneration: number) {
+    if (stopped || expectedGeneration !== generation) return
     try {
-      ws = new WebSocket(wsUrl, ['firebase-auth', token])
+      const base = apiBase()
+      const shopId = await getCloudShopId()
+      if (!base || !shopId || stopped || expectedGeneration !== generation) return
+      const token = await getCloudIdToken()
+      if (stopped || expectedGeneration !== generation) return
+      const wsBase = base.replace(/\/+$/, '').replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')
+      const next = new WebSocket(
+        `${wsBase}/v1/shops/${encodeURIComponent(shopId)}/ws?role=print`,
+        ['firebase-auth', token],
+      )
+      ws?.close()
+      ws = next
+      next.onopen = () => {
+        if (next !== ws || expectedGeneration !== generation) return
+        attempts = 0
+        setPrintAgentOnline(true)
+      }
+      next.onmessage = (event) => {
+        if (next !== ws || expectedGeneration !== generation) return
+        try {
+          const message = JSON.parse(String(event.data)) as { t?: string }
+          if (message.t === 'print') onJob()
+        } catch { /* payload không hợp lệ */ }
+      }
+      next.onerror = () => {
+        if (next === ws) next.close()
+      }
+      next.onclose = () => {
+        if (next === ws) ws = null
+        if (stopped || expectedGeneration !== generation) return
+        setPrintAgentOnline(false)
+        schedule(expectedGeneration)
+      }
     } catch {
-      ws = new WebSocket(`${wsUrl}&token=${encodeURIComponent(token)}`)
-    }
-    ws.onopen = () => setPrintAgentOnline(true)
-    ws.onmessage = (ev) => {
-      try {
-        const m = JSON.parse(String(ev.data)) as { t?: string }
-        if (m.t === 'print') onJob()
-      } catch { /* */ }
-    }
-    ws.onclose = () => {
-      if (stopped) return
-      setPrintAgentOnline(false)
-      retry = setTimeout(() => { void open() }, 3000)
+      schedule(expectedGeneration)
     }
   }
 
-  void open()
+  generation += 1
+  void open(generation)
   return () => {
     stopped = true
+    generation += 1
     if (retry) clearTimeout(retry)
-    ws?.close()
+    retry = null
+    const current = ws
+    ws = null
+    current?.close()
+    setPrintAgentOnline(false)
   }
 }
