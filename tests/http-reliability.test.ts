@@ -29,8 +29,9 @@ describe('HTTP deadlines', () => {
     ))
 
     const pending = apiGet('https://api.example.test', '/health', async () => 'token', 25)
+    const assertion = expect(pending).rejects.toThrow(/quá thời gian 25ms/)
     await vi.advanceTimersByTimeAsync(30)
-    await expect(pending).rejects.toThrow(/quá thời gian 25ms/)
+    await assertion
   })
 })
 
@@ -72,12 +73,12 @@ describe('WebSocket token lifecycle', () => {
     }
     vi.stubGlobal('WebSocket', FakeWebSocket as unknown as typeof WebSocket)
 
-    const transport = createHttpTransport({
+    const t = createHttpTransport({
       baseUrl: 'https://api.example.test',
       shopId: 'shop 1',
       getToken: async () => 'header.payload.signature',
     })
-    transport.connect(() => {})
+    t.connect(() => {})
     await Promise.resolve()
     await Promise.resolve()
 
@@ -85,7 +86,7 @@ describe('WebSocket token lifecycle', () => {
     expect(instances[0]?.url).toBe('wss://api.example.test/v1/shops/shop%201/ws')
     expect(instances[0]?.url).not.toContain('token=')
     expect(instances[0]?.protocols).toEqual(['firebase-auth', 'header.payload.signature'])
-    transport.disconnect()
+    t.disconnect()
   })
 
   it('disconnect trước khi token resolve không mở socket muộn', async () => {
