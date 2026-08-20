@@ -17,7 +17,14 @@ export interface HttpTransportOpts {
   shopId: string
   getToken: () => Promise<string>
   requestTimeoutMs?: number
+  /** Alias tương thích các caller/test cũ. */
+  timeoutMs?: number
   wsReconnectBaseMs?: number
+}
+
+export interface SnapshotCodecOptions {
+  maxJsonBytes?: number
+  maxWireBytes?: number
 }
 
 export class HttpTimeoutError extends Error {
@@ -64,7 +71,7 @@ export function createHttpTransport(opts: HttpTransportOpts): SyncTransport {
   let generation = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let reconnectAttempts = 0
-  const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS
+  const timeoutMs = opts.requestTimeoutMs ?? opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const reconnectBase = Math.max(100, opts.wsReconnectBaseMs ?? DEFAULT_WS_RECONNECT_MS)
 
   async function headers(): Promise<HeadersInit> {
@@ -200,6 +207,12 @@ async function err(res: Response): Promise<string> {
   }
 }
 
+function finiteLimit(value: number | undefined, fallback: number, label: string): number {
+  const limit = value ?? fallback
+  if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error(`${label} không hợp lệ`)
+  return limit
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < bytes.length; i += BASE64_CHUNK) {
@@ -211,12 +224,22 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
-function base64ToBytes(b64: string): Uint8Array {
-  if (b64.length > Math.ceil(MAX_SNAPSHOT_WIRE_BYTES * 4 / 3) + 4) {
+function base64ToBytes(b64: string, maxWireBytes: number): Uint8Array {
+  if (typeof b64 !== 'string'
+    || b64.length % 4 === 1
+    || !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) {
+    throw new Error('Snapshot base64 không hợp lệ')
+  }
+  if (b64.length > Math.ceil(maxWireBytes * 4 / 3) + 4) {
     throw new Error('Snapshot nén vượt giới hạn')
   }
-  const binary = atob(b64)
-  if (binary.length > MAX_SNAPSHOT_WIRE_BYTES) throw new Error('Snapshot nén vượt giới hạn')
+  let binary: string
+  try {
+    binary = atob(b64)
+  } catch {
+    throw new Error('Snapshot base64 không hợp lệ')
+  }
+  if (binary.length > maxWireBytes) throw new Error('Snapshot nén vượt giới hạn')
   const out = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i)
   return out
@@ -229,34 +252,41 @@ function ownedBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer
 }
 
-export async function gzipJson(data: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(JSON.stringify(data))
-  if (bytes.length > MAX_SNAPSHOT_SOURCE_BYTES) throw new Error('Snapshot vượt giới hạn dữ liệu')
-  if (typeof CompressionStream === 'undefined') return bytesToBase64(bytes)
+export async function gzipJson(data: unknown, options: SnapshotCodecOptions = {}): Promise<string> {
+  const maxJsonBytes = finiteLimit(options.maxJsonBytes, MAX_SNAPSHOT_SOURCE_BYTES, 'Giới hạn JSON')
+  const maxWireBytes = finiteLimit(options.maxWireBytes, MAX_SNAPSHOT_WIRE_BYTES, 'Giới hạn snapshot nén')
+  const json = JSON.stringify(data)
+  if (json === undefined) throw new Error('Snapshot không thể tuần tự hóa')
+  const bytes = new TextEncoder().encode(json)
+  if (bytes.length > maxJsonBytes) throw new Error('Snapshot vượt giới hạn dữ liệu')
+  if (typeof CompressionStream === 'undefined') {
+    if (bytes.length > maxWireBytes) throw new Error('Snapshot nén vượt giới hạn')
+    return bytesToBase64(bytes)
+  }
   const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'))
   const compressed = new Uint8Array(await new Response(stream).arrayBuffer())
-  if (compressed.length > MAX_SNAPSHOT_WIRE_BYTES) throw new Error('Snapshot nén vượt giới hạn')
+  if (compressed.length > maxWireBytes) throw new Error('Snapshot nén vượt giới hạn')
   return bytesToBase64(compressed)
 }
 
-export async function ungzipJson<T>(b64: string): Promise<T> {
-  const raw = base64ToBytes(b64)
+export async function ungzipJson<T>(b64: string, options: SnapshotCodecOptions = {}): Promise<T> {
+  const maxJsonBytes = finiteLimit(options.maxJsonBytes, MAX_SNAPSHOT_SOURCE_BYTES, 'Giới hạn JSON')
+  const maxWireBytes = finiteLimit(options.maxWireBytes, MAX_SNAPSHOT_WIRE_BYTES, 'Giới hạn snapshot nén')
+  const raw = base64ToBytes(b64, maxWireBytes)
   if (typeof DecompressionStream === 'undefined') {
-    const text = new TextDecoder().decode(raw)
-    if (text.length > MAX_SNAPSHOT_SOURCE_BYTES) throw new Error('Snapshot giải nén vượt giới hạn')
-    return JSON.parse(text) as T
+    if (raw.byteLength > maxJsonBytes) throw new Error('Snapshot giải nén vượt giới hạn')
+    return JSON.parse(new TextDecoder().decode(raw)) as T
   }
   try {
     const stream = new Blob([ownedBuffer(raw)]).stream().pipeThrough(new DecompressionStream('gzip'))
     const buf = await new Response(stream).arrayBuffer()
-    if (buf.byteLength > MAX_SNAPSHOT_SOURCE_BYTES) throw new Error('Snapshot giải nén vượt giới hạn')
+    if (buf.byteLength > maxJsonBytes) throw new Error('Snapshot giải nén vượt giới hạn')
     return JSON.parse(new TextDecoder().decode(buf)) as T
   } catch (error) {
     // Snapshot legacy chưa gzip vẫn được đọc, nhưng không được nuốt lỗi giới hạn.
     if (error instanceof Error && error.message.includes('vượt giới hạn')) throw error
-    const text = new TextDecoder().decode(raw)
-    if (text.length > MAX_SNAPSHOT_SOURCE_BYTES) throw new Error('Snapshot giải nén vượt giới hạn')
-    return JSON.parse(text) as T
+    if (raw.byteLength > maxJsonBytes) throw new Error('Snapshot giải nén vượt giới hạn')
+    return JSON.parse(new TextDecoder().decode(raw)) as T
   }
 }
 
