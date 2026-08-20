@@ -1,5 +1,5 @@
 import { liveQuery, type Subscription } from 'dexie'
-import { getCurrentUser } from './db'
+import { getCurrentUser, normalizeCurrentUserSession } from './db'
 import { logError } from './errorLogger'
 import { useApp } from './store'
 import type { User } from './types'
@@ -22,14 +22,25 @@ export function applyResolvedSessionUser(user: User | null): void {
   useApp.getState().setUser(user)
 }
 
+async function normalizeAndApply(): Promise<void> {
+  try {
+    applyResolvedSessionUser(await normalizeCurrentUserSession())
+  } catch (error) {
+    logError(error, 'session.normalize')
+  }
+}
+
 /**
- * Theo dõi cả meta session lẫn record user. Role/perms/active/deleted thay đổi
- * qua sync sẽ cập nhật Zustand ngay; user bị khóa/xóa bị đưa về màn đăng nhập.
+ * Theo dõi cả meta session lẫn record user. liveQuery chỉ đọc; migration/cleanup
+ * chạy ở callback sau khi query kết thúc để không vi phạm Dexie read-only context.
  */
 export function startCurrentUserSessionSync(): () => void {
   if (!subscription) {
     subscription = liveQuery(() => getCurrentUser()).subscribe({
-      next: applyResolvedSessionUser,
+      next: (user) => {
+        applyResolvedSessionUser(user)
+        void normalizeAndApply()
+      },
       error: (error) => logError(error, 'session.live'),
     })
   }
