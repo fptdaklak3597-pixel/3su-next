@@ -40,6 +40,7 @@ const LOCAL_RESTORE_RESET_KEYS = [
   'sync:lastSnapshotSeq',
   'sync:poisoned',
   'sync:blocked',
+  'sync:appliedGcBeforeMs',
   'device:cloudAt',
 ]
 
