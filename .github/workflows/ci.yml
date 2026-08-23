@@ -45,3 +45,12 @@ jobs:
 
       - name: Build all applications
         run: npm run build:all
+
+      - name: E-invoice package typecheck
+        run: npm --prefix packages/3su-einvoice run typecheck
+
+      - name: E-invoice package tests
+        run: npm --prefix packages/3su-einvoice run test
+
+      - name: E-invoice package build
+        run: npm --prefix packages/3su-einvoice run build
