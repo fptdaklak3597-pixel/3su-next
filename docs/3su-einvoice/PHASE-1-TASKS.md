@@ -115,7 +115,12 @@ Done when:
 
 ## Validation evidence
 
-Phase 1 implementation was validated on GitHub Actions CI run `#277` before this completion marker was committed:
+Phase 1 was validated twice before merge:
+
+- GitHub Actions CI run `#277`: PASS after fixing package-test isolation.
+- GitHub Actions CI run `#279` on the final completion-marker commit: PASS.
+
+Both validation runs covered:
 
 - Existing 3SU dependency security audit: PASS.
 - Existing 3SU print-agent syntax check: PASS.
@@ -126,8 +131,8 @@ Phase 1 implementation was validated on GitHub Actions CI run `#277` before this
 - `@3su/einvoice` contract tests: PASS.
 - `@3su/einvoice` build: PASS.
 
-The final completion commit must pass the same CI pipeline before merge.
+PR `#27` was squash-merged into `main` as commit `510c726bd5058bb0b74b487713e6c003195e3cbf`.
 
 ## Phase 1 status
 
-**COMPLETE — pending final CI on this completion-marker commit and merge to `main`.**
+**COMPLETE AND MERGED TO `main`.**
