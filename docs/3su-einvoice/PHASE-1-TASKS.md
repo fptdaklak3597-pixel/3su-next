@@ -104,11 +104,30 @@ Done when:
 
 ## Phase 1 completion checklist
 
-- [ ] P1-T01 complete
-- [ ] P1-T02 complete
-- [ ] P1-T03 complete
-- [ ] P1-T04 complete
-- [ ] P1-T05 complete
-- [ ] P1-T06 complete
-- [ ] P1-T07 complete
-- [ ] P1-T08 complete
+- [x] P1-T01 complete
+- [x] P1-T02 complete
+- [x] P1-T03 complete
+- [x] P1-T04 complete
+- [x] P1-T05 complete
+- [x] P1-T06 complete
+- [x] P1-T07 complete
+- [x] P1-T08 complete
+
+## Validation evidence
+
+Phase 1 implementation was validated on GitHub Actions CI run `#277` before this completion marker was committed:
+
+- Existing 3SU dependency security audit: PASS.
+- Existing 3SU print-agent syntax check: PASS.
+- Existing 3SU typecheck: PASS.
+- Existing 3SU test suite: PASS.
+- Existing 3SU build-all: PASS.
+- `@3su/einvoice` typecheck: PASS.
+- `@3su/einvoice` contract tests: PASS.
+- `@3su/einvoice` build: PASS.
+
+The final completion commit must pass the same CI pipeline before merge.
+
+## Phase 1 status
+
+**COMPLETE — pending final CI on this completion-marker commit and merge to `main`.**
