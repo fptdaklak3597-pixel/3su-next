@@ -45,3 +45,12 @@ jobs:
 
       - name: Build all applications
         run: npm run build:all
+
+      - name: E-invoice package typecheck
+        run: npx tsc -p packages/3su-einvoice/tsconfig.json --noEmit
+
+      - name: E-invoice package tests
+        run: npx vitest run --config packages/3su-einvoice/vitest.config.ts
+
+      - name: E-invoice package build
+        run: npx tsc -p packages/3su-einvoice/tsconfig.build.json
