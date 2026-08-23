@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { dbx, getMeta, setMeta } from '@/core/db'
-import { initSyncEngine, enqueueOp, makeOp, flushQueue, setTransport, setSyncMode, setCloudPaused, getSyncState } from '@/core/sync/engine'
+import {
+  initSyncEngine, enqueueOp, makeOp, flushQueue, setTransport, setSyncMode, setCloudPaused,
+  getSyncState, MAX_PUSH_ATTEMPTS,
+} from '@/core/sync/engine'
+import { getPoisonedOps } from '@/core/sync/apply'
 import { compareHlc } from '@/core/sync/hlc'
 import { nullTransport } from '@/core/sync/transport'
 import type { SyncOp } from '@/core/types'
@@ -223,5 +227,107 @@ describe('engine v2 — lastSeq là mốc đã áp, không phải MAX cloud', ()
     expect(pushed).toBe(0)
     expect(await dbx.syncQueue.count()).toBe(1)
     expect(getSyncState().status).toBe('offline')
+  })
+})
+
+describe('engine v2 — push quarantine', () => {
+  beforeEach(async () => {
+    await Promise.all([
+      dbx.syncQueue.clear(), dbx.appliedOps.clear(), dbx.products.clear(),
+      dbx.meta.clear(), dbx.stockMoves.clear(),
+    ])
+    await initSyncEngine()
+    setCloudPaused(false)
+    setSyncMode('local')
+    setTransport(nullTransport)
+  })
+
+  afterEach(() => {
+    setCloudPaused(false)
+    setSyncMode('local')
+    setTransport(nullTransport)
+  })
+
+  it('batch lỗi: tách op lành (ack) và tăng attempts op độc', async () => {
+    await dbx.products.put({
+      id: 'p1', name: 'SP', cat: 'Khác', price: 1, cost: 1, stock: 10, unit: 'cái',
+      barcode: '', expiry: '', units: [], wholesalePrice: 0, batches: [], createdAt: 1, updatedAt: 1,
+    })
+    const good = await enqueueOp('stock.adjust', { productId: 'p1', delta: 1, reason: 'ok' })
+    const bad = await enqueueOp('stock.adjust', { productId: 'p1', delta: 1, reason: 'poison' })
+
+    setSyncMode('sync')
+    setTransport({
+      ...nullTransport,
+      async pushOps(ops) {
+        if (ops.length > 1) throw new Error('batch schema reject')
+        if (ops[0]!.id === bad.id) throw new Error('op schema invalid')
+        return { acked: ops.map((o) => o.id), seq: 1 }
+      },
+      async pullOps() { return { ops: [], seq: 1 } },
+    })
+
+    await flushQueue()
+
+    expect(await dbx.syncQueue.get(good.id)).toBeUndefined()
+    const stuck = await dbx.syncQueue.get(bad.id)
+    expect(stuck).toBeTruthy()
+    expect(stuck!.attempts).toBe(1)
+    expect(stuck!.lastError).toMatch(/schema invalid/)
+    expect(await dbx.appliedOps.get(bad.id)).toBeTruthy()
+    expect(getSyncState().status).toBe('ok')
+  })
+
+  it('đủ MAX_PUSH_ATTEMPTS → xóa khỏi outbox và ghi sync:poisoned', async () => {
+    const bad = await enqueueOp('stock.adjust', { productId: 'p1', delta: 1, reason: 'dead' })
+    await dbx.syncQueue.put({ ...bad, attempts: MAX_PUSH_ATTEMPTS - 1 })
+
+    setSyncMode('sync')
+    setTransport({
+      ...nullTransport,
+      async pushOps() { throw new Error('vẫn lỗi') },
+      async pullOps() { return { ops: [], seq: 0 } },
+    })
+
+    await flushQueue()
+
+    expect(await dbx.syncQueue.get(bad.id)).toBeUndefined()
+    expect(await dbx.appliedOps.get(bad.id)).toBeTruthy()
+    const poisoned = await getPoisonedOps()
+    expect(poisoned.some((p) => p.id === bad.id && /Push thất bại quá số lần/i.test(p.message))).toBe(true)
+  })
+
+  it('op poison không chặn pull vòng sau', async () => {
+    await dbx.products.put({
+      id: 'p1', name: 'SP', cat: 'Khác', price: 1, cost: 1, stock: 10, unit: 'cái',
+      barcode: '', expiry: '', units: [], wholesalePrice: 0, batches: [], createdAt: 1, updatedAt: 1,
+    })
+    await setMeta('sync:lastSeq', 10)
+    const bad = await enqueueOp('stock.adjust', { productId: 'p1', delta: 1, reason: 'dead' })
+    await dbx.syncQueue.put({ ...bad, attempts: MAX_PUSH_ATTEMPTS - 1 })
+
+    const remote: SyncOp = {
+      ...makeOp('stock.adjust', { productId: 'p1', delta: -2, reason: 'máy kia' }),
+      deviceId: 'dev_remote',
+      seq: 11,
+    }
+    remote.id = remote.hlc
+
+    setSyncMode('sync')
+    setTransport({
+      ...nullTransport,
+      async pushOps() { throw new Error('poison') },
+      async pullOps(since) {
+        if (since < 11) return { ops: [remote], seq: 11 }
+        return { ops: [], seq: 11 }
+      },
+    })
+
+    await flushQueue()
+
+    expect(await dbx.syncQueue.get(bad.id)).toBeUndefined()
+    expect((await dbx.products.get('p1'))!.stock).toBe(8)
+    expect(await getMeta<number>('sync:lastSeq', 0)).toBe(11)
+    expect(getSyncState().status).toBe('ok')
   })
 })

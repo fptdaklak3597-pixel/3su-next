@@ -11,7 +11,7 @@ import {
 import { getAutoBackups, parseRestoreFile } from '@/core/domain/trial'
 import { exportSnapshot } from '@/core/sync/snapshot'
 import { initSyncEngine, makeOp, setCloudPaused } from '@/core/sync/engine'
-import type { Product, User } from '@/core/types'
+import type { ArchiveRecord, Product, User } from '@/core/types'
 
 function user(over: Partial<User> = {}): User {
   return {
@@ -54,12 +54,33 @@ beforeEach(async () => {
     dbx.users.clear(), dbx.purchaseOrders.clear(), dbx.invoices.clear(),
     dbx.batches.clear(), dbx.priceLog.clear(), dbx.notes.clear(),
     dbx.pricingRules.clear(), dbx.quickAnswers.clear(), dbx.devices.clear(),
+    dbx.archive.clear(),
     dbx.syncQueue.clear(), dbx.appliedOps.clear(), dbx.meta.clear(),
   ])
   await initSyncEngine()
 })
 
 describe('local and automatic backups', () => {
+  it('export/restore gồm bảng archive; backup cũ thiếu archive vẫn OK', async () => {
+    const row: ArchiveRecord = {
+      id: 'arc1', kind: 'sale', refId: 's1', label: 'Đơn cũ',
+      data: { id: 's1' }, archivedAt: 1, archivedBy: 'u-owner',
+    }
+    await dbx.archive.put(row)
+    await dbx.users.put(user())
+
+    const exported = await exportBackup()
+    expect(exported.archive).toEqual([row])
+
+    await dbx.archive.clear()
+    await restoreLocalBackup(backup({ archive: [row], products: [product()] }))
+    expect(await dbx.archive.get('arc1')).toEqual(row)
+
+    await dbx.archive.put({ ...row, id: 'arc-stale' })
+    await restoreLocalBackup(backup({ products: [product()] }))
+    expect(await dbx.archive.count()).toBe(0)
+  })
+
   it('export mặc định không chứa user/hash/salt', async () => {
     await dbx.users.bulkPut([
       user(),

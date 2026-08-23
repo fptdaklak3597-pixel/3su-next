@@ -6,18 +6,20 @@ import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { matchesSearch, fmt, fmtNum } from '@/core/format'
+import { matchesSearch, fmt, fmtNum, vnDaysAgo, vnToday } from '@/core/format'
 import {
   bestSellerIds, suggestUnits, cartUnitPrice, confirmSale, customerHabits,
   mergeCartLine, setCartLineQty, removeCartLine, discountToAmount, stockAddWarning,
-  DENOMINATIONS, type CartItem, type DiscountKind,
+  salesInDateRange, DENOMINATIONS, type CartItem, type DiscountKind,
 } from '@/core/domain/sales'
 import { playPosSound } from '@/core/browser/posSound'
 import { PrintStatusDot } from '@/shared/PrintStatus'
-import { parseCommand, findProductByName, startListening, voiceSupported } from '@/core/browser/voice'
+import { parseCommand, findProductByName, startListening, voiceSupported, resolveUnitRatio } from '@/core/browser/voice'
 import { createBarcodeScan, findProductByBarcode, type ScanHandle } from '@/core/browser/barcode'
 import { attachHidBarcode, isBarcodeLike } from '@/core/browser/hidBarcode'
 import { dispatchPrint, printResultToast } from '@/core/browser/printQueue'
+import { canUseBluetoothPrint, printTicketBluetooth } from '@/core/browser/printBluetooth'
+import { saleTicketFromContext } from '@/core/browser/printTicket'
 import { createConfirmGate } from '@/core/confirmGate'
 import { printReceiptLocal } from '@/core/browser/print'
 import { payQrSrc } from '@/core/domain/vietqr'
@@ -71,7 +73,7 @@ export function WebSalePage() {
     [],
     [] as Product[],
   )
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(29), vnToday()), [], [])
   const customers = useLiveQuery(
     () => dbx.customers.filter((c) => !c.deleted).toArray(),
     [],
@@ -149,8 +151,9 @@ export function WebSalePage() {
     for (const it of items) {
       const p = findProductByName(it.name, products)
       if (!p) continue
-      const units = suggestUnits(p)
-      const u = units[0]
+      const u = it.unit
+        ? resolveUnitRatio(p, it.unit)
+        : (suggestUnits(p)[0] ?? resolveUnitRatio(p))
       if (settings.allowNegativeStock === false && stockAddWarning(p.stock, it.qty * u.r) === 'out') { skipped++; continue }
       const existing = next.find((c) => c.productId === p.id && c.unitName === u.n)
       if (existing) existing.qty += it.qty
@@ -531,9 +534,31 @@ export function WebSalePage() {
       <Sheet open={!!doneSale} onClose={() => setDoneSale(null)} title="Thanh toán thành công">
         <p className="web-sub" style={{ marginBottom: 12 }}>In hóa đơn cho khách?</p>
         <div className="web-settings-actions">
+          <button type="button" className="web-btn pri" onClick={() => setDoneSale(null)}>Bán tiếp</button>
+          {canUseBluetoothPrint() && (
+            <button
+              type="button"
+              className="web-btn"
+              onClick={() => {
+                if (!doneSale) return
+                void printTicketBluetooth(saleTicketFromContext({
+                  sale: doneSale,
+                  shop,
+                  printer: settings.printer,
+                  customerName: customer?.name ?? null,
+                  cashier: user?.name || user?.username || '',
+                }), { requestIfNeeded: true }).then(
+                  () => showToast('Đang in máy nhiệt…', 'ok'),
+                  (e: unknown) => showToast(e instanceof Error ? e.message : 'Không in được Bluetooth', 'bad'),
+                )
+              }}
+            >
+              <Printer size={15} /> In Bluetooth K80
+            </button>
+          )}
           <button
             type="button"
-            className="web-btn pri"
+            className="web-btn"
             onClick={() => {
               if (!doneSale) return
               const ok = printReceiptLocal({
@@ -549,7 +574,7 @@ export function WebSalePage() {
           >
             <Printer size={15} /> In trên máy này
           </button>
-          <button type="button" className="web-btn" onClick={() => setDoneSale(null)}>Không in</button>
+          <button type="button" className="web-btn" onClick={() => { setDoneSale(null); navigate('/') }}>Về trang chủ</button>
         </div>
       </Sheet>
     </div>

@@ -95,5 +95,7 @@ export function gdtInvoiceKey(d: GdtInvoiceData): string {
 
 /** Tổng giá trị hoá đơn gồm thuế. */
 export function invoiceTotal(inv: InvoiceRecord): number {
-  return (inv.amount || 0) + (inv.tax || 0)
+  const amount = Number(inv.amount)
+  const tax = Number(inv.tax)
+  return (Number.isFinite(amount) ? amount : 0) + (Number.isFinite(tax) ? tax : 0)
 }

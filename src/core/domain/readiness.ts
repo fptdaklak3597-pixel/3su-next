@@ -2,7 +2,7 @@
  * 3SU Next — Kiểm tra sẵn sàng (readiness check)
  * Port từ 90-product-hardening.js: đánh giá mức độ sẵn sàng cho bản dùng thật.
  */
-import { dbx } from '../db'
+import { dbx, exportBackup } from '../db'
 import { getSyncState } from '../sync/engine'
 import { getAutoBackups } from './trial'
 import type { ShopInfo, Settings } from '../types'
@@ -26,15 +26,10 @@ function fmtBytes(n: number): string {
   return (n / 1024 / 1024).toFixed(1) + ' MB'
 }
 
-/** Ước lượng dung lượng dữ liệu local (IndexedDB) — an toàn dưới ~900KB cloud. */
-async function estimateDataSize(): Promise<number> {
+/** Ước lượng dung lượng dữ liệu local — đủ bảng backup, không chỉ 6 bảng lõi. */
+export async function estimateLocalDataSize(): Promise<number> {
   try {
-    const dump: Record<string, unknown> = {}
-    const tables = ['products', 'sales', 'customers', 'suppliers', 'goodsReceipts', 'stockMoves'] as const
-    for (const t of tables) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      dump[t] = await (dbx as any)[t].toArray()
-    }
+    const dump = await exportBackup({ credentialPolicy: 'excluded' })
     return new Blob([JSON.stringify(dump)]).size
   } catch {
     return 0
@@ -45,7 +40,7 @@ export async function runReadinessCheck(shop: ShopInfo, settings: Settings): Pro
   const [productCount, autoBackups, dataSize] = await Promise.all([
     dbx.products.filter((p) => !p.deleted).count(),
     getAutoBackups().catch(() => []),
-    estimateDataSize(),
+    estimateLocalDataSize(),
   ])
   const backupCount = autoBackups.length
 

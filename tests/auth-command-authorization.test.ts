@@ -52,6 +52,19 @@ describe('actor validation', () => {
     await expect(changePassword(owner.id, 'owner-9999')).rejects.toThrow(/không có quyền/)
     await expect(saveSettingsSynced({ ...DEFAULT_SETTINGS, lowStock: 99 })).rejects.toThrow(/không có quyền/)
   })
+
+  it('staff không xóa SP/KH/giá/thiết bị (owner-admin only)', async () => {
+    const { deleteProduct } = await import('@/core/domain/inventory')
+    const { deleteCustomer } = await import('@/core/domain/customers')
+    const { createPricingRule, deletePricingRule } = await import('@/core/domain/pricing')
+    const { removeDevice } = await import('@/core/domain/devices')
+    await setCurrentUser(staff)
+    await expect(deleteProduct('p1')).rejects.toThrow(/chủ cửa hàng|quản trị/)
+    await expect(deleteCustomer('c1')).rejects.toThrow(/chủ cửa hàng|quản trị/)
+    await expect(createPricingRule({ name: 'x', marginPct: 10 })).rejects.toThrow(/chủ cửa hàng|quản trị/)
+    await expect(deletePricingRule('r1')).rejects.toThrow(/chủ cửa hàng|quản trị/)
+    await expect(removeDevice('d1')).rejects.toThrow(/chủ cửa hàng|quản trị/)
+  })
 })
 
 describe('user management invariants', () => {
@@ -85,6 +98,18 @@ describe('user management invariants', () => {
     await changePassword(staff.id, 'staff2')
 
     await expect(login('staff', 'staff2')).resolves.toMatchObject({ id: staff.id })
+  })
+
+  it('tự đổi mật khẩu phải nhập đúng mật khẩu hiện tại', async () => {
+    await expect(changePassword(owner.id, 'owner-9999')).rejects.toThrow(/mật khẩu hiện tại/i)
+    await expect(changePassword(owner.id, 'owner-9999', { currentPassword: 'sai-roi' })).rejects.toThrow(/không đúng/i)
+    await changePassword(owner.id, 'owner-9999', { currentPassword: 'owner-1234' })
+    await expect(login('owner', 'owner-9999')).resolves.toMatchObject({ id: owner.id })
+  })
+
+  it('owner đổi hộ staff không cần mật khẩu hiện tại của staff', async () => {
+    await changePassword(staff.id, 'staff9')
+    await expect(login('staff', 'staff9')).resolves.toMatchObject({ id: staff.id })
   })
 
   it('logout xóa vé đổi mật khẩu — không đổi được khi đã đăng xuất', async () => {

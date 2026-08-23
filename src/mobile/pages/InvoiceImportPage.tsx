@@ -13,6 +13,7 @@ import { parseInvoiceFile, type ParsedInvoice, type ParsedItem } from '@/core/do
 import { invoiceLoaders } from '@/core/browser/invoiceLoaders'
 import { saveGoodsReceipt } from '@/core/domain/inventory'
 import { addProduct } from '@/core/domain/inventory'
+import { createSupplier } from '@/core/domain/suppliers'
 import { logError } from '@/core/errorLogger'
 import { ConfirmDialog } from '@/shared/components'
 import { ChevronLeft, Upload, FileText, Trash2, Link2, Plus } from 'lucide-react'
@@ -121,13 +122,11 @@ export function InvoiceImportPage() {
       let supplierId = supId
       let supplierName = supName.trim() || 'NCC lẻ'
       if (!supplierId && supName.trim()) {
-        const now = Date.now()
-        const s: Supplier = {
-          id: uid('sup'), name: supName.trim(), phone: inv?.supplier.mst || '',
-          address: inv?.supplier.addr || '', note: '', leadDays: 0, debt: 0,
-          totalPurchased: 0, orderCount: 0, createdAt: now, updatedAt: now,
-        }
-        await dbx.suppliers.add(s)
+        const s = await createSupplier({
+          name: supName.trim(),
+          phone: inv?.supplier.mst || '',
+          address: inv?.supplier.addr || '',
+        })
         supplierId = s.id
         supplierName = s.name
       }

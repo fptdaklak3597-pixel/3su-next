@@ -4,6 +4,7 @@
 import { type ReactNode, useEffect } from 'react'
 import { useApp } from '@/core/store'
 import { fmtShort } from '@/core/format'
+import { useServiceWorkerUpdate } from '@/shared/pwa'
 
 /* ─── Bottom Sheet ─── */
 export function Sheet({ open, onClose, title, children }: {
@@ -112,14 +113,24 @@ export function OfflineBar() {
   )
 }
 
-/* ─── Update banner ─── */
-export function UpdateBanner({ ready, onApply }: { ready: boolean; onApply: () => void }) {
-  if (!ready) return null
+/* ─── Service worker update bar ─── */
+export function SwUpdateBanner() {
+  const { updateAvailable, applyUpdate } = useServiceWorkerUpdate()
+
+  if (!updateAvailable) return null
   return (
-    <div className="flex items-center justify-center gap-3 py-2 px-4 text-xs font-medium"
-      style={{ background: 'var(--gold)', color: '#fff' }}>
-      <span>Có phiên bản mới — cập nhật sau ca cho chắc</span>
-      <button className="underline font-bold" onClick={onApply}>Cập nhật sau ca</button>
+    <div
+      className="flex items-center justify-center gap-3 py-2 px-4 text-sm font-medium text-white bg-brand"
+      style={{ zIndex: 50 }}
+    >
+      <span>Có bản mới</span>
+      <button
+        type="button"
+        className="rounded-lg bg-white/20 px-3 py-1 font-semibold hover:bg-white/30"
+        onClick={applyUpdate}
+      >
+        Cập nhật
+      </button>
     </div>
   )
 }

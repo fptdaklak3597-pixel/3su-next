@@ -4,13 +4,13 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { PackagePlus, BarChart3, Truck, StickyNote, Settings, X, Plus, Pin, Users } from 'lucide-react'
+import { PackagePlus, BarChart3, Truck, StickyNote, Settings, X, Plus, Pin, Users, Check } from 'lucide-react'
 import { Sheet } from '@/shared/components'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { hasPerm } from '@/core/domain/auth'
 import { addNote, toggleNoteDone, toggleNotePin, deleteNote, sortNotes } from '@/core/domain/notes'
-import type { Note, UserPerms } from '@/core/types'
+import type { Note, NoteType, UserPerms } from '@/core/types'
 
 const ITEMS: Array<{
   path?: string
@@ -26,6 +26,12 @@ const ITEMS: Array<{
   { path: '/khach-hang', label: 'Khách hàng', sub: 'Nợ và lịch sử mua', icon: Users, perm: 'sell' },
   { notes: true, label: 'Ghi chú', sub: 'Việc cần làm, ý tưởng', icon: StickyNote },
   { path: '/cai-dat', label: 'Cài đặt', sub: 'Shop, in, dữ liệu', icon: Settings, perm: 'settings' },
+]
+
+const NOTE_TYPES: { v: NoteType; label: string }[] = [
+  { v: 'todo', label: 'Việc' },
+  { v: 'idea', label: 'Ý tưởng' },
+  { v: 'note', label: 'Ghi chú' },
 ]
 
 export function ToolsSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -75,12 +81,19 @@ export function ToolsSheet({ open, onClose }: { open: boolean; onClose: () => vo
 function NotesOverlay({ open, onClose }: { open: boolean; onClose: () => void }) {
   const notes = useLiveQuery(() => dbx.notes.filter((n) => !n.deleted).toArray(), [], [] as Note[])
   const [text, setText] = useState('')
+  const [type, setType] = useState<NoteType>('todo')
+  const [adding, setAdding] = useState(false)
   const sorted = sortNotes(notes)
 
   async function add() {
-    if (!text.trim()) return
-    await addNote(text.trim())
-    setText('')
+    if (!text.trim() || adding) return
+    setAdding(true)
+    try {
+      await addNote(text.trim(), type)
+      setText('')
+    } finally {
+      setAdding(false)
+    }
   }
 
   if (!open) return null
@@ -92,18 +105,56 @@ function NotesOverlay({ open, onClose }: { open: boolean; onClose: () => void })
           <div className="font-brand text-[17px] font-medium">Ghi chú</div>
           <button className="btn-back" onClick={onClose} aria-label="Đóng"><X size={18} /></button>
         </div>
-        <div className="flex gap-2 mb-3">
-          <input className="field-input text-sm" placeholder="Việc cần làm…" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void add()} />
-          <button className="btn-ghost" onClick={() => void add()} aria-label="Thêm"><Plus size={16} /></button>
+        <textarea
+          className="field-input text-sm resize-none mb-2"
+          rows={2}
+          placeholder="Việc cần làm…"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              void add()
+            }
+          }}
+        />
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <div className="flex gap-1.5 flex-1 flex-wrap">
+            {NOTE_TYPES.map((t) => (
+              <button
+                key={t.v}
+                className="chip !text-[11px]"
+                style={type === t.v ? { background: 'var(--ink)', color: 'var(--paper)', borderColor: 'var(--ink)' } : {}}
+                onClick={() => setType(t.v)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <button className="btn-ghost" onClick={() => void add()} disabled={adding} aria-label="Thêm"><Plus size={16} /></button>
         </div>
         <div className="flex flex-col gap-1.5 max-h-[50vh] overflow-y-auto">
           {sorted.map((n) => (
-            <div key={n.id} className="list-row">
-              <button className="flex-1 text-left min-w-0" onClick={() => void toggleNoteDone(n.id)}>
-                <div className={`text-[14px] ${n.done ? 'line-through' : ''}`} style={{ color: n.done ? 'var(--mute)' : 'var(--ink)' }}>{n.text}</div>
+            <div key={n.id} className="list-row items-start">
+              <button
+                className="mt-0.5 shrink-0 w-5 h-5 rounded-full border flex items-center justify-center"
+                style={{
+                  borderColor: n.done ? 'var(--up)' : 'var(--hair-2)',
+                  background: n.done ? 'var(--up)' : 'transparent',
+                }}
+                onClick={() => void toggleNoteDone(n.id)}
+                aria-label="Đánh dấu xong"
+              >
+                {n.done && <Check size={12} color="#fff" />}
               </button>
+              <div className="flex-1 text-left min-w-0">
+                <div className={`text-[14px] whitespace-pre-wrap break-words ${n.done ? 'line-through' : ''}`} style={{ color: n.done ? 'var(--mute)' : 'var(--ink)' }}>{n.text}</div>
+                <div className="text-[10px] mt-0.5" style={{ color: 'var(--mute)' }}>
+                  {NOTE_TYPES.find((t) => t.v === n.type)?.label}
+                </div>
+              </div>
               <button className="p-1" onClick={() => void toggleNotePin(n.id)} aria-label="Ghim">
-                <Pin size={14} style={{ color: n.pinned ? 'var(--gold)' : 'var(--mute-2)' }} />
+                <Pin size={14} style={{ color: n.pinned ? 'var(--gold)' : 'var(--mute-2)' }} fill={n.pinned ? 'var(--gold)' : 'none'} />
               </button>
               <button className="p-1 text-[11px]" style={{ color: 'var(--mute)' }} onClick={() => void deleteNote(n.id)}>Xóa</button>
             </div>

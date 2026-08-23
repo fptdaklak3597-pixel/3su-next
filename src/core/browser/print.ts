@@ -226,10 +226,8 @@ export function sanitizeReceiptHtml(html: string): string {
     sanitizeEl(doc.documentElement)
     return '<!doctype html>' + doc.documentElement.outerHTML
   } catch {
-    return String(html || '')
-      .replace(/<\s*(script|iframe|object|embed|link|svg|base|form)[\s\S]*?(<\/\s*\1\s*>|>)/gi, '')
-      .replace(/\son[a-z]+\s*=\s*(['"])[\s\S]*?\1/gi, '')
-      .replace(/\s(href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\2/gi, ' $1="#"')
+    // Không fallback regex yếu (dễ bypass) — trả tài liệu rỗng an toàn
+    return '<!doctype html><html><body></body></html>'
   }
 }
 

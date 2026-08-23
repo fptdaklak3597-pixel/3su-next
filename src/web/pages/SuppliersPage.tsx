@@ -10,6 +10,7 @@ import { logError } from '@/core/errorLogger'
 import {
   createSupplier, deleteSupplier, recordSupplierPayment, updateSupplier,
   supplierDebt, supplierMonthlyStatement, supplierTotalPurchases, totalSupplierDebt,
+  exportSupplierDebtXlsx,
 } from '@/core/domain/suppliers'
 import { ConfirmDialog, Sheet } from '@/shared/components'
 import { WebEmpty } from '@/web/components/WebEmpty'
@@ -102,7 +103,10 @@ export function WebSuppliersPage() {
           <h2>Nhà cung cấp</h2>
           <p>{suppliers.length} NCC · nợ {fmt(debtSum)}</p>
         </div>
-        <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm NCC</button>
+        <div className="web-ph-actions">
+          <button className="web-btn" onClick={() => { try { void exportSupplierDebtXlsx(suppliers, receipts, payments) } catch (e) { logError(e, 'ncc.xlsx') } }}>Xuất Excel</button>
+          <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm NCC</button>
+        </div>
       </div>
 
       <input className="web-search mb-3" style={{ paddingLeft: 12 }} placeholder="Tìm tên / SĐT…" value={query} onChange={(e) => setQuery(e.target.value)} />

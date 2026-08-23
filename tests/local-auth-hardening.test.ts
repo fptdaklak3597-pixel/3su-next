@@ -95,7 +95,7 @@ describe('privileged verifier isolation', () => {
     await setCurrentUser(owner)
     await dbx.syncQueue.clear()
     await dbx.appliedOps.clear()
-    await changePassword(owner.id, 'owner-new-pass')
+    await changePassword(owner.id, 'owner-new-pass', { currentPassword: 'owner-pass' })
     const op = (await dbx.syncQueue.toArray()).find((row) => row.type === 'user.password')!
     expect(op.payload).toMatchObject({ userId: owner.id, clearVerifier: true })
   })

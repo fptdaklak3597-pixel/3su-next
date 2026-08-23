@@ -14,9 +14,9 @@ import {
 } from 'lucide-react'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { dayStats, weekProfitSeries, totalDebt } from '@/core/domain/sales'
+import { dayStats, weekProfitSeries, totalDebt, salesInDateRange } from '@/core/domain/sales'
 import { forecastStock } from '@/core/domain/inventory'
-import { fmt, localDay, today, yesterday, daysToExpiry } from '@/core/format'
+import { fmt, localDay, today, yesterday, daysToExpiry, escapeHtml, vnDaysAgo, vnToday } from '@/core/format'
 import type { Product, Sale, Customer } from '@/core/types'
 import { PrintStatusLine } from '@/shared/PrintStatus'
 import { useDisplayMode, useInstallPrompt } from '@/shared/pwa'
@@ -31,7 +31,7 @@ export function WebHomePage() {
   const displayMode = useDisplayMode()
   const showInstall = displayMode !== 'standalone' && !installed
 
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(13), vnToday()), [], [] as Sale[])
   const customers = useLiveQuery(() => dbx.customers.filter((c) => !c.deleted).toArray(), [], [] as Customer[])
   const products = useLiveQuery(() => dbx.products.filter((p) => !p.deleted).toArray(), [], [] as Product[])
 
@@ -175,7 +175,7 @@ export function WebHomePage() {
                   if (!w) return
                   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Báo cáo ngày</title>
                     <style>body{font:14px sans-serif;padding:16px}h1{font-size:18px}</style></head><body>
-                    <h1>${shop.name || '3SU'} — ${today()}</h1>
+                    <h1>${escapeHtml(shop.name || '3SU')} — ${today()}</h1>
                     <p>Doanh thu ${fmt(stats.t.revenue)} · Lợi nhuận ${fmt(stats.t.profit)} · ${stats.t.orders} đơn</p>
                     </body></html>`)
                   w.document.close()

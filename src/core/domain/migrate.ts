@@ -2,7 +2,7 @@
  * Chuyển một lần từ JSON xuất của 3SU v2.7.4 → Dexie 3su-next.
  * Không sync 2 chiều với Firestore cũ.
  */
-import { DEFAULT_SETTINGS, restoreBackup, type BackupData } from '../db'
+import { DEFAULT_SETTINGS, restoreLocalBackup, type BackupData } from '../db'
 import type { GoodsReceipt, Product, Sale, Settings } from '../types'
 import { validateBackupSchema } from './trial'
 
@@ -58,7 +58,9 @@ export function checksumOf(data: BackupData): LegacyChecksum {
 }
 
 export async function importLegacy(data: BackupData): Promise<LegacyChecksum> {
-  await restoreBackup(data)
+  // Nhập dữ liệu 3SU cũ là một nhánh dữ liệu mới: xóa hàng đợi/sự kiện sync + con
+  // trỏ cursor và tạm dừng cloud, tránh mis-sync với op-log của shop trước đó.
+  await restoreLocalBackup(data)
   return checksumOf(data)
 }
 

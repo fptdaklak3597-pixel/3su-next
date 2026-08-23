@@ -1,6 +1,7 @@
 /**
  * Xuất / nhập danh mục hàng hóa (Excel).
  * Khớp theo mã vạch, không có mã thì khớp tên. Tồn chỉ ghi khi tạo mới.
+ * Ô trống trên dòng cập nhật = giữ nguyên giá hiện có (không đè 0).
  */
 import { normalizeVi } from '@/core/format'
 import { addProduct, updateProduct } from '@/core/domain/inventory'
@@ -11,10 +12,11 @@ export interface CatalogDraft {
   name: string
   cat: string
   unit: string
-  price: number
-  cost: number
-  stock: number
-  wholesalePrice: number
+  /** null = ô trống / không có cột — không ghi đè khi update */
+  price: number | null
+  cost: number | null
+  stock: number | null
+  wholesalePrice: number | null
   expiry: string
 }
 
@@ -54,11 +56,15 @@ function headerKey(h: unknown): keyof CatalogDraft | null {
   return HEADER_KEY[n] ?? null
 }
 
-function num(v: unknown): number {
+/** Ô trống → null (giữ nguyên khi update). Số 0 hợp lệ vẫn là 0. */
+export function num(v: unknown): number | null {
+  if (v === null || v === undefined) return null
   if (typeof v === 'number' && Number.isFinite(v)) return v
-  const s = String(v ?? '').replace(/[.\sđ₫]/g, '').replace(',', '.')
+  const raw = String(v).trim()
+  if (!raw) return null
+  const s = raw.replace(/[.\sđ₫]/g, '').replace(',', '.')
   const n = Number(s)
-  return Number.isFinite(n) ? n : 0
+  return Number.isFinite(n) ? n : null
 }
 
 export function parseCatalogSheet(rows: unknown[][]): CatalogDraft[] {
@@ -70,7 +76,7 @@ export function parseCatalogSheet(rows: unknown[][]): CatalogDraft[] {
     const line = Array.isArray(raw) ? raw : []
     const draft: CatalogDraft = {
       barcode: '', name: '', cat: '', unit: 'cái',
-      price: 0, cost: 0, stock: 0, wholesalePrice: 0, expiry: '',
+      price: null, cost: null, stock: null, wholesalePrice: null, expiry: '',
     }
     keys.forEach((k, i) => {
       if (!k) return
@@ -129,28 +135,29 @@ export async function applyCatalogDrafts(
     if (!name) { skipped += 1; continue }
     const hit = matchCatalogTarget(d, known)
     if (hit) {
-      await updateProduct(hit.id, {
+      const patch: Parameters<typeof updateProduct>[1] = {
         name,
         cat: d.cat.trim() || hit.cat,
         unit: d.unit.trim() || hit.unit,
-        price: d.price,
-        cost: d.cost,
         barcode: d.barcode.trim() || hit.barcode,
         expiry: d.expiry.trim() || hit.expiry,
-        wholesalePrice: d.wholesalePrice,
-      })
+      }
+      if (d.price !== null) patch.price = d.price
+      if (d.cost !== null) patch.cost = d.cost
+      if (d.wholesalePrice !== null) patch.wholesalePrice = d.wholesalePrice
+      await updateProduct(hit.id, patch)
       updated += 1
     } else {
       const created = await addProduct({
         name,
         cat: d.cat.trim() || 'Khác',
         unit: d.unit.trim() || 'cái',
-        price: d.price,
-        cost: d.cost,
-        stock: d.stock,
+        price: d.price ?? 0,
+        cost: d.cost ?? 0,
+        stock: d.stock ?? 0,
         barcode: d.barcode.trim(),
         expiry: d.expiry.trim(),
-        wholesalePrice: d.wholesalePrice,
+        wholesalePrice: d.wholesalePrice ?? 0,
       })
       known.push(created)
       added += 1

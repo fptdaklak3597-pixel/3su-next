@@ -44,6 +44,7 @@ export function WebPrintAgentPage() {
   const busyDrain = useRef(false)
   const stopRef = useRef(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [wsConnected, setWsConnected] = useState(false)
 
   const drain = useCallback(async () => {
     if (busyDrain.current) return
@@ -116,15 +117,22 @@ export function WebPrintAgentPage() {
 
   useEffect(() => {
     if (phase !== 'ready' && phase !== 'printing') return
+    if (wsConnected) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      return
+    }
     pollRef.current = setInterval(() => { void drain() }, 4000)
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [phase, drain])
+  }, [phase, drain, wsConnected])
 
   useEffect(() => {
     if (phase !== 'ready' && phase !== 'printing') return
-    return connectPrintAgentSocket(() => { void drain() })
+    return connectPrintAgentSocket(
+      () => { void drain() },
+      (connected) => { setWsConnected(connected) },
+    )
   }, [phase, drain])
 
   const ready = phase === 'ready' || phase === 'printing'

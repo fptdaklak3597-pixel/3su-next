@@ -111,7 +111,7 @@ const APP_CONFIG = {
 } satisfies Record<AppName, unknown>
 
 function setGisHeaders(res: import('node:http').ServerResponse, nonce = ''): void {
-  for (const [key, value] of Object.entries(gisResponseHeaders(nonce))) res.setHeader(key, value)
+  for (const [key, value] of Object.entries(gisResponseHeaders(nonce))) res.setHeader(key, String(value))
   res.setHeader('allow', 'POST')
 }
 
@@ -262,8 +262,8 @@ export default defineConfig(({ mode }) => {
       react(),
       ...(app === 'admin' ? [] : [VitePWA({
         /**
-         * `prompt` — không bao giờ autoUpdate: SW đang chờ không được thay app
-         * giữa lúc người dùng đang bán hàng.
+         * Hook PWA của app đăng ký /sw.js và chỉ gửi SKIP_WAITING khi người dùng
+         * bấm Cập nhật trên banner (không auto-apply).
          */
         registerType: 'prompt',
         injectRegister: null,
@@ -282,7 +282,12 @@ export default defineConfig(({ mode }) => {
           icons: ICONS,
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,svg,png,webp,woff2}'],
+          globPatterns: ['**/*.{js,css,html,svg,png,webp,woff2,json}'],
+          globIgnores: [
+            '**/vendor/zxing*',
+            '**/mockup/**',
+            '**/*xlsx*',
+          ],
           navigateFallback: 'index.html',
           navigateFallbackDenylist: [/^\/__\/auth/, /^\/__\/gis/],
           cleanupOutdatedCaches: true,

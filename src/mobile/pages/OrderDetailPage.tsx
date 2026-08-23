@@ -39,10 +39,10 @@ export function OrderDetailPage() {
   async function handleVoid() {
     try {
       if (sale!.debtAmount > 0 && customer && customer.debt < sale!.debtAmount) {
-        showToast('Khách đã trả cho đơn này', 'ok')
+        showToast('Khách đã trả một phần/toàn bộ đơn này — sẽ tạo phiếu hoàn nếu cần', 'ok')
       }
-      await voidSale(sale!.id, voidReason.trim())
-      showToast('Đã hủy đơn', 'ok')
+      const { refund } = await voidSale(sale!.id, voidReason.trim())
+      showToast(refund > 0 ? `Đã hủy đơn · hoàn khách ${refund.toLocaleString('vi-VN')}` : 'Đã hủy đơn', 'ok')
       navigate('/don-hang')
     } catch (e) {
       logError(e, 'order.void')

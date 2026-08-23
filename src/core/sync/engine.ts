@@ -15,16 +15,23 @@ import { dbx, getMeta, setMeta } from '../db'
 import type { SyncOp, OpType, SyncState } from '../types'
 import { createHlcClock, type HlcClock } from './hlc'
 import { getThisDeviceId } from '../domain/devices'
-import { applyOps } from './apply'
+import { applyOps, recordPoisonedOp } from './apply'
 import { exportSnapshot, importSnapshot } from './snapshot'
 import { decideFlush, type SyncMode } from './mode'
 import { nullTransport, type SyncTransport, type ServerMsg } from './transport'
 import { logError } from '../errorLogger'
 import { setPrintAgentOnline } from '../browser/printPresence'
+import { assertNoLegacyMoneyOp } from '../authoritative/genesis'
+import {
+  getAuthoritativeMoneyStockCached,
+  warmAuthoritativeMoneyStockCache,
+} from '../authoritative/flag'
 
 const RETRY_INTERVAL = 30_000
 const PULL_PAGE = 500
 const MAX_PULL_PAGES = 200
+/** Push thất bại liên tiếp → quarantine, không chặn op sau / pull. */
+export const MAX_PUSH_ATTEMPTS = 10
 /** Khi đã bắt kịp server mà cloud chưa gửi mốc: giữ marker 7 ngày. */
 const APPLIED_OP_CATCH_UP_LAG_MS = 7 * 86_400_000
 
@@ -67,10 +74,16 @@ export async function initSyncEngine(): Promise<void> {
   const persisted = await getMeta<string | null>('hlc:last', null)
   clock = createHlcClock(deviceId, persisted, (s) => {
     // Ghi ngoài transaction hiện hành để không bắt caller khai báo bảng meta
-    void Dexie.ignoreTransaction(() => setMeta('hlc:last', s))
+    hlcPersistChain = hlcPersistChain
+      .then(() => Dexie.ignoreTransaction(() => setMeta('hlc:last', s)))
+      .catch(() => {})
   })
   const paused = await getMeta<unknown>('cloud:paused', false)
   cloudPaused = paused === true || paused === 'true' || paused === 1
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', () => { void flushHlcPersist() })
+  }
+  await warmAuthoritativeMoneyStockCache()
 }
 
 /** Tạo op envelope v2 — sync, throw nếu chưa init. */
@@ -87,22 +100,62 @@ export async function persistOp(op: SyncOp): Promise<void> {
 }
 
 export async function enqueueOp(type: OpType, payload: unknown): Promise<SyncOp> {
+  if (getAuthoritativeMoneyStockCached()) {
+    assertNoLegacyMoneyOp(type, true)
+  }
   const op = makeOp(type, payload)
   await persistOp(op)
   return op
 }
 
 let flushScheduled = false
+let flushTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
  * Đẩy outbox ngay sau khi transaction local commit.
  * Không gọi trong transaction Dexie. Mode `local` (chưa ghép cloud) bỏ qua.
  */
+function clearPendingFlush(): void {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+  flushScheduled = false
+}
+
+let hlcPersistChain: Promise<void> = Promise.resolve()
+
+async function flushHlcPersist(): Promise<void> {
+  if (!clock) return
+  const snapshot = clock.last()
+  await Dexie.ignoreTransaction(() => setMeta('hlc:last', snapshot))
+  await hlcPersistChain
+}
+
+/** Giữ priceLog: xóa >90 ngày hoặc giữ tối đa 50 / sản phẩm. */
+export async function gcPriceLog(): Promise<number> {
+  const cutoff = Date.now() - 90 * 86_400_000
+  const all = await dbx.priceLog.toArray()
+  const byProduct = new Map<string, typeof all>()
+  for (const row of all) {
+    const list = byProduct.get(row.productId) ?? []
+    list.push(row)
+    byProduct.set(row.productId, list)
+  }
+  const drop: string[] = []
+  for (const rows of byProduct.values()) {
+    rows.sort((a, b) => b.ts - a.ts)
+    rows.forEach((row, idx) => {
+      if (row.ts < cutoff || idx >= 50) drop.push(row.id)
+    })
+  }
+  if (drop.length) await dbx.priceLog.bulkDelete(drop)
+  return drop.length
+}
+
 export function requestFlush(): void {
   if (mode === 'local' || cloudPaused) return
   if (flushScheduled) return
   flushScheduled = true
-  setTimeout(() => {
+  flushTimer = setTimeout(() => {
+    flushTimer = null
     flushScheduled = false
     void flushQueue()
   }, 0)
@@ -137,6 +190,8 @@ export function setSyncMode(m: SyncMode): void { mode = m }
 
 /** Đóng transport thật (WS), về offline local. */
 export function disconnectTransport(): void {
+  clearPendingFlush()
+  void flushHlcPersist()
   cloudPaused = true
   flushAgain = false
   try { transport.disconnect() } catch { /* */ }
@@ -167,6 +222,45 @@ async function runFlushLoop(): Promise<void> {
   } while (flushAgain)
 }
 
+async function quarantinePushOp(op: SyncOp, err: unknown): Promise<void> {
+  const detail = err instanceof Error ? err.message : String(err)
+  await recordPoisonedOp(op, new Error(`Push thất bại quá số lần: ${detail}`))
+  await dbx.syncQueue.delete(op.id)
+  logError(err, 'sync.push.quarantine')
+}
+
+async function bumpPushFailure(op: SyncOp, err: unknown): Promise<void> {
+  const next: SyncOp = {
+    ...op,
+    attempts: (op.attempts ?? 0) + 1,
+    lastError: err instanceof Error ? err.message : String(err),
+  }
+  if (next.attempts >= MAX_PUSH_ATTEMPTS) {
+    await quarantinePushOp(next, err)
+  } else {
+    await dbx.syncQueue.put(next)
+  }
+}
+
+/** Batch push; nếu cả batch lỗi thì đẩy từng op để tách poison, không chặn pull. */
+async function pushOutboxBatch(batch: SyncOp[]): Promise<void> {
+  if (batch.length === 0) return
+  try {
+    const res = await transport.pushOps(batch)
+    if (res.acked.length) await dbx.syncQueue.bulkDelete(res.acked)
+  } catch {
+    for (const op of batch) {
+      try {
+        const res = await transport.pushOps([op])
+        if (res.acked.includes(op.id)) await dbx.syncQueue.delete(op.id)
+        else await bumpPushFailure(op, new Error('Cloud không ack op'))
+      } catch (err) {
+        await bumpPushFailure(op, err)
+      }
+    }
+  }
+}
+
 async function runFlushOnce(): Promise<void> {
   if (await flushBlocked()) { setState({ status: 'offline' }); return }
   if (!navigator.onLine) { setState({ status: 'offline' }); return }
@@ -179,12 +273,13 @@ async function runFlushOnce(): Promise<void> {
     const d = decideFlush(mode, outbox.length, lastSnapshotAt, Date.now(), lastSeq, lastSnapshotSeq)
 
     if (d.pushOps) {
-      for (let i = 0; i < outbox.length; i += 100) {
-        const batch = outbox.slice(i, i + 100)
-        const res = await transport.pushOps(batch)
-        await dbx.syncQueue.bulkDelete(res.acked)
-        // lastSeq = mốc đã ÁP, không phải MAX cloud. push trả seq toàn shop —
-        // ghi vào đây rồi pull sẽ bỏ op máy kia nằm giữa.
+      const expired = outbox.filter((op) => (op.attempts ?? 0) >= MAX_PUSH_ATTEMPTS)
+      for (const op of expired) {
+        await quarantinePushOp(op, new Error(op.lastError || 'Đã vượt giới hạn thử lại'))
+      }
+      const pushable = outbox.filter((op) => (op.attempts ?? 0) < MAX_PUSH_ATTEMPTS)
+      for (let i = 0; i < pushable.length; i += 100) {
+        await pushOutboxBatch(pushable.slice(i, i + 100))
       }
     }
     await catchUpSnapshot()
@@ -221,6 +316,15 @@ async function catchUpSnapshot(): Promise<void> {
   await transport.pushSnapshot(exp.snapshot, 0)
   await setMeta('sync:lastSnapshotAt', Date.now())
   await setMeta('sync:lastSnapshotSeq', 0)
+}
+
+/** lastSeq+1 < minSeq → op cần kéo đã bị server dọn; phải lấy snapshot. */
+export function needsSnapshotCatchUp(lastSeq: number, minSeq: number | undefined): boolean {
+  return lastSeq > 0
+    && typeof minSeq === 'number'
+    && Number.isSafeInteger(minSeq)
+    && minSeq > 0
+    && lastSeq + 1 < minSeq
 }
 
 /** Sau import, cursor phải đúng watermark của snapshot để replay mọi op phía sau. */
@@ -302,6 +406,10 @@ async function pullSince(): Promise<void> {
     if (res.ops.length > PULL_PAGE) {
       throw new Error(`Máy chủ trả quá giới hạn ${PULL_PAGE} op`)
     }
+    if (needsSnapshotCatchUp(since, res.minSeq)) {
+      await pullCloudSnapshot(true)
+      continue
+    }
 
     const fullPage = res.ops.length === PULL_PAGE
     const fingerprint = fullPage ? pageFingerprint(res.ops) : ''
@@ -350,6 +458,8 @@ export function startSyncLoop(): void {
 }
 
 export function stopSyncLoop(): void {
+  clearPendingFlush()
+  void flushHlcPersist()
   if (timer) {
     clearInterval(timer)
     timer = null
@@ -404,11 +514,13 @@ export async function setAppliedOpsGcWatermark(beforeMs: number): Promise<number
 export async function gcAppliedOps(): Promise<number> {
   const watermark = await getAppliedOpsGcWatermark()
   if (watermark <= 0) return 0
-  const all = await dbx.appliedOps.toArray()
-  const stale = all.filter((row) => {
+  const stale: string[] = []
+  await dbx.appliedOps.each((row) => {
     const timestamp = appliedOpTimestamp(row.id)
-    return timestamp !== null && timestamp < watermark
+    if (timestamp !== null && timestamp < watermark) stale.push(row.id)
   })
-  if (stale.length > 0) await dbx.appliedOps.bulkDelete(stale.map((row) => row.id))
+  for (let i = 0; i < stale.length; i += 200) {
+    await dbx.appliedOps.bulkDelete(stale.slice(i, i + 200))
+  }
   return stale.length
 }

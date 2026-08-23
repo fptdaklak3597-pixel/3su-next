@@ -38,7 +38,7 @@ describe('parseQty rưỡi / chục', () => {
   })
 
   it('parse câu có rưỡi', () => {
-    expect(parseCommand('rưỡi kg đường')).toEqual([{ name: 'đường', qty: 0.5 }])
+    expect(parseCommand('rưỡi kg đường')).toEqual([{ name: 'đường', qty: 0.5, unit: 'kg' }])
   })
 })
 

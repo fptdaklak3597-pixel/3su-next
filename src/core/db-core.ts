@@ -14,6 +14,8 @@ import type {
   ProductBatch, PriceLogEntry, Note, AppliedOp,
 } from './types'
 import { getThisDeviceId } from './domain/devices'
+import type { QueuedCommand, SyncConflictRow } from './authoritative/commandQueue'
+import type { CanonicalEvent, CommandResult } from './authoritative/contracts'
 
 /* ─── Schema ─── */
 class SuNextDB extends Dexie {
@@ -43,6 +45,11 @@ class SuNextDB extends Dexie {
   notes!: Table<Note, string>
   /* v5 — op-log v2: đánh dấu op đã áp */
   appliedOps!: Table<AppliedOp, string>
+  /* v6 — authoritative command queue */
+  commandQueue!: Table<QueuedCommand, string>
+  commandResults!: Table<CommandResult & { storedAt?: number }, string>
+  canonicalEvents!: Table<CanonicalEvent, string>
+  syncConflicts!: Table<SyncConflictRow, string>
 
   constructor() {
     super('3su_next_v4')
@@ -152,6 +159,35 @@ class SuNextDB extends Dexie {
       appliedOps: 'id',
     }).upgrade(async (tx) => {
       await tx.table('syncQueue').clear()
+    })
+    /* v6: authoritative command queue + conflicts */
+    this.version(6).stores({
+      products: 'id, name, cat, barcode, deleted, updatedAt',
+      sales: 'id, date, voided, customerId, synced, [date+voided]',
+      customers: 'id, name, phone, deleted',
+      debtPayments: 'id, customerId, date',
+      goodsReceipts: 'id, code, ts',
+      stockMoves: 'id, productId, type, ts, date',
+      stocktakes: 'id, ts',
+      invoices: 'id, code, type, ts',
+      syncQueue: 'id, type, createdAt',
+      meta: 'key',
+      suppliers: 'id, name, phone, deleted',
+      supplierPayments: 'id, supplierId, date',
+      users: 'id, username, role, deleted',
+      purchaseOrders: 'id, code, supplierId, status, ts, date',
+      archive: 'id, kind, refId, archivedAt',
+      devices: 'id, deviceId, pairedAt',
+      quickAnswers: 'id',
+      pricingRules: 'id',
+      batches: 'id, productId, expiry',
+      priceLog: 'id, productId, supId, ts',
+      notes: 'id, type, done, date',
+      appliedOps: 'id',
+      commandQueue: 'id, type, createdAt, status',
+      commandResults: 'commandId',
+      canonicalEvents: 'id, seq, commandId',
+      syncConflicts: 'id, commandId, createdAt',
     })
   }
 }
@@ -282,42 +318,40 @@ export interface BackupData {
   pricingRules?: PricingRule[]
   quickAnswers?: QuickAnswer[]
   devices?: PairedDevice[]
+  archive?: ArchiveRecord[]
 }
 
 export async function exportBackup(): Promise<BackupData> {
-  const [products, sales, customers, debtPayments, goodsReceipts, stockMoves, stocktakes,
-    suppliers, supplierPayments, users, purchaseOrders, invoices, batches, priceLog, notes,
-    pricingRules, quickAnswers, devices, sourceShopId] =
-    await Promise.all([
-      dbx.products.toArray(),
-      dbx.sales.toArray(),
-      dbx.customers.toArray(),
-      dbx.debtPayments.toArray(),
-      dbx.goodsReceipts.toArray(),
-      dbx.stockMoves.toArray(),
-      dbx.stocktakes.toArray(),
-      dbx.suppliers.toArray(),
-      dbx.supplierPayments.toArray(),
-      dbx.users.toArray(),
-      dbx.purchaseOrders.toArray(),
-      dbx.invoices.toArray(),
-      dbx.batches.toArray(),
-      dbx.priceLog.toArray(),
-      dbx.notes.toArray(),
-      dbx.pricingRules.toArray(),
-      dbx.quickAnswers.toArray(),
-      dbx.devices.toArray(),
-      getMeta<string | null>('cloud:shopId', null),
-    ])
+  // Đọc từng bảng — tránh Promise.all mọi bảng cùng lúc (OOM shop lớn).
+  const products = await dbx.products.toArray()
+  const sales = await dbx.sales.toArray()
+  const customers = await dbx.customers.toArray()
+  const debtPayments = await dbx.debtPayments.toArray()
+  const goodsReceipts = await dbx.goodsReceipts.toArray()
+  const stockMoves = await dbx.stockMoves.toArray()
+  const stocktakes = await dbx.stocktakes.toArray()
+  const suppliers = await dbx.suppliers.toArray()
+  const supplierPayments = await dbx.supplierPayments.toArray()
+  const users = await dbx.users.toArray()
+  const purchaseOrders = await dbx.purchaseOrders.toArray()
+  const invoices = await dbx.invoices.toArray()
+  const batches = await dbx.batches.toArray()
+  const priceLog = await dbx.priceLog.toArray()
+  const notes = await dbx.notes.toArray()
+  const pricingRules = await dbx.pricingRules.toArray()
+  const quickAnswers = await dbx.quickAnswers.toArray()
+  const devices = await dbx.devices.toArray()
+  const archive = await dbx.archive.toArray()
+  const sourceShopId = await getMeta<string | null>('cloud:shopId', null)
   return {
-    version: 5,
+    version: 6,
     exportedAt: new Date().toISOString(),
     sourceShopId: sourceShopId || undefined,
     shop: await getShop(),
     settings: await readSettings(),
     products, sales, customers, debtPayments, goodsReceipts, stockMoves, stocktakes,
     suppliers, supplierPayments, users, purchaseOrders, invoices, batches, priceLog, notes,
-    pricingRules, quickAnswers, devices,
+    pricingRules, quickAnswers, devices, archive,
   }
 }
 
@@ -326,7 +360,7 @@ export async function restoreBackup(data: BackupData): Promise<void> {
     'rw',
     [dbx.products, dbx.sales, dbx.customers, dbx.debtPayments, dbx.goodsReceipts, dbx.stockMoves,
       dbx.stocktakes, dbx.meta, dbx.suppliers, dbx.supplierPayments, dbx.users, dbx.purchaseOrders, dbx.invoices,
-      dbx.batches, dbx.priceLog, dbx.notes, dbx.pricingRules, dbx.quickAnswers, dbx.devices],
+      dbx.batches, dbx.priceLog, dbx.notes, dbx.pricingRules, dbx.quickAnswers, dbx.devices, dbx.archive],
     async () => {
       await Promise.all([
         dbx.products.clear(), dbx.sales.clear(), dbx.customers.clear(),
@@ -334,7 +368,7 @@ export async function restoreBackup(data: BackupData): Promise<void> {
         dbx.stocktakes.clear(), dbx.suppliers.clear(), dbx.supplierPayments.clear(),
         dbx.users.clear(), dbx.purchaseOrders.clear(), dbx.invoices.clear(), dbx.batches.clear(),
         dbx.priceLog.clear(), dbx.notes.clear(), dbx.pricingRules.clear(), dbx.quickAnswers.clear(),
-        dbx.devices.clear(),
+        dbx.devices.clear(), dbx.archive.clear(),
       ])
       await dbx.products.bulkPut(data.products ?? [])
       await dbx.sales.bulkPut(data.sales ?? [])
@@ -353,6 +387,7 @@ export async function restoreBackup(data: BackupData): Promise<void> {
       await dbx.notes.bulkPut(data.notes ?? [])
       await dbx.pricingRules.bulkPut(data.pricingRules ?? [])
       await dbx.quickAnswers.bulkPut(data.quickAnswers ?? [])
+      await dbx.archive.bulkPut(data.archive ?? [])
       const localId = await getThisDeviceId()
       await dbx.devices.bulkPut((data.devices ?? []).map((d) => ({
         ...d,
@@ -374,12 +409,14 @@ const LOCAL_RESTORE_RESET_KEYS = [
   'currentUser',
   'cloud:shopId',
   'cloud:role',
+  'cloud:uid',
   'cloud:license',
   'sync:lastSeq',
   'sync:lastSnapshotAt',
   'sync:lastSnapshotSeq',
   'sync:poisoned',
   'sync:blocked',
+  'sync:appliedGcBeforeMs',
   'device:cloudAt',
 ]
 
@@ -400,15 +437,31 @@ export async function restoreLocalBackup(data: BackupData): Promise<void> {
   }
 
   await restoreBackup(data)
-  await dbx.transaction('rw', [dbx.syncQueue, dbx.appliedOps, dbx.meta], async () => {
+  await dbx.transaction(
+    'rw',
+    [
+      dbx.syncQueue,
+      dbx.appliedOps,
+      dbx.meta,
+      dbx.commandQueue,
+      dbx.commandResults,
+      dbx.canonicalEvents,
+      dbx.syncConflicts,
+    ],
+    async () => {
     await dbx.syncQueue.clear()
     await dbx.appliedOps.clear()
+    await dbx.commandQueue.clear()
+    await dbx.commandResults.clear()
+    await dbx.canonicalEvents.clear()
+    await dbx.syncConflicts.clear()
     await dbx.meta.bulkDelete(LOCAL_RESTORE_RESET_KEYS)
     await dbx.meta.put({ key: 'cloud:paused', value: true })
     await dbx.meta.put({
       key: 'restore:last',
       value: {
         at: Date.now(),
+        credentialPolicy: 'excluded',
         sourceShopId: data.sourceShopId ?? null,
         detachedFromShopId: previousShopId,
       },

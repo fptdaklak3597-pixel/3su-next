@@ -1,3 +1,4 @@
+
 /**
  * 3SU Next — Báo cáo (Reports)
  * Port từ 17a-reports-ext.js: preset kỳ, metric toggle, so sánh kỳ trước,
@@ -11,7 +12,9 @@ import {
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, fmtShort, formatDate } from '@/core/format'
-import { buildReport, type ReportPreset, type ReportMetric, type ReportFilters } from '@/core/domain/reports'
+import { salesInDateRange } from '@/core/domain/sales'
+import { buildReport, exportReportXlsx, reportSalesWindow, type ReportPreset, type ReportMetric, type ReportFilters } from '@/core/domain/reports'
+import { logError } from '@/core/errorLogger'
 import { productCategories } from '@/core/domain/inventory'
 import { answerQuestion } from '@/core/browser/quickAnswers'
 import { Sparkles, Send } from 'lucide-react'
@@ -34,7 +37,14 @@ export function ReportsPage() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
 
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const salesWindow = useMemo(() => reportSalesWindow({
+    preset, from, to, metric, cat, pay: 'all', customerId: null, compare,
+  }), [preset, from, to, metric, cat, compare])
+  const sales = useLiveQuery(
+    () => salesInDateRange(salesWindow.from, salesWindow.to),
+    [salesWindow.from, salesWindow.to],
+    [] as Sale[],
+  )
   const customers = useLiveQuery(() => dbx.customers.toArray(), [], [] as Customer[])
   const products = useLiveQuery(
     () => dbx.products.filter((p) => !p.deleted).toArray(),
@@ -69,10 +79,16 @@ export function ReportsPage() {
       <header className="app-hdr bordered">
         <div>
           <div className="font-brand text-[17px] font-medium" style={{ color: 'var(--ink)' }}>Báo cáo</div>
-          <div className="text-[11px]" style={{ color: 'var(--mute)' }}>
+          <div className="text-xs" style={{ color: 'var(--mute)' }}>
             {formatDate(report.from)} → {formatDate(report.to)}
           </div>
         </div>
+        <button
+          className="btn-ghost text-sm"
+          onClick={() => { try { void exportReportXlsx(report) } catch (e) { logError(e, 'report.xlsx') } }}
+        >
+          Xuất Excel
+        </button>
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 pb-8">

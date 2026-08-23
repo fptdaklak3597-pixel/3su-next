@@ -131,7 +131,7 @@ export function GoodsReceiptPage() {
         date,
         expiry,
         note: note.trim(),
-        rows: rows.map(({ key, sellPrice, ...r }) => r),
+        rows: rows.map(({ key: _key, sellPrice: _sellPrice, ...r }) => r),
         paid,
         payMethod,
         prices,

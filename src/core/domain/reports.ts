@@ -4,7 +4,7 @@
  * cùng dùng một nguồn tính toán có thể đối soát về tổng chứng từ.
  */
 import type { Sale, Product, Customer, SaleItem } from '../types'
-import { localDay, daysAgo, today } from '../format'
+import { vnDay, vnToday, vnDaysAgo } from '../format'
 
 export type ReportPreset = '7' | '30' | 'mtd' | 'ytd' | 'all' | 'custom'
 export type ReportMetric = 'profit' | 'revenue'
@@ -86,13 +86,21 @@ function allocateNonNegative(targetValue: number, rawWeights: number[]): number[
 }
 
 export function resolveRange(f: ReportFilters): { from: string; to: string } {
-  const t = today()
+  const t = vnToday()
   if (f.preset === 'custom' && f.from && f.to) return { from: f.from, to: f.to }
-  if (f.preset === 'mtd') return { from: today().slice(0, 8) + '01', to: t }
-  if (f.preset === 'ytd') return { from: new Date().getFullYear() + '-01-01', to: t }
+  if (f.preset === 'mtd') return { from: vnToday().slice(0, 8) + '01', to: t }
+  if (f.preset === 'ytd') return { from: vnToday().slice(0, 4) + '-01-01', to: t }
   if (f.preset === 'all') return { from: '1970-01-01', to: t }
   const n = Number(f.preset) || 7
-  return { from: daysAgo(n - 1), to: t }
+  return { from: vnDaysAgo(n - 1), to: t }
+}
+
+/** Cửa sổ cần tải (gồm kỳ trước nếu compare) — dùng index date, không toArray cả bảng. */
+export function reportSalesWindow(f: ReportFilters): { from: string; to: string } {
+  const { from, to } = resolveRange(f)
+  if (!f.compare) return { from, to }
+  const prev = prevRange(from, to)
+  return { from: prev.from, to }
 }
 
 function prevRange(from: string, to: string): { from: string; to: string } {
@@ -103,7 +111,7 @@ function prevRange(from: string, to: string): { from: string; to: string } {
   pd2.setDate(pd2.getDate() - 1)
   const pd1 = new Date(pd2)
   pd1.setDate(pd1.getDate() - (days - 1))
-  return { from: localDay(pd1), to: localDay(pd2) }
+  return { from: vnDay(pd1), to: vnDay(pd2) }
 }
 
 function paymentParts(sale: Sale): PaymentParts {
@@ -128,7 +136,7 @@ function hasPayment(sale: Sale, method: string): boolean {
 function factForMissingItems(sale: Sale): ReportFact {
   return {
     saleId: sale.id,
-    date: localDay(sale.date),
+    date: vnDay(sale.date),
     productId: '',
     name: 'Không rõ mặt hàng',
     cat: 'Khác',
@@ -175,7 +183,7 @@ function factsForSale(sale: Sale, productById: Map<string, Product>): ReportFact
     const revenue = row.gross - allocatedDiscount
     return {
       saleId: sale.id,
-      date: localDay(sale.date),
+      date: vnDay(sale.date),
       productId: row.item.productId,
       name: row.name,
       cat: row.cat,
@@ -211,7 +219,7 @@ function selectFacts(
 
   for (const sale of sales) {
     if (sale.voided) continue
-    const date = localDay(sale.date)
+    const date = vnDay(sale.date)
     if (date < from || date > to) continue
     if (f.customerId && sale.customerId !== f.customerId) continue
     if (!hasPayment(sale, f.pay)) continue
@@ -372,6 +380,24 @@ export async function exportReportXlsx(report: ReportResult): Promise<void> {
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'Bao cao')
   XLSX.writeFile(wb, `3su-bao-cao-${report.from}-${report.to}.xlsx`)
+}
+
+export function customerDebtToAoa(customers: Customer[]): unknown[][] {
+  const rows = customers.filter((c) => !c.deleted && c.debt > 0).sort((a, b) => b.debt - a.debt)
+  return [
+    ['Khách', 'SĐT', 'Nợ'],
+    ...rows.map((c) => [c.name, c.phone, c.debt]),
+    [],
+    ['Tổng', '', rows.reduce((sum, c) => sum + c.debt, 0)],
+  ]
+}
+
+export async function exportCustomerDebtXlsx(customers: Customer[]): Promise<void> {
+  const XLSX = await import('xlsx')
+  const ws = XLSX.utils.aoa_to_sheet(customerDebtToAoa(customers))
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Cong no KH')
+  XLSX.writeFile(wb, `3su-cong-no-kh-${vnToday()}.xlsx`)
 }
 
 /** Tổng nợ khách hàng */

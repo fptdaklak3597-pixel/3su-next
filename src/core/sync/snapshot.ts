@@ -19,7 +19,7 @@ export async function exportSnapshot(): Promise<SnapshotExport> {
   return dbx.transaction('r', [dbx.products, dbx.sales, dbx.customers, dbx.debtPayments,
     dbx.goodsReceipts, dbx.stockMoves, dbx.stocktakes, dbx.suppliers, dbx.supplierPayments,
     dbx.users, dbx.purchaseOrders, dbx.invoices, dbx.batches, dbx.priceLog, dbx.notes,
-    dbx.pricingRules, dbx.quickAnswers, dbx.devices, dbx.meta, dbx.syncQueue], async () => {
+    dbx.pricingRules, dbx.quickAnswers, dbx.devices, dbx.archive, dbx.meta, dbx.syncQueue], async () => {
     const backup = await exportBackup({ credentialPolicy: 'staff-only' })
     const hlc = ((await dbx.meta.get('hlc:last'))?.value as string) ?? ''
     const pendingOpIds = (await dbx.syncQueue.toArray()).map((o) => o.id)

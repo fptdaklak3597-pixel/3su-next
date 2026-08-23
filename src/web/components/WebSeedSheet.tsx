@@ -1,7 +1,7 @@
 /**
  * Nạp 500 mặt hàng mẫu — chọn tồn ban đầu, xem nhóm. Dùng ở Kho và Tổng quan.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { seed500, seedCategories } from '@/core/domain/seed'
 import { logError } from '@/core/errorLogger'
 import { useApp } from '@/core/store'
@@ -11,7 +11,12 @@ export function WebSeedSheet({ open, onClose }: { open: boolean; onClose: () => 
   const showToast = useApp((s) => s.showToast)
   const [seedStock, setSeedStock] = useState(0)
   const [seeding, setSeeding] = useState(false)
-  const seedCats = useMemo(() => seedCategories(), [])
+  const [seedCats, setSeedCats] = useState<{ cat: string; count: number }[]>([])
+
+  useEffect(() => {
+    if (!open) return
+    void seedCategories().then(setSeedCats).catch((e) => logError(e, 'seedCategories'))
+  }, [open])
 
   async function handleSeed() {
     setSeeding(true)

@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { aggregatePurchases } from '@/core/domain/purchase'
-import { resolveRange } from '@/core/domain/reports'
+import { customerDebtToAoa, reportSalesWindow, resolveRange } from '@/core/domain/reports'
 import { compareSupplierPrices } from '@/core/domain/suppliers'
-import { today } from '@/core/format'
-import type { GoodsReceipt, PurchaseOrder, Supplier } from '@/core/types'
+import { topProducts } from '@/core/browser/quickAnswers'
+import { today, vnToday } from '@/core/format'
+import type { Customer, GoodsReceipt, PurchaseOrder, Sale, Supplier } from '@/core/types'
 
 describe('M5 — PO received không đứng cạnh GR', () => {
   it('một GR + PO received cùng tiền → một dòng gr', () => {
@@ -20,7 +21,7 @@ describe('M5 — PO received không đứng cạnh GR', () => {
   })
 })
 
-describe('M6 — MTD local', () => {
+describe('M6 — MTD / YTD theo giờ VN', () => {
   it('from = ngày 1 tháng local của today()', () => {
     const { from, to } = resolveRange({
       preset: 'mtd', from: '', to: '', metric: 'revenue',
@@ -28,6 +29,52 @@ describe('M6 — MTD local', () => {
     })
     expect(from).toBe(today().slice(0, 8) + '01')
     expect(to).toBe(today())
+  })
+
+  it('YTD lấy năm theo lịch VN', () => {
+    const { from } = resolveRange({
+      preset: 'ytd', from: '', to: '', metric: 'revenue',
+      cat: '', pay: '', customerId: null, compare: false,
+    })
+    expect(from).toBe(vnToday().slice(0, 4) + '-01-01')
+  })
+
+  it('compare nới cửa sổ về kỳ trước', () => {
+    const w = reportSalesWindow({
+      preset: '7', from: '', to: '', metric: 'revenue',
+      cat: '', pay: '', customerId: null, compare: true,
+    })
+    const cur = resolveRange({
+      preset: '7', from: '', to: '', metric: 'revenue',
+      cat: '', pay: '', customerId: null, compare: true,
+    })
+    expect(w.to).toBe(cur.to)
+    expect(w.from < cur.from).toBe(true)
+  })
+
+  it('topProducts nhân unitRatio', () => {
+    const sales: Sale[] = [{
+      id: 's1',
+      items: [{ productId: 'p1', name: 'Sting', qty: 1, price: 24000, cost: 18000, unit: 'thùng', unitRatio: 24 }],
+      total: 24000, profit: 6000, discount: 0, payMethod: 'cash',
+      tendered: 24000, change: 0, debtAmount: 0, customerId: null,
+      date: today() + 'T10:00:00',
+    }]
+    expect(topProducts(sales, today(), 3)[0]?.qty).toBe(24)
+  })
+})
+
+describe('xuất công nợ KH', () => {
+  it('chỉ khách còn nợ, sắp xếp giảm dần', () => {
+    const customers: Customer[] = [
+      { id: 'a', name: 'An', phone: '1', note: '', debt: 100, totalSpent: 0, orderCount: 0, createdAt: 1, updatedAt: 1 },
+      { id: 'b', name: 'Bình', phone: '2', note: '', debt: 0, totalSpent: 0, orderCount: 0, createdAt: 1, updatedAt: 1 },
+      { id: 'c', name: 'Cúc', phone: '3', note: '', debt: 500, totalSpent: 0, orderCount: 0, createdAt: 1, updatedAt: 1 },
+    ]
+    const aoa = customerDebtToAoa(customers)
+    expect(aoa[1]).toEqual(['Cúc', '3', 500])
+    expect(aoa[2]).toEqual(['An', '1', 100])
+    expect(aoa.at(-1)?.[2]).toBe(600)
   })
 })
 

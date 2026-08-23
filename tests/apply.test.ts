@@ -5,7 +5,6 @@ import {
   applyOps,
   getBlockedOps,
   getPoisonedOps,
-  pendingStockDelta,
   SyncDependencyError,
 } from '@/core/sync/apply'
 import { hlcString } from '@/core/sync/hlc'
@@ -86,6 +85,42 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect(c.totalSpent).toBe(20000)
     expect(c.orderCount).toBe(1)
     expect(await dbx.sales.get('s_remote_1')).toBeTruthy()
+  })
+
+  it('sale.commit bỏ qua total/debtAmount giả — tính lại từ items + tendered', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 0, totalSpent: 0, orderCount: 0 }))
+    const forged: Sale = {
+      id: 's_forge_1',
+      // client gửi tổng/nợ sai cố ý
+      total: 1, profit: 999999, discount: 0, payMethod: 'cash',
+      tendered: 5000, change: 0, debtAmount: 0, customerId: 'c1',
+      date: new Date().toISOString(), synced: false,
+      items: [{ productId: 'p1', name: 'SP', qty: 2, price: 10000, cost: 6000, unit: 'cái', unitRatio: 1 }],
+    }
+    await applyOps([remoteOp('sale.commit', forged)])
+    const saved = (await dbx.sales.get('s_forge_1'))!
+    expect(saved.total).toBe(20000)
+    expect(saved.profit).toBe(8000)
+    expect(saved.debtAmount).toBe(15000)
+    const c = (await dbx.customers.get('c1'))!
+    expect(c.debt).toBe(15000)
+    expect(c.totalSpent).toBe(20000)
+  })
+
+  it('sale.commit ghi nợ không khách → poison, không trừ kho', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    const sale: Sale = {
+      id: 's_nodebtcust', total: 10000, profit: 4000, discount: 0, payMethod: 'debt',
+      tendered: 0, change: 0, debtAmount: 10000, customerId: null,
+      date: new Date().toISOString(), synced: false,
+      items: [{ productId: 'p1', name: 'SP', qty: 1, price: 10000, cost: 6000, unit: 'cái', unitRatio: 1 }],
+    }
+    expect(await applyOps([remoteOp('sale.commit', sale)])).toBe(0)
+    expect((await dbx.products.get('p1'))!.stock).toBe(10)
+    expect(await dbx.sales.get('s_nodebtcust')).toBeUndefined()
+    const poisoned = await getPoisonedOps()
+    expect(poisoned.some((p) => /khách|ghi nợ/i.test(p.message))).toBe(true)
   })
 
   it('sale.commit remote đã có sale id local → bỏ qua hoàn toàn (không trừ kho đúp)', async () => {
@@ -231,6 +266,17 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect((await dbx.customers.get('c1'))!.debt).toBe(5000)
   })
 
+  it('debt.pay làm tròn amount về VND nguyên', async () => {
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 10000 }))
+    const dp: DebtPayment = {
+      id: 'dp_frac', customerId: 'c1', amount: 1000.6,
+      date: new Date().toISOString(), note: 'lẻ',
+    }
+    await applyOps([remoteOp('debt.pay', dp)])
+    expect((await dbx.debtPayments.get('dp_frac'))!.amount).toBe(1001)
+    expect((await dbx.customers.get('c1'))!.debt).toBe(8999)
+  })
+
   it('gr.commit remote: cộng kho theo patches, chèn batch/priceLog GIỮ NGUYÊN id, đè cost theo grHlc LWW', async () => {
     await dbx.products.put(mkProduct({ id: 'p1', stock: 10, cost: 3000 }))
     const batch: ProductBatch = { id: 'bt1', qty: 5, remain: 5, cost: 4000, expiry: '2026-12-31', date: '2026-08-14' }
@@ -251,6 +297,29 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect(await dbx.batches.get('bt1')).toBeTruthy()
     expect(await dbx.priceLog.get('pl1')).toBeTruthy()
     expect(await dbx.goodsReceipts.get('gr1')).toBeTruthy()
+  })
+
+  it('gr.commit bỏ qua purchasedDelta giả — dùng Σ(qty×cost) từ rows', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10, cost: 3000 }))
+    await dbx.suppliers.put({
+      id: 'sp1', name: 'NCC', phone: '', address: '', note: '', leadDays: 0,
+      debt: 0, totalPurchased: 0, orderCount: 0, createdAt: 1, updatedAt: 1,
+    })
+    const gr: GoodsReceipt = {
+      id: 'gr_forge', code: 'NK-F', supplier: 'NCC', supplierId: 'sp1', date: '2026-08-14',
+      expiry: '', note: '',
+      rows: [{ productId: 'p1', name: 'SP', unit: 'cái', unitRatio: 1, qty: 5, cost: 4000, expiry: '' }],
+      total: 1, // giả
+      ts: Date.now(),
+    }
+    const payload: GrCommitPayload = {
+      gr,
+      patches: [{ productId: 'p1', addQty: 5, newCost: 3500, batches: [], priceLogRows: [] }],
+      supplierDelta: { supplierId: 'sp1', debtDelta: 0, purchasedDelta: 999999 },
+    }
+    await applyOps([remoteOp('gr.commit', payload)])
+    expect((await dbx.goodsReceipts.get('gr_forge'))!.total).toBe(20000)
+    expect((await dbx.suppliers.get('sp1'))!.totalPurchased).toBe(20000)
   })
 
   it('settings.set LWW theo meta hlc:settings', async () => {
@@ -300,9 +369,11 @@ describe('applyOps — idempotent + delta + LWW', () => {
   })
 
   it('user.upsert LWW + user.password + user.delete soft', async () => {
+    const hash1 = 'pbkdf2-sha256$2000$' + 'a'.repeat(64)
+    const hash2 = 'pbkdf2-sha256$2000$' + 'b'.repeat(64)
     const user: User = {
       id: 'u1', username: 'an', name: 'An', email: '', role: 'staff',
-      passwordHash: 'h1', salt: 's1', passwordNeedsReset: true, perms: { sell: true },
+      passwordHash: hash1, salt: 'testsalt1', passwordNeedsReset: true, perms: { sell: true },
       active: true, createdAt: 1, updatedAt: 1,
     }
     await applyOps([remoteOp('user.upsert', { user }, hlcString(2000, 0, 'dev_x'))])
@@ -310,11 +381,11 @@ describe('applyOps — idempotent + delta + LWW', () => {
     await applyOps([remoteOp('user.upsert', { user: { ...user, name: 'cũ hơn' } }, hlcString(1000, 0, 'dev_y'))])
     expect((await dbx.users.get('u1'))!.name).toBe('An')
     await applyOps([remoteOp('user.password', {
-      userId: 'u1', passwordHash: 'h2', salt: 's2', passwordNeedsReset: false, updatedAt: 9,
+      userId: 'u1', passwordHash: hash2, salt: 'testsalt2', passwordNeedsReset: false, updatedAt: 9,
     }, hlcString(3000, 0, 'dev_z'))])
     const afterPw = (await dbx.users.get('u1'))!
-    expect(afterPw.passwordHash).toBe('h2')
-    expect(afterPw.salt).toBe('s2')
+    expect(afterPw.passwordHash).toBe(hash2)
+    expect(afterPw.salt).toBe('testsalt2')
     expect(afterPw.passwordNeedsReset).toBe(false)
     expect(afterPw.name).toBe('An')
     await applyOps([remoteOp('user.delete', { userId: 'u1' }, hlcString(4000, 0, 'dev_x'))])
@@ -404,14 +475,5 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect(await dbx.appliedOps.get(bad.id)).toBeTruthy()
     expect((await getPoisonedOps()).find((p) => p.id === bad.id)).toBeTruthy()
     expect((await getBlockedOps()).find((p) => p.id === bad.id)).toBeUndefined()
-  })
-})
-
-describe('pendingStockDelta', () => {
-  it('tính delta treo từ outbox cho 1 SP', async () => {
-    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
-    await enqueueOp('sale.commit', mkSale('p1', 3))
-    await enqueueOp('stock.adjust', { productId: 'p1', delta: 5, reason: 'x' })
-    expect(await pendingStockDelta('p1')).toBe(2)
   })
 })

@@ -13,10 +13,10 @@ import { unitsFor, convertPriceByUnit, breakdownQty } from '@/core/domain/units'
 import {
   createPricingRule, togglePricingRule, deletePricingRule, applyPricingRule,
 } from '@/core/domain/pricing'
-import { addNote, toggleNoteDone, toggleNotePin, deleteNote, sortNotes } from '@/core/domain/notes'
+import { addNote, deleteNote, filterNotes, sortNotes, toggleNoteDone, toggleNotePin, updateNote, type NoteFilterSeg } from '@/core/domain/notes'
 import { runReadinessCheck, type ReadinessResult } from '@/core/domain/readiness'
 import { Sheet, ConfirmDialog, EmptyState } from '@/shared/components'
-import { ChevronLeft, Plus, Trash2, Ruler, Tags, StickyNote, ShieldCheck, Pin, Check } from 'lucide-react'
+import { ChevronLeft, Plus, Trash2, Ruler, Tags, StickyNote, ShieldCheck, Pin, Check, Pencil } from 'lucide-react'
 import type { Product, PricingRule, Note, NoteType } from '@/core/types'
 
 export function ToolsPage() {
@@ -217,9 +217,16 @@ function PricingTools() {
 
 /* ─── Ghi chú nhanh ─── */
 const NOTE_TYPES: { v: NoteType; label: string }[] = [
-  { v: 'todo', label: 'Việc cần làm' },
+  { v: 'todo', label: 'Việc' },
   { v: 'idea', label: 'Ý tưởng' },
   { v: 'note', label: 'Ghi chú' },
+]
+
+const NOTE_SEGS: { v: NoteFilterSeg; label: string }[] = [
+  { v: 'all', label: 'Tất cả' },
+  { v: 'open', label: 'Chưa xong' },
+  { v: 'done', label: 'Đã xong' },
+  { v: 'pinned', label: 'Ghim' },
 ]
 
 function NotesTools() {
@@ -228,15 +235,25 @@ function NotesTools() {
   const settings = useApp((s) => s.settings)
   const [text, setText] = useState('')
   const [type, setType] = useState<NoteType>('todo')
+  const [seg, setSeg] = useState<NoteFilterSeg>('all')
+  const [query, setQuery] = useState('')
+  const [editId, setEditId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
+  const [editType, setEditType] = useState<NoteType>('note')
   const [delTarget, setDelTarget] = useState<Note | null>(null)
   const [readiness, setReadiness] = useState<ReadinessResult | null>(null)
   const [checking, setChecking] = useState(false)
+  const [adding, setAdding] = useState(false)
 
   const notes = useLiveQuery(() => dbx.notes.filter((n) => !n.deleted).toArray(), [], [] as Note[])
-  const sorted = useMemo(() => sortNotes(notes), [notes])
+  const sorted = useMemo(
+    () => sortNotes(filterNotes(notes, { query, seg })),
+    [notes, query, seg],
+  )
 
   async function handleAdd() {
-    if (!text.trim()) { showToast('Nhập nội dung ghi chú', 'bad'); return }
+    if (!text.trim() || adding) { if (!text.trim()) showToast('Nhập nội dung ghi chú', 'bad'); return }
+    setAdding(true)
     try {
       await addNote(text, type)
       setText('')
@@ -244,14 +261,35 @@ function NotesTools() {
     } catch (e) {
       logError(e, 'notes.add')
       showToast('Lỗi khi lưu ghi chú', 'bad')
+    } finally {
+      setAdding(false)
     }
   }
 
   async function handleDelete() {
     if (!delTarget) return
-    await deleteNote(delTarget.id)
-    showToast('Đã xóa ghi chú', 'ok')
-    setDelTarget(null)
+    try {
+      await deleteNote(delTarget.id)
+      if (editId === delTarget.id) setEditId(null)
+      showToast('Đã xóa ghi chú', 'ok')
+    } catch (e) {
+      logError(e, 'notes.delete')
+      showToast('Không xóa được', 'bad')
+    } finally {
+      setDelTarget(null)
+    }
+  }
+
+  async function handleSaveEdit() {
+    if (!editId || !editText.trim()) return
+    try {
+      await updateNote(editId, { text: editText, type: editType })
+      setEditId(null)
+      showToast('Đã lưu', 'ok')
+    } catch (e) {
+      logError(e, 'notes.update')
+      showToast('Không lưu được', 'bad')
+    }
   }
 
   async function handleCheck() {
@@ -269,24 +307,22 @@ function NotesTools() {
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-3 pb-6 max-w-[520px] mx-auto w-full">
-      <button
-        className="btn-ghost w-full mb-3 flex items-center justify-center gap-2"
-        onClick={handleCheck}
-        disabled={checking}
-      >
-        <ShieldCheck size={16} /> {checking ? 'Đang kiểm tra…' : 'Kiểm tra sẵn sàng'}
-      </button>
-
       <div className="card p-3 mb-3">
         <textarea
           className="field-input resize-none"
-          rows={2}
-          placeholder="Ghi chú nhanh: việc cần làm, ý tưởng…"
+          rows={3}
+          placeholder="Ghi nhanh: việc cần làm, ý tưởng…"
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              void handleAdd()
+            }
+          }}
         />
-        <div className="flex items-center gap-2 mt-2">
-          <div className="flex gap-1.5 flex-1">
+        <div className="flex items-center gap-2 mt-2 flex-wrap">
+          <div className="flex gap-1.5 flex-1 flex-wrap">
             {NOTE_TYPES.map((t) => (
               <button
                 key={t.v}
@@ -298,53 +334,120 @@ function NotesTools() {
               </button>
             ))}
           </div>
-          <button className="btn-cta !w-auto !px-4" onClick={handleAdd}>
-            <Plus size={15} /> Thêm
+          <button className="btn-cta !w-auto !px-4" disabled={adding} onClick={() => void handleAdd()}>
+            <Plus size={15} /> {adding ? '…' : 'Thêm'}
           </button>
         </div>
       </div>
 
+      <div className="flex gap-1.5 mb-2 overflow-x-auto pb-0.5">
+        {NOTE_SEGS.map((s) => (
+          <button
+            key={s.v}
+            className="chip !text-[11px] shrink-0"
+            style={seg === s.v ? { background: 'var(--ink)', color: 'var(--paper)', borderColor: 'var(--ink)' } : {}}
+            onClick={() => setSeg(s.v)}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+      <input
+        className="field-input mb-3 text-sm"
+        placeholder="Tìm ghi chú…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+
       <div className="flex flex-col gap-2">
         {sorted.map((n) => (
           <div key={n.id} className="card p-3" style={n.done ? { opacity: 0.55 } : {}}>
-            <div className="flex items-start gap-2">
-              <button
-                className="mt-0.5 shrink-0 w-5 h-5 rounded-full border flex items-center justify-center"
-                style={{
-                  borderColor: n.done ? 'var(--up)' : 'var(--hair-2)',
-                  background: n.done ? 'var(--up)' : 'transparent',
-                }}
-                onClick={() => toggleNoteDone(n.id)}
-                aria-label="Đánh dấu xong"
-              >
-                {n.done && <Check size={12} color="#fff" />}
-              </button>
-              <div className="flex-1 min-w-0">
-                <div
-                  className="text-sm whitespace-pre-wrap break-words"
-                  style={{ color: 'var(--ink)', textDecoration: n.done ? 'line-through' : 'none' }}
+            {editId === n.id ? (
+              <div className="flex flex-col gap-2">
+                <textarea
+                  className="field-input resize-none text-sm"
+                  rows={3}
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  autoFocus
+                />
+                <div className="flex gap-1.5 flex-wrap">
+                  {NOTE_TYPES.map((t) => (
+                    <button
+                      key={t.v}
+                      className="chip !text-[11px]"
+                      style={editType === t.v ? { background: 'var(--ink)', color: 'var(--paper)', borderColor: 'var(--ink)' } : {}}
+                      onClick={() => setEditType(t.v)}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button className="btn-ghost !w-auto !px-3" onClick={() => setEditId(null)}>Hủy</button>
+                  <button className="btn-cta !w-auto !px-3" onClick={() => void handleSaveEdit()}>Lưu</button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2">
+                <button
+                  className="mt-0.5 shrink-0 w-5 h-5 rounded-full border flex items-center justify-center"
+                  style={{
+                    borderColor: n.done ? 'var(--up)' : 'var(--hair-2)',
+                    background: n.done ? 'var(--up)' : 'transparent',
+                  }}
+                  onClick={() => void toggleNoteDone(n.id)}
+                  aria-label="Đánh dấu xong"
                 >
-                  {n.text}
+                  {n.done && <Check size={12} color="#fff" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div
+                    className="text-sm whitespace-pre-wrap break-words"
+                    style={{ color: 'var(--ink)', textDecoration: n.done ? 'line-through' : 'none' }}
+                  >
+                    {n.text}
+                  </div>
+                  <div className="text-[10.5px] mt-1" style={{ color: 'var(--mute)' }}>
+                    {NOTE_TYPES.find((t) => t.v === n.type)?.label} · {new Date(n.date).toLocaleString('vi-VN')}
+                  </div>
                 </div>
-                <div className="text-[10.5px] mt-1" style={{ color: 'var(--mute)' }}>
-                  {NOTE_TYPES.find((t) => t.v === n.type)?.label} · {new Date(n.date).toLocaleString('vi-VN')}
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button className="p-1" onClick={() => void toggleNotePin(n.id)} aria-label="Ghim">
+                    <Pin size={14} style={{ color: n.pinned ? 'var(--gold)' : 'var(--mute-2)' }} fill={n.pinned ? 'var(--gold)' : 'none'} />
+                  </button>
+                  <button
+                    className="p-1"
+                    onClick={() => { setEditId(n.id); setEditText(n.text); setEditType(n.type) }}
+                    aria-label="Sửa"
+                  >
+                    <Pencil size={14} style={{ color: 'var(--mute-2)' }} />
+                  </button>
+                  <button className="p-1" onClick={() => setDelTarget(n)} aria-label="Xóa">
+                    <Trash2 size={14} style={{ color: 'var(--mute-2)' }} />
+                  </button>
                 </div>
               </div>
-              <div className="flex flex-col gap-1 shrink-0">
-                <button className="p-1" onClick={() => toggleNotePin(n.id)} aria-label="Ghim">
-                  <Pin size={14} style={{ color: n.pinned ? 'var(--gold)' : 'var(--mute-2)' }} fill={n.pinned ? 'var(--gold)' : 'none'} />
-                </button>
-                <button className="p-1" onClick={() => setDelTarget(n)} aria-label="Xóa">
-                  <Trash2 size={14} style={{ color: 'var(--mute-2)' }} />
-                </button>
-              </div>
-            </div>
+            )}
           </div>
         ))}
-        {sorted.length === 0 && <EmptyState icon="📝" title="Chưa có ghi chú" sub="Ghi nhanh việc cần làm, ý tưởng kinh doanh" />}
+        {sorted.length === 0 && (
+          <EmptyState
+            icon="📝"
+            title={notes.length === 0 ? 'Chưa có ghi chú' : 'Không khớp bộ lọc'}
+            sub={notes.length === 0 ? 'Ghi nhanh việc cần làm, ý tưởng kinh doanh' : 'Thử đổi lọc hoặc từ khóa'}
+          />
+        )}
       </div>
 
-      {/* Kết quả kiểm tra sẵn sàng */}
+      <button
+        className="btn-ghost w-full mt-4 flex items-center justify-center gap-2"
+        onClick={() => void handleCheck()}
+        disabled={checking}
+      >
+        <ShieldCheck size={16} /> {checking ? 'Đang kiểm tra…' : 'Kiểm tra sẵn sàng'}
+      </button>
+
       <Sheet open={!!readiness} onClose={() => setReadiness(null)} title="Kiểm tra sẵn sàng">
         {readiness && (
           <div className="flex flex-col gap-2">
@@ -371,7 +474,7 @@ function NotesTools() {
         message="Ghi chú sẽ bị xóa vĩnh viễn."
         confirmLabel="Xóa"
         danger
-        onConfirm={handleDelete}
+        onConfirm={() => void handleDelete()}
         onCancel={() => setDelTarget(null)}
       />
     </div>

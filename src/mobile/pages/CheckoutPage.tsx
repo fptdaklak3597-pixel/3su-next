@@ -12,6 +12,8 @@ import { confirmSale, cartUnitPrice, customerHabits, DENOMINATIONS, discountToAm
 import { playPosSound } from '@/core/browser/posSound'
 import { printReceiptLocal } from '@/core/browser/print'
 import { dispatchPrint, printResultToast } from '@/core/browser/printQueue'
+import { canUseBluetoothPrint, printTicketBluetooth } from '@/core/browser/printBluetooth'
+import { saleTicketFromContext } from '@/core/browser/printTicket'
 import { fmt, fmtShort } from '@/core/format'
 import { logError } from '@/core/errorLogger'
 import { createConfirmGate } from '@/core/confirmGate'
@@ -43,7 +45,13 @@ export function CheckoutPage() {
   const confirmGate = useRef(createConfirmGate())
 
   const products = useLiveQuery(() => dbx.products.toArray(), [], [] as Product[])
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const sales = useLiveQuery(
+    () => customerId
+      ? dbx.sales.where('customerId').equals(customerId).toArray()
+      : Promise.resolve([] as Sale[]),
+    [customerId],
+    [] as Sale[],
+  )
   const customers = useLiveQuery(
     () => dbx.customers.filter((c) => !c.deleted).toArray(),
     [],
@@ -115,7 +123,7 @@ export function CheckoutPage() {
       if (settings.printer.autoPrintAfterSale && printed.via === 'none' && !settings.printer.cloudRelay && !settings.printer.lanAgentUrl) {
         setDoneSale(sale)
       } else {
-        navigate('/')
+        navigate('/ban-hang')
       }
     } catch (e) {
       logError(e, 'checkout.confirm')
@@ -136,7 +144,22 @@ export function CheckoutPage() {
     })
     if (!ok) showToast('Không in được trên thiết bị này', 'bad')
     setDoneSale(null)
-    navigate('/')
+    navigate('/ban-hang')
+  }
+
+  async function handleBluetoothPrint() {
+    if (!doneSale) return
+    try {
+      await printTicketBluetooth(saleTicketFromContext({
+        sale: doneSale,
+        shop,
+        printer: settings.printer,
+        customerName: customer?.name ?? null,
+      }), { requestIfNeeded: true })
+      showToast('Đang in máy nhiệt…', 'ok')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Không in được Bluetooth', 'bad')
+    }
   }
 
   return (
@@ -148,7 +171,7 @@ export function CheckoutPage() {
         </button>
         <div className="text-center flex-1">
           <div className="font-brand text-[17px] font-medium" style={{ color: 'var(--ink)' }}>Thanh toán</div>
-          <div className="text-[11px] font-medium tracking-wider uppercase" style={{ color: 'var(--mute)' }}>
+          <div className="text-xs font-medium tracking-wider uppercase" style={{ color: 'var(--mute)' }}>
             {cart.reduce((a, c) => a + c.qty, 0)} món · lời {fmt(profit)}
           </div>
         </div>
@@ -158,7 +181,7 @@ export function CheckoutPage() {
       <div className="flex-1 overflow-y-auto px-5 py-5 max-w-[480px] mx-auto w-full">
         {/* Amount hero */}
         <div className="text-center mb-6">
-          <div className="text-[11px] font-medium tracking-widest uppercase mb-1" style={{ color: 'var(--mute)' }}>Khách trả</div>
+          <div className="text-xs font-medium tracking-widest uppercase mb-1" style={{ color: 'var(--mute)' }}>Khách trả</div>
           <div className="font-brand italic stat-num text-4xl" style={{ color: 'var(--ink)' }}>{fmt(final)}</div>
           {discount > 0 && (
             <div className="text-xs mt-1" style={{ color: 'var(--mute)' }}>Giảm {fmt(discount)}</div>
@@ -224,7 +247,7 @@ export function CheckoutPage() {
               </span>
             </div>
             {underpaid && (
-              <div className="text-[11px] mt-1" style={{ color: 'var(--mute)' }}>
+              <div className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
                 Nhập nhỏ hơn tổng để ghi nợ phần còn lại
               </div>
             )}
@@ -317,7 +340,7 @@ export function CheckoutPage() {
               <button key={c.id} className="list-row mb-1.5" onClick={() => { setCustomerId(c.id); setShowCustomerPick(false) }}>
                 <div className="flex-1 text-left">
                   <div className="text-sm font-medium" style={{ color: 'var(--ink)' }}>{c.name}</div>
-                  <div className="text-[11px]" style={{ color: 'var(--mute)' }}>
+                  <div className="text-xs" style={{ color: 'var(--mute)' }}>
                     {c.phone || '—'}{c.debt > 0 ? ` · nợ ${fmt(c.debt)}` : ''}
                   </div>
                 </div>
@@ -328,17 +351,25 @@ export function CheckoutPage() {
       )}
       {/* After-sale print prompt */}
       {doneSale && (
-        <div className="sheet-overlay" onClick={() => { setDoneSale(null); navigate('/') }}>
+        <div className="sheet-overlay" onClick={() => { setDoneSale(null); navigate('/ban-hang') }}>
           <div className="sheet-panel" onClick={(e) => e.stopPropagation()}>
             <div className="sheet-grab" />
             <h3 className="font-brand text-base font-medium text-center mb-1">Thanh toán thành công</h3>
             <p className="text-center text-sm mb-4" style={{ color: 'var(--mute)' }}>In hóa đơn cho khách?</p>
             <div className="flex flex-col gap-2">
+              <button className="btn-cta" onClick={() => { setDoneSale(null); navigate('/ban-hang') }}>
+                Bán tiếp
+              </button>
+              {canUseBluetoothPrint() && (
+                <button className="btn-cta flex items-center justify-center gap-2" onClick={() => void handleBluetoothPrint()}>
+                  <Printer size={18} /> In Bluetooth K80
+                </button>
+              )}
               <button className="btn-cta flex items-center justify-center gap-2" onClick={handlePrintDone}>
                 <Printer size={18} /> In trên máy này
               </button>
               <button className="btn-ghost" onClick={() => { setDoneSale(null); navigate('/') }}>
-                Không in
+                Về trang chủ
               </button>
             </div>
           </div>

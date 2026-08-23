@@ -41,6 +41,19 @@ export function localDay(d: Date | string): string {
   return `${y}-${m}-${day}`
 }
 
+
+/** YYYY-MM-DD theo lịch Việt Nam (Asia/Ho_Chi_Minh) — dùng cho báo cáo */
+export function vnDay(d: Date | string | number = Date.now()): string {
+  const ms = typeof d === 'number' ? d : new Date(d).getTime()
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(ms))
+}
+export function vnToday(): string { return vnDay(Date.now()) }
+export function vnDaysAgo(n: number): string { return vnDay(Date.now() - n * 86_400_000) }
 export function yesterday(): string {
   const d = new Date()
   d.setDate(d.getDate() - 1)
@@ -113,11 +126,24 @@ export function greeting(): string {
 
 /* ─── Utils ─── */
 export function uid(prefix: string): string {
-  return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  const c = globalThis.crypto
+  if (c?.randomUUID) return `${prefix}_${c.randomUUID()}`
+  if (c?.getRandomValues) {
+    const bytes = new Uint8Array(16)
+    c.getRandomValues(bytes)
+    const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+    return `${prefix}_${hex}`
+  }
+  throw new Error('crypto.randomUUID/getRandomValues không khả dụng')
 }
 
 export function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 /** Bỏ dấu tiếng Việt để tìm kiếm */

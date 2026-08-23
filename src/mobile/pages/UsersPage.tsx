@@ -204,13 +204,17 @@ function PermSheet({ user, onClose }: { user: User; onClose: () => void }) {
 /* ─── Đổi mật khẩu ─── */
 function PasswordSheet({ user, onClose }: { user: User; onClose: () => void }) {
   const showToast = useApp((s) => s.showToast)
+  const me = useApp((s) => s.user)
   const [pw, setPw] = useState('')
+  const [currentPw, setCurrentPw] = useState('')
+  const self = me?.id === user.id
 
   async function handleSave() {
     try {
-      await changePassword(user.id, pw)
+      await changePassword(user.id, pw, self ? { currentPassword: currentPw } : undefined)
       showToast('✓ Đã đổi mật khẩu', 'ok')
       setPw('')
+      setCurrentPw('')
       onClose()
     } catch (e) {
       logError(e, 'user.password')
@@ -221,7 +225,26 @@ function PasswordSheet({ user, onClose }: { user: User; onClose: () => void }) {
   return (
     <Sheet open onClose={onClose} title={`Đổi mật khẩu — ${user.name}`}>
       <div className="flex flex-col gap-3">
-        <input className="field-input" placeholder="Mật khẩu mới (tối thiểu 4 ký tự)" type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoFocus />
+        {self && (
+          <input
+            className="field-input"
+            placeholder="Mật khẩu hiện tại"
+            type="password"
+            value={currentPw}
+            onChange={(e) => setCurrentPw(e.target.value)}
+            autoComplete="current-password"
+            autoFocus
+          />
+        )}
+        <input
+          className="field-input"
+          placeholder="Mật khẩu mới (tối thiểu 4 ký tự)"
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          autoComplete="new-password"
+          autoFocus={!self}
+        />
         <button className="btn-cta" onClick={handleSave}>Đổi mật khẩu</button>
       </div>
     </Sheet>

@@ -3,42 +3,47 @@
  * Khung KiotViet (thanh trên, POS fullscreen, bảng).
  * Trang web-native; POS thanh toán vẫn dùng checkout chung.
  */
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp } from '@/core/store'
 import { dbx, getSettings, getShop, getCurrentUser, getTrial } from '@/core/db'
 import { onSyncState, startSyncLoop } from '@/core/sync/engine'
-import { useOnline, useServiceWorkerUpdate } from '@/shared/pwa'
-import { ToastHost, CelebrationHost, OfflineBar, UpdateBanner } from '@/shared/components'
+import { useOnline } from '@/shared/pwa'
+import { ToastHost, CelebrationHost, OfflineBar, SwUpdateBanner } from '@/shared/components'
 import { PermissionRoute } from '@/shared/PermissionRoute'
 import { WebShell } from './layout/WebShell'
-import { WebHomePage } from './pages/HomePage'
-import { WebSalePage } from './pages/SalePage'
-import { WebInventoryPage } from './pages/InventoryPage'
-import { WebCustomersPage } from './pages/CustomersPage'
-import { WebOrdersPage } from './pages/OrdersPage'
-import { WebOrderDetailPage } from './pages/OrderDetailPage'
-import { WebProductDetailPage } from './pages/ProductDetailPage'
-import { WebReportsPage } from './pages/ReportsPage'
-import { WebSettingsPage } from './pages/SettingsPage'
-import { WebGoodsReceiptPage } from './pages/GoodsReceiptPage'
-import { WebPurchaseOrdersPage } from './pages/PurchaseOrdersPage'
-import { WebStocktakePage } from './pages/StocktakePage'
-import { WebSuppliersPage } from './pages/SuppliersPage'
-import { WebDevicesPage } from './pages/DevicesPage'
-import { WebInvoicesPage } from './pages/InvoicesPage'
-import { WebToolsPage } from './pages/ToolsPage'
-import { WebUsersPage } from './pages/UsersPage'
-import { WebPrintAgentPage } from './pages/PrintAgentPage'
-import { WebAccountPage } from './pages/AccountPage'
-import { WebNotesPage } from './pages/NotesPage'
 import { LoginPage } from '@/mobile/pages/LoginPage'
 import { useCloudSession } from '@/shared/useCloudSession'
 import { AuthBootSplash, CloudAuthScreen, CloudShopJoinScreen } from '@/shared/CloudAuthScreen'
 import { ShopLicenseScreen, useShopLicense } from '@/shared/ShopLicenseGate'
 import { isLicenseBlocked } from '@/core/sync/license'
 import { useShopUsageTracker } from '@/core/sync/usageTracker'
+
+const WebHomePage = lazy(() => import('./pages/HomePage').then((m) => ({ default: m.WebHomePage })))
+const WebSalePage = lazy(() => import('./pages/SalePage').then((m) => ({ default: m.WebSalePage })))
+const WebInventoryPage = lazy(() => import('./pages/InventoryPage').then((m) => ({ default: m.WebInventoryPage })))
+const WebCustomersPage = lazy(() => import('./pages/CustomersPage').then((m) => ({ default: m.WebCustomersPage })))
+const WebOrdersPage = lazy(() => import('./pages/OrdersPage').then((m) => ({ default: m.WebOrdersPage })))
+const WebOrderDetailPage = lazy(() => import('./pages/OrderDetailPage').then((m) => ({ default: m.WebOrderDetailPage })))
+const WebProductDetailPage = lazy(() => import('./pages/ProductDetailPage').then((m) => ({ default: m.WebProductDetailPage })))
+const WebReportsPage = lazy(() => import('./pages/ReportsPage').then((m) => ({ default: m.WebReportsPage })))
+const WebSettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.WebSettingsPage })))
+const WebGoodsReceiptPage = lazy(() => import('./pages/GoodsReceiptPage').then((m) => ({ default: m.WebGoodsReceiptPage })))
+const WebPurchaseOrdersPage = lazy(() => import('./pages/PurchaseOrdersPage').then((m) => ({ default: m.WebPurchaseOrdersPage })))
+const WebStocktakePage = lazy(() => import('./pages/StocktakePage').then((m) => ({ default: m.WebStocktakePage })))
+const WebSuppliersPage = lazy(() => import('./pages/SuppliersPage').then((m) => ({ default: m.WebSuppliersPage })))
+const WebDevicesPage = lazy(() => import('./pages/DevicesPage').then((m) => ({ default: m.WebDevicesPage })))
+const WebInvoicesPage = lazy(() => import('./pages/InvoicesPage').then((m) => ({ default: m.WebInvoicesPage })))
+const WebToolsPage = lazy(() => import('./pages/ToolsPage').then((m) => ({ default: m.WebToolsPage })))
+const WebUsersPage = lazy(() => import('./pages/UsersPage').then((m) => ({ default: m.WebUsersPage })))
+const WebPrintAgentPage = lazy(() => import('./pages/PrintAgentPage').then((m) => ({ default: m.WebPrintAgentPage })))
+const WebAccountPage = lazy(() => import('./pages/AccountPage').then((m) => ({ default: m.WebAccountPage })))
+const WebNotesPage = lazy(() => import('./pages/NotesPage').then((m) => ({ default: m.WebNotesPage })))
+
+function RouteFallback() {
+  return <div className="p-6 text-sm" style={{ color: 'var(--kv-muted, #64748b)' }}>Đang tải…</div>
+}
 
 export function WebApp() {
   const setReady = useApp((s) => s.setReady)
@@ -53,7 +58,6 @@ export function WebApp() {
   const setTheme = useApp((s) => s.setTheme)
   const largeText = useApp((s) => s.settings.largeText)
   const online = useOnline()
-  const { updateReady, applyUpdate } = useServiceWorkerUpdate()
 
   useEffect(() => {
     document.documentElement.toggleAttribute('data-font-large', largeText === true)
@@ -104,7 +108,6 @@ export function WebApp() {
   useEffect(() => { setOnline(online) }, [online, setOnline])
 
   const cloud = useCloudSession()
-  // Dùng tổng record, kể cả user đã xóa mềm: không được mở lại bootstrap hoặc bỏ qua login.
   const usersCount = useLiveQuery(() => dbx.users.count(), [], 0)
   const uiPreview = import.meta.env.DEV && typeof window !== 'undefined'
     && new URLSearchParams(window.location.search).get('preview') === '1'
@@ -121,7 +124,7 @@ export function WebApp() {
     <BrowserRouter>
       <div className="app-shell">
         <OfflineBar />
-        <UpdateBanner ready={updateReady} onApply={applyUpdate} />
+        <SwUpdateBanner />
         {booting ? (
           <AuthBootSplash />
         ) : needsCloud ? (
@@ -133,60 +136,62 @@ export function WebApp() {
         ) : needsStaff ? (
           <LoginPage />
         ) : (
-          <Routes>
-            <Route element={<PermissionRoute permission="settings" />}>
-              <Route path="/may-in" element={<WebPrintAgentPage />} />
-            </Route>
-
-            <Route element={<WebShell />}>
-              <Route path="/" element={<WebHomePage />} />
-
-              <Route element={<PermissionRoute permission="sell" />}>
-                <Route path="/ban-hang" element={<WebSalePage />} />
-                <Route path="/thanh-toan" element={<Navigate to="/ban-hang" replace />} />
-                <Route path="/don-hang" element={<WebOrdersPage />} />
-                <Route path="/don-hang/:id" element={<WebOrderDetailPage />} />
-                <Route path="/khach-hang" element={<WebCustomersPage />} />
-              </Route>
-
-              <Route element={<PermissionRoute permission="inventory" />}>
-                <Route path="/kho" element={<WebInventoryPage />} />
-                <Route path="/kho/:id" element={<WebProductDetailPage />} />
-                <Route path="/nhap-hang" element={<WebGoodsReceiptPage />} />
-                <Route path="/don-mua" element={<WebPurchaseOrdersPage />} />
-                <Route path="/kiem-ke" element={<WebStocktakePage />} />
-                <Route path="/cong-cu" element={<WebToolsPage />} />
-              </Route>
-
-              <Route element={<PermissionRoute permission="suppliers" />}>
-                <Route path="/nha-cung-cap" element={<WebSuppliersPage />} />
-              </Route>
-
-              <Route element={<PermissionRoute permission="reports" />}>
-                <Route path="/bao-cao" element={<WebReportsPage />} />
-              </Route>
-
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
               <Route element={<PermissionRoute permission="settings" />}>
-                <Route path="/cai-dat" element={<WebSettingsPage />} />
-                <Route path="/thiet-bi" element={<WebDevicesPage />} />
+                <Route path="/may-in" element={<WebPrintAgentPage />} />
               </Route>
 
-              <Route element={<PermissionRoute permission="users" />}>
-                <Route path="/nguoi-dung" element={<WebUsersPage />} />
-              </Route>
+              <Route element={<WebShell />}>
+                <Route path="/" element={<WebHomePage />} />
 
-              <Route element={<PermissionRoute permission="invoices" />}>
-                <Route path="/hoa-don" element={<WebInvoicesPage />} />
-              </Route>
+                <Route element={<PermissionRoute permission="sell" />}>
+                  <Route path="/ban-hang" element={<WebSalePage />} />
+                  <Route path="/thanh-toan" element={<Navigate to="/ban-hang" replace />} />
+                  <Route path="/don-hang" element={<WebOrdersPage />} />
+                  <Route path="/don-hang/:id" element={<WebOrderDetailPage />} />
+                  <Route path="/khach-hang" element={<WebCustomersPage />} />
+                </Route>
 
-              <Route path="/tai-khoan" element={<WebAccountPage />} />
-              <Route path="/ghi-chu" element={<WebNotesPage />} />
-              <Route path="/nhap-hang/hoa-don" element={<Navigate to="/nhap-hang" replace />} />
-              <Route path="/doi-soat" element={<Navigate to="/cai-dat" replace />} />
-              <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Route>
-          </Routes>
+                <Route element={<PermissionRoute permission="inventory" />}>
+                  <Route path="/kho" element={<WebInventoryPage />} />
+                  <Route path="/kho/:id" element={<WebProductDetailPage />} />
+                  <Route path="/nhap-hang" element={<WebGoodsReceiptPage />} />
+                  <Route path="/don-mua" element={<WebPurchaseOrdersPage />} />
+                  <Route path="/kiem-ke" element={<WebStocktakePage />} />
+                  <Route path="/cong-cu" element={<WebToolsPage />} />
+                </Route>
+
+                <Route element={<PermissionRoute permission="suppliers" />}>
+                  <Route path="/nha-cung-cap" element={<WebSuppliersPage />} />
+                </Route>
+
+                <Route element={<PermissionRoute permission="reports" />}>
+                  <Route path="/bao-cao" element={<WebReportsPage />} />
+                </Route>
+
+                <Route element={<PermissionRoute permission="settings" />}>
+                  <Route path="/cai-dat" element={<WebSettingsPage />} />
+                  <Route path="/thiet-bi" element={<WebDevicesPage />} />
+                </Route>
+
+                <Route element={<PermissionRoute permission="users" />}>
+                  <Route path="/nguoi-dung" element={<WebUsersPage />} />
+                </Route>
+
+                <Route element={<PermissionRoute permission="invoices" />}>
+                  <Route path="/hoa-don" element={<WebInvoicesPage />} />
+                </Route>
+
+                <Route path="/tai-khoan" element={<WebAccountPage />} />
+                <Route path="/ghi-chu" element={<WebNotesPage />} />
+                <Route path="/nhap-hang/hoa-don" element={<Navigate to="/nhap-hang" replace />} />
+                <Route path="/doi-soat" element={<Navigate to="/cai-dat" replace />} />
+                <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Route>
+            </Routes>
+          </Suspense>
         )}
         <ToastHost />
         <CelebrationHost />

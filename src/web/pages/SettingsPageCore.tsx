@@ -19,6 +19,7 @@ import { exportErrorLogText, logError } from '@/core/errorLogger'
 import { apiBase, saveApiBaseOverride } from '@/core/sync/cloud'
 import { isFirebaseConfigured } from '@/core/sync/firebase'
 import { ConfirmDialog } from '@/shared/components'
+import { SyncDiagnosticsPanel } from '@/shared/SyncDiagnosticsPanel'
 import { dispatchTestPrint, printResultToast } from '@/core/browser/printQueue'
 import { PrintStatusLine } from '@/shared/PrintStatus'
 import { useDisplayMode, useInstallPrompt } from '@/shared/pwa'
@@ -69,11 +70,17 @@ export function WebSettingsPage() {
   }, [shop.name, shop.phone, shop.address])
 
   async function patchSettings(patch: Partial<Settings>) {
+    const prev = settings
     const next = { ...settings, ...patch }
     setSettings(next)
-    try { await saveSettingsSynced(next) } catch (e) { logError(e, 'settings.save') }
+    try {
+      await saveSettingsSynced(next)
+    } catch (e) {
+      setSettings(prev)
+      logError(e, 'settings.save')
+      showToast('Không lưu được cài đặt', 'bad')
+    }
   }
-
   async function patchPrinter(patch: Partial<Settings['printer']>) {
     await patchSettings({ printer: { ...settings.printer, ...patch } })
   }
@@ -388,6 +395,10 @@ export function WebSettingsPage() {
               <p className="web-sub">
                 Chủ cửa hàng: cùng email trên mọi máy. Máy mới hoặc nhân viên: vào <strong>Tài khoản</strong>, nhập mã một lần bằng Gmail của họ.
               </p>
+              <div className="web-settings-block" style={{ marginTop: 12 }}>
+                <div className="web-settings-block-t">Op đồng bộ bị kẹt</div>
+                <SyncDiagnosticsPanel variant="web" />
+              </div>
               <div className="web-settings-actions">
                 <button type="button" className="web-btn pri" onClick={() => navigate('/tai-khoan')}>Tài khoản cloud</button>
               </div>

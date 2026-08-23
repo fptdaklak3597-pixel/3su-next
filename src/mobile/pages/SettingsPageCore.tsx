@@ -13,10 +13,11 @@ import { saveSettingsSynced, saveShopSynced } from '@/core/domain/settings'
 import { exportErrorLogText, logError } from '@/core/errorLogger'
 import { useInstallPrompt, useDisplayMode } from '@/shared/pwa'
 import { ConfirmDialog } from '@/shared/components'
+import { SyncDiagnosticsPanel } from '@/shared/SyncDiagnosticsPanel'
 import { ROLE_LABEL } from '@/core/domain/auth'
 import {
   Store, SlidersHorizontal, Palette, Printer, QrCode,
-  Download, Upload, Trash2, Smartphone, RefreshCw, LogOut, UserCircle2,
+  Download, Upload, Trash2, Smartphone, RefreshCw, LogOut, UserCircle2, Cloud,
 } from 'lucide-react'
 import { dispatchTestPrint, printResultToast } from '@/core/browser/printQueue'
 import { PrintStatusLine } from '@/shared/PrintStatus'
@@ -45,15 +46,17 @@ export function SettingsPage() {
   useEffect(() => { void getAutoBackups().then(setAutoBackups) }, [])
 
   async function patchSettings(patch: Partial<Settings>) {
+    const prev = settings
     const next = { ...settings, ...patch }
     setSettings(next)
     try {
       await saveSettingsSynced(next)
     } catch (e) {
+      setSettings(prev)
       logError(e, 'settings.save')
+      showToast('Không lưu được cài đặt', 'bad')
     }
   }
-
   async function patchPrinter(patch: Partial<Settings['printer']>) {
     await patchSettings({ printer: { ...settings.printer, ...patch } })
   }
@@ -266,6 +269,14 @@ export function SettingsPage() {
               onChange={(e) => patchPrinter({ templateFooter: e.target.value })}
             />
           </label>
+        </Section>
+
+        {/* Đồng bộ */}
+        <Section icon={<Cloud size={15} />} title="Đồng bộ">
+          <p className="text-xs mb-2" style={{ color: 'var(--mute)' }}>
+            Op thiếu dependency sẽ hiện ở đây. Bỏ qua nếu chắc chắn không cần áp lại.
+          </p>
+          <SyncDiagnosticsPanel variant="mobile" />
         </Section>
 
         {/* Dữ liệu */}

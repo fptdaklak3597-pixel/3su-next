@@ -7,8 +7,8 @@ import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { dayStats, weekProfitSeries, totalDebt } from '@/core/domain/sales'
-import { fmt, fmtShort, today, yesterday, greeting } from '@/core/format'
+import { dayStats, weekProfitSeries, totalDebt, salesInDateRange } from '@/core/domain/sales'
+import { fmtShort, today, yesterday, greeting, vnDaysAgo, vnToday } from '@/core/format'
 import { Bell, ChevronRight, LayoutGrid, Smartphone } from 'lucide-react'
 import { useInstallPrompt, useDisplayMode } from '@/shared/pwa'
 
@@ -21,7 +21,7 @@ export function HomePage() {
   const displayMode = useDisplayMode()
   const showInstall = displayMode !== 'standalone' && !installed
 
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(13), vnToday()), [], [])
   const customers = useLiveQuery(() => dbx.customers.toArray(), [], [])
 
   const stats = useMemo(() => {

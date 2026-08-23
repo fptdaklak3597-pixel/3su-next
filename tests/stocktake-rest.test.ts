@@ -62,3 +62,21 @@ describe('M1 — kiểm kê khớp lô', () => {
     expect(plus.batches.reduce((s, b) => s + b.remain, 0)).toBe(8)
   })
 })
+
+describe('N2 — saveStocktake bỏ qua system UI cũ', () => {
+  it('tồn live 8, UI gửi system 10 / actual 12 → stock 12, move +4, outbox system 8 / diff 4', async () => {
+    await dbx.products.add(mkProduct({ stock: 8 }))
+    const record = await saveStocktake(
+      [{ productId: 'p1', name: 'Mì', system: 10, actual: 12 }],
+      'UI đóng băng',
+    )
+    expect((await dbx.products.get('p1'))!.stock).toBe(12)
+    expect(record.rows[0]).toMatchObject({ system: 8, actual: 12, diff: 4 })
+    const moves = await dbx.stockMoves.toArray()
+    expect(moves).toHaveLength(1)
+    expect(moves[0].qty).toBe(4)
+    const op = (await dbx.syncQueue.toArray()).find((o) => o.type === 'stocktake.commit')!
+    const payload = op.payload as typeof record
+    expect(payload.rows[0]).toMatchObject({ system: 8, diff: 4, actual: 12 })
+  })
+})

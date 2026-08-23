@@ -1,9 +1,9 @@
 # KẾ HOẠCH SỬA LỖI — 3su-next v4.0 (từ báo cáo ANALYSIS-BUSINESS-LOGIC.md)
 
 - **Ngày lập kế hoạch:** 2026-08-18
+- **Đối chiếu lại với code:** 2026-08-23 — bảng theo dõi cũ (toàn ⬜) đã lệch code. Hầu hết Phase 1–3 đã có test + implementation; L4 (PBKDF2) xong nhưng từng ghi ⏸; L7 + phần `unitRatio` của `topProducts` vừa đóng nốt.
 - **Nguồn:** `ANALYSIS-BUSINESS-LOGIC.md` (review 2026-08-04, 2 lượt đọc độc lập + 6 probe thực nghiệm)
-- **Trạng thái:** CHỈ KẾ HOẠCH — chưa sửa dòng code nào. Mọi fix bắt đầu sau khi kế hoạch được duyệt.
-- **Baseline đã xác minh lại hôm nay (18:13):** vitest **199/199 pass** (25 file), `tsc -b --noEmit` **0 lỗi**, HEAD = `fee201c` (branch `feat/sync-core-v2`), toàn bộ file anchors trong báo cáo còn nguyên.
+- **Trạng thái:** Đã đối chiếu với code hiện tại. Phase 1 đóng. S1/S2/S3 và phần lớn Phase 2–3 đã có trong repo (xem bảng §6). Còn mở: S5/L1–L3 (server Plan 3), L6 (UX nhắc backup).
 
 ## 0. Tổng quan catalog lỗi cần xử lý
 
@@ -14,7 +14,7 @@
 | Severity 3 (L) | 8 | Ghi chú thấp: L1-L4 liên quan Plan 3/server, L5-L8 sửa được ở client |
 | Câu hỏi nghiệp vụ | 6 | Gating — phải có câu trả lời trước khi sửa S1, S2, S5, M1, M2, M3 |
 
-**Quyết định phạm vi:** sửa ngay S1-S4, M1-M12, L5, L7, L8 (20/22 lỗi). Hoãn sang Plan 3/server: **S5, L1, L2, L3** (đòi hỏi spec server — câu hỏi Q4). Hoãn: **L4** (bảo mật auth, cần kế hoạch migrate hash) và **L6** (UX nhắc export file).
+**Quyết định phạm vi (cập nhật 2026-08-23):** 20/22 lỗi trong phạm vi client đã có trong code. Còn hoãn: **S5, L1, L2, L3** (Plan 3/server) và **L6** (UX nhắc export file). **L4 đã xong** (PBKDF2).
 
 ---
 
@@ -61,10 +61,10 @@ Thứ tự có chủ đích:
 ## 4. CHI TIẾT TỪNG FIX
 
 ### PHASE 0 — Chuẩn bị
-- [ ] Tạo nhánh mới từ `feat/sync-core-v2` (vd `fix/business-logic-v1`).
-- [ ] Chốt Q1-Q6 với chủ shop (điền đáp án vào mục 2).
-- [ ] Kiểm tra GitNexus index tươi (`node .gitnexus/run.cjs analyze` nếu cần).
-- [ ] Lập bảng theo dõi trạng thái (cuối file này).
+- [x] Đối chiếu lại catalog với code (2026-08-23); không tạo nhánh riêng — làm trên working tree hiện tại.
+- [x] Q1/Q2 đã hiện trong code: S1 giữ `GR.paid` + bỏ qua payment on-receipt; S2 clamp nợ + phiếu hoàn khi đã thu.
+- [ ] GitNexus FTS đang thiếu (`analyze --repair-fts`) — impact symbol không resolve được trong phiên này.
+- [x] Bảng theo dõi §6 cập nhật theo code + test.
 
 ### PHASE 1 — Quick wins domain (8 fix, độc lập)
 
@@ -196,31 +196,31 @@ Với mỗi fix:
 
 ## 6. BẢNG THEO DÕI TRẠNG THÁI
 
-| ID | Sev | Phase | Trạng thái | Quyết định gating |
+| ID | Sev | Phase | Trạng thái | Ghi chú đối chiếu 2026-08-23 |
 |---|---|---|---|---|
-| S1 | 1 | 2 | ⬜ chờ | Q1 |
-| S2 | 1 | 2 | ⬜ chờ | Q2 |
-| S3 | 1 | 3 | ⬜ chờ | — |
-| S4 | 1 | 3 | ⬜ chờ | — |
-| S5 | 1 | 4 | ⏸ hoãn | Q4 |
-| M1 | 2 | 2 | ⬜ chờ | Q3 |
-| M2 | 2 | 2 | ⬜ chờ | Q5 |
-| M3 | 2 | 2 | ⬜ chờ | Q6 (tham khảo) |
-| M4 | 2 | 1 | ⬜ chờ | — |
-| M5 | 2 | 1 | ⬜ chờ | — |
-| M6 | 2 | 1 | ⬜ chờ | — |
-| M7 | 2 | 1 | ⬜ chờ | — |
-| M8 | 2 | 2 | ⬜ chờ | — |
-| M9 | 2 | 2 | ⬜ chờ | — |
-| M10 | 2 | 1 | ⬜ chờ | Q2 (chi tiết UI) |
-| M11 | 2 | 2 | ⬜ chờ | — |
-| M12 | 2 | 1 | ⬜ chờ | — |
+| S1 | 1 | 2 | ✅ xong | `supplierBalance` bỏ payment on-receipt; test `ledger-regress` |
+| S2 | 1 | 2 | ✅ xong | `voidSale` trừ unpaid + phiếu hoàn; clamp ≥ 0 |
+| S3 | 1 | 3 | ✅ xong | `applyOps` poison per-op, vẫn tăng cursor |
+| S4 | 1 | 3 | ✅ xong | tombstone + test `lww-rest` |
+| S5 | 1 | 4 | ⏸ hoãn | Q4 / spec server seq thật |
+| M1 | 2 | 2 | ✅ xong | `applyStockDeltaToBatches` + `batchProjection` |
+| M2 | 2 | 2 | ✅ xong | `stock.adjust` idempotent theo `mv_` |
+| M3 | 2 | 2 | ✅ xong | `receivePurchaseOrder` chặn nhập lần 2 |
+| M4 | 2 | 1 | ✅ xong | GR thiếu SP → throw trước transaction |
+| M5 | 2 | 1 | ✅ xong | `aggregatePurchases` bỏ PO received |
+| M6 | 2 | 1 | ✅ xong | MTD/YTD `vnToday`; `topProducts` × `unitRatio` |
+| M7 | 2 | 1 | ✅ xong | `compareSupplierPrices` quy đổi đơn vị gốc |
+| M8 | 2 | 2 | ✅ xong | `restoreLocalBackup` xóa outbox / lastSeq |
+| M9 | 2 | 2 | ✅ xong | fieldHlc customer/supplier (`lww-rest`) |
+| M10 | 2 | 1 | ✅ xong | `payDebt` throw vượt nợ; UI disable |
+| M11 | 2 | 2 | ✅ xong | `stocktake.commit` ghi `stockMoves` |
+| M12 | 2 | 1 | ✅ xong | `seedCatalog` ghi op sync |
 | L1-L3 | 3 | 4 | ⏸ hoãn | Q4 |
-| L4 | 3 | — | ⏸ hoãn | migrate hash |
-| L5 | 3 | 3 | ⬜ chờ | — |
-| L6 | 3 | — | ⏸ hoãn | UX |
-| L7 | 3 | 1 | ⬜ chờ | — |
-| L8 | 3 | 1 | ⬜ chờ | — |
+| L4 | 3 | — | ✅ xong | PBKDF2-SHA-256 (`local-auth-hardening`) — bảng cũ ghi hoãn nhầm |
+| L5 | 3 | 3 | ✅ xong | delete pricing/note/invoice có LWW |
+| L6 | 3 | — | ⏸ hoãn | UX nhắc export file |
+| L7 | 3 | 1 | ✅ xong | `estimateLocalDataSize` dùng `exportBackup` đủ bảng |
+| L8 | 3 | 1 | ✅ xong | `parseRestoreFile` gọi `validateBackupSchema` |
 
 **Ký hiệu:** ⬜ chưa làm · 🔧 đang sửa · ✅ xong · ⏸ hoãn
 

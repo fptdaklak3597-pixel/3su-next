@@ -7,6 +7,7 @@ import { dbx } from '../db'
 import { uid } from '../format'
 import type { PricingRule, Product } from '../types'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
+import { requireOwnerAdmin } from './auth'
 
 /** Giá = vốn × (1 + margin%) rồi làm tròn đến bước giá (roundTo). */
 export function applyPricingRule(cost: number, rule: PricingRule): number {
@@ -18,7 +19,7 @@ export function applyPricingRule(cost: number, rule: PricingRule): number {
 
 /** Tìm quy tắc khớp nhất: ưu tiên đúng danh mục, sau đó quy tắc tổng ('' = tất cả). */
 export function matchPricingRule(cat: string, rules: PricingRule[]): PricingRule | null {
-  const active = rules.filter((r) => r.active)
+  const active = rules.filter((r) => r.active && !r.deleted)
   const byCat = active.find((r) => r.cat && r.cat === cat)
   if (byCat) return byCat
   return active.find((r) => !r.cat) ?? null
@@ -41,6 +42,7 @@ export interface PricingRuleInput {
 }
 
 export async function createPricingRule(input: PricingRuleInput): Promise<PricingRule> {
+  await requireOwnerAdmin()
   const name = input.name.trim()
   if (!name) throw new Error('Cần tên quy tắc')
   const rule: PricingRule = {
@@ -63,6 +65,7 @@ export async function createPricingRule(input: PricingRuleInput): Promise<Pricin
 }
 
 export async function togglePricingRule(id: string): Promise<void> {
+  await requireOwnerAdmin()
   await dbx.transaction('rw', [dbx.pricingRules, dbx.syncQueue, dbx.appliedOps], async () => {
     const r = await dbx.pricingRules.get(id)
     if (!r) return
@@ -77,6 +80,7 @@ export async function togglePricingRule(id: string): Promise<void> {
 }
 
 export async function deletePricingRule(id: string): Promise<void> {
+  await requireOwnerAdmin()
   const r = await dbx.pricingRules.get(id)
   if (!r) return
   await dbx.transaction('rw', [dbx.pricingRules, dbx.syncQueue, dbx.appliedOps], async () => {

@@ -8,6 +8,7 @@ import { dbx, getMeta, setMeta } from '../db'
 import { uid } from '../format'
 import type { PairedDevice } from '../types'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
+import { requireOwnerAdmin } from './auth'
 
 /** ID ổn định của thiết bị này (sinh một lần, lưu meta). */
 export async function getThisDeviceId(): Promise<string> {
@@ -80,6 +81,7 @@ export async function setDeviceRole(id: string, role: 'print-agent' | ''): Promi
 }
 
 export async function removeDevice(id: string): Promise<void> {
+  await requireOwnerAdmin()
   const dev = await dbx.devices.get(id)
   if (dev?.isThis) throw new Error('Không thể gỡ thiết bị đang dùng')
   if (!dev) return

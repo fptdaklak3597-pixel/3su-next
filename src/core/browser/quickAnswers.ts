@@ -50,7 +50,7 @@ export function topProducts(sales: Sale[], date: string, limit: number): { name:
   for (const s of sales.filter((x) => !x.voided && localDay(x.date) === date)) {
     for (const it of s.items) {
       if (!map[it.productId]) map[it.productId] = { name: it.name, qty: 0 }
-      map[it.productId].qty += it.qty
+      map[it.productId].qty += it.qty * (it.unitRatio || 1)
     }
   }
   return Object.values(map).sort((a, b) => b.qty - a.qty).slice(0, limit)
@@ -63,7 +63,8 @@ export function topProductsWeek(sales: Sale[], limit = 5): { name: string; qty: 
   for (const s of sales.filter((x) => !x.voided && localDay(x.date) >= from)) {
     for (const it of s.items) {
       if (!map[it.productId]) map[it.productId] = { name: it.name, qty: 0, profit: 0 }
-      map[it.productId].qty += it.qty
+      const base = it.qty * (it.unitRatio || 1)
+      map[it.productId].qty += base
       map[it.productId].profit += it.qty * (it.price - it.cost)
     }
   }
@@ -87,6 +88,6 @@ export async function answerQuestion(q: string, sales: Sale[], customers: Custom
   const custom = await dbx.quickAnswers.toArray()
   const ql = q.toLowerCase().trim()
   const hit = custom.find((c) => ql.includes(c.q.toLowerCase()) || c.q.toLowerCase().includes(ql))
-  if (hit) return hit.a
+  if (hit) return escapeHtml(hit.a)
   return localChatAnswer(q, sales, customers, products, lowStock)
 }

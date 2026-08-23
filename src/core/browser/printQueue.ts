@@ -7,6 +7,7 @@ import { getCloudIdToken } from '../sync/firebase'
 import type { ReceiptContext } from './print'
 import { printReceiptLocal } from './print'
 import { parsePrintTicket, saleTicketFromContext, testTicket, type PrintTicket } from './printTicket'
+import { canUseBluetoothPrint, printTicketBluetooth } from './printBluetooth'
 import { isPrintAgentOnline, setPrintAgentOnline } from './printPresence'
 import {
   getLanPrintSecret,
@@ -15,7 +16,7 @@ import {
   signedLanPrintHeaders,
 } from './printAgentAuth'
 
-export type PrintVia = 'lan' | 'cloud' | 'local' | 'none'
+export type PrintVia = 'lan' | 'cloud' | 'bluetooth' | 'local' | 'none'
 
 export interface PrintDispatchResult {
   via: PrintVia
@@ -140,6 +141,15 @@ export async function dispatchPrint(
     if (await tryLanPrint(printer.lanAgentUrl, ticket)) return { via: 'lan' }
   }
 
+  if (canUseBluetoothPrint() && printer.autoPrintAfterSale) {
+    try {
+      await printTicketBluetooth(ticket, { requestIfNeeded: true })
+      return { via: 'bluetooth' }
+    } catch {
+      /* thử cloud / local */
+    }
+  }
+
   const agentOn = isPrintAgentOnline() || await refreshPrintAgentStatus()
   if (agentOn || printer.cloudRelay) {
     try {
@@ -160,6 +170,15 @@ export async function dispatchPrint(
 export async function dispatchTestPrint(shopName: string, printer: ReceiptContext['printer']): Promise<PrintDispatchResult> {
   const ticket = testTicket(shopName, printer.width)
   if (printer.lanAgentUrl && await tryLanPrint(printer.lanAgentUrl, ticket)) return { via: 'lan' }
+  if (canUseBluetoothPrint()) {
+    try {
+      await printTicketBluetooth(ticket, { requestIfNeeded: true })
+      return { via: 'bluetooth' }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'In Bluetooth lỗi'
+      if (/hủy chọn/i.test(msg)) return { via: 'none', error: msg }
+    }
+  }
   const agentOn = isPrintAgentOnline() || await refreshPrintAgentStatus()
   if (agentOn || printer.cloudRelay) {
     try {
@@ -174,6 +193,7 @@ export async function dispatchTestPrint(shopName: string, printer: ReceiptContex
 
 export function printResultToast(r: PrintDispatchResult): { text: string; kind: 'ok' | 'bad' } {
   if (r.via === 'lan' || r.via === 'cloud') return { text: 'Đang in ở máy tính…', kind: 'ok' }
+  if (r.via === 'bluetooth') return { text: 'Đang in máy nhiệt…', kind: 'ok' }
   if (r.via === 'local') return { text: r.error ? `In máy này (${r.error})` : 'Đang in trên máy này…', kind: 'ok' }
   return { text: r.error || 'Chưa gửi được lệnh in', kind: 'bad' }
 }
@@ -191,7 +211,10 @@ export function cloudPrintErrorMessage(e: unknown): string {
  * WS role=print — điện thoại/Cài đặt đọc /print-status từ socket này.
  * Token chỉ nằm trong subprotocol, không fallback sang query string.
  */
-export function connectPrintAgentSocket(onJob: () => void): () => void {
+export function connectPrintAgentSocket(
+  onJob: () => void,
+  onConnectionChange?: (connected: boolean) => void,
+): () => void {
   let stopped = false
   let ws: WebSocket | null = null
   let retry: ReturnType<typeof setTimeout> | null = null
@@ -228,6 +251,7 @@ export function connectPrintAgentSocket(onJob: () => void): () => void {
         if (next !== ws || expectedGeneration !== generation) return
         attempts = 0
         setPrintAgentOnline(true)
+        onConnectionChange?.(true)
       }
       next.onmessage = (event) => {
         if (next !== ws || expectedGeneration !== generation) return
@@ -243,6 +267,7 @@ export function connectPrintAgentSocket(onJob: () => void): () => void {
         if (next === ws) ws = null
         if (stopped || expectedGeneration !== generation) return
         setPrintAgentOnline(false)
+        onConnectionChange?.(false)
         schedule(expectedGeneration)
       }
     } catch {

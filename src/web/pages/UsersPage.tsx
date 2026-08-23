@@ -22,6 +22,7 @@ export function WebUsersPage() {
   const [delTarget, setDelTarget] = useState<User | null>(null)
   const [form, setForm] = useState({ username: '', name: '', password: '', role: 'staff' as UserRole })
   const [pw, setPw] = useState('')
+  const [currentPw, setCurrentPw] = useState('')
   const [perms, setPerms] = useState<UserPerms>({})
 
   const users = useLiveQuery(() => dbx.users.filter((u) => !u.deleted).toArray(), [], [] as User[])
@@ -92,7 +93,7 @@ export function WebUsersPage() {
                       <>
                         <button className="web-btn" style={{ height: 28 }} onClick={() => { setPermTarget(u); setPerms(u.perms ?? {}) }}>Quyền</button>
                         {' '}
-                        <button className="web-btn" style={{ height: 28 }} onClick={() => { setPwTarget(u); setPw('') }}>Mật khẩu</button>
+                        <button className="web-btn" style={{ height: 28 }} onClick={() => { setPwTarget(u); setPw(''); setCurrentPw('') }}>Mật khẩu</button>
                         {me?.id !== u.id && u.role !== 'owner' && (
                           <>
                             {' '}
@@ -156,13 +157,25 @@ export function WebUsersPage() {
       </Sheet>
 
       <Sheet open={!!pwTarget} onClose={() => setPwTarget(null)} title={pwTarget ? `Mật khẩu · ${pwTarget.name}` : 'Mật khẩu'}>
-        <input className="web-input mb-2" type="password" placeholder="Mật khẩu mới" value={pw} onChange={(e) => setPw(e.target.value)} />
+        {pwTarget && me?.id === pwTarget.id && (
+          <input
+            className="web-input mb-2"
+            type="password"
+            placeholder="Mật khẩu hiện tại"
+            value={currentPw}
+            onChange={(e) => setCurrentPw(e.target.value)}
+            autoComplete="current-password"
+          />
+        )}
+        <input className="web-input mb-2" type="password" placeholder="Mật khẩu mới" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
         <button className="web-btn pri w-full" onClick={async () => {
           if (!pwTarget) return
           try {
-            await changePassword(pwTarget.id, pw)
+            const self = me?.id === pwTarget.id
+            await changePassword(pwTarget.id, pw, self ? { currentPassword: currentPw } : undefined)
             showToast('✓ Đã đổi mật khẩu', 'ok')
             setPwTarget(null)
+            setCurrentPw('')
           } catch (e) {
             logError(e, 'user.password')
             showToast(e instanceof Error ? e.message : 'Lỗi', 'bad')

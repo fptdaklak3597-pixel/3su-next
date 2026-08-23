@@ -4,12 +4,13 @@
  * Port từ 16-inventory, 20-goods-receipt, 16b-stocktake, 28-stock-forecast.
  */
 import { dbx } from '../db'
+import { uid, localDay, daysToExpiry } from '../format'
 import type {
   Product, GoodsReceipt, GoodsReceiptRow, StocktakeRecord, StockForecast, Sale,
   ProductBatch, PriceLogEntry, GrPatch, GrCommitPayload, PayMethod,
 } from '../types'
-import { uid, localDay, daysToExpiry } from '../format'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
+import { requireOwnerAdmin } from './auth'
 
 /* ─── Sản phẩm ─── */
 export async function addProduct(input: {
@@ -32,7 +33,7 @@ export async function addProduct(input: {
     price: input.price,
     cost: input.cost,
     stock: input.stock,
-    unit: input.unit || 'cái',
+    unit: (input.unit || 'cái').trim() || 'cái',
     barcode: input.barcode?.trim() || '',
     expiry: input.expiry || '',
     units: input.units ?? [],
@@ -71,7 +72,10 @@ export async function addProduct(input: {
 export async function updateProduct(id: string, patch: Partial<Product>): Promise<void> {
   const p = await dbx.products.get(id)
   if (!p) return
-  const { stock: newStock, ...restPatch } = patch
+  const normalized = { ...patch }
+  if (normalized.barcode != null) normalized.barcode = String(normalized.barcode).trim()
+  if (normalized.unit != null) normalized.unit = String(normalized.unit).trim() || p.unit || 'cái'
+  const { stock: newStock, ...restPatch } = normalized
   const stockChanged = typeof newStock === 'number' && newStock !== p.stock
   await dbx.transaction('rw', [dbx.products, dbx.stockMoves, dbx.batches, dbx.syncQueue, dbx.appliedOps], async () => {
     const upsertOp = makeOp('product.upsert', null)
@@ -112,6 +116,7 @@ export async function updateProduct(id: string, patch: Partial<Product>): Promis
 }
 
 export async function deleteProduct(id: string): Promise<void> {
+  await requireOwnerAdmin()
   const p = await dbx.products.get(id)
   if (!p) return
   await dbx.transaction('rw', [dbx.products, dbx.syncQueue, dbx.appliedOps], async () => {
@@ -501,19 +506,23 @@ export async function saveStocktake(rows: { productId: string; name: string; sys
   const record: StocktakeRecord = {
     id: uid('st'),
     date: new Date().toISOString(),
-    rows: rows.map((r) => ({ ...r, diff: r.actual - r.system })),
+    rows: [],
     note,
     ts: Date.now(),
   }
 
   await dbx.transaction('rw', [dbx.products, dbx.stocktakes, dbx.stockMoves, dbx.batches, dbx.syncQueue, dbx.appliedOps], async () => {
     const stOp = makeOp('stocktake.commit', record)
-    for (const r of record.rows) {
-      if (r.diff === 0) continue
+    for (const r of rows) {
       const p = await dbx.products.get(r.productId)
       if (!p) continue
+      // Live Dexie stock — ignore stale UI `system` so stock/batches/outbox stay aligned.
+      const systemNow = p.stock
+      const diff = r.actual - systemNow
+      record.rows.push({ productId: r.productId, name: r.name, system: systemNow, actual: r.actual, diff })
+      if (diff === 0) continue
       p.stock = r.actual
-      await applyStockDeltaToBatches(p, r.diff)
+      await applyStockDeltaToBatches(p, diff)
       p.stockSetHlc = stOp.hlc
       p.updatedAt = Date.now()
       await dbx.products.put(p)
@@ -521,14 +530,15 @@ export async function saveStocktake(rows: { productId: string; name: string; sys
         id: uid('mv'),
         productId: r.productId,
         type: 'stocktake',
-        qty: r.diff,
+        qty: diff,
         cost: p.cost,
-        note: 'Kiểm kê: ' + (r.diff > 0 ? 'thừa' : 'thiếu') + ' ' + Math.abs(r.diff),
+        note: 'Kiểm kê: ' + (diff > 0 ? 'thừa' : 'thiếu') + ' ' + Math.abs(diff),
         refId: record.id,
         date: record.date,
         ts: Date.now(),
       })
     }
+    stOp.payload = record
     await dbx.stocktakes.add(record)
     await persistOp(stOp)
   })

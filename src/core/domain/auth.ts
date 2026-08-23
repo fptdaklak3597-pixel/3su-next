@@ -302,6 +302,26 @@ export async function requirePermission(
   })
 }
 
+/** Chủ/admin only — khớp OWNER_ONLY_TYPES phía cloud (không dùng perm inventory). */
+export async function requireOwnerAdmin(
+  opts: { allowEmptyStore?: boolean } = { allowEmptyStore: true },
+): Promise<User | null> {
+  return dbx.transaction('r', [dbx.users, dbx.meta], async () => {
+    if (opts.allowEmptyStore !== false && await dbx.users.count() === 0) return null
+    const actor = await currentActorInTransaction()
+    if (!actor || (actor.role !== 'owner' && actor.role !== 'admin')) {
+      throw new Error('Chỉ chủ cửa hàng hoặc quản trị được làm việc này')
+    }
+    return actor
+  })
+}
+
+/** Hash được phép sync/apply (PBKDF2; từ chối SHA/FNV legacy trên wire). */
+export function isSyncablePasswordHash(hash: string, salt: string): boolean {
+  if (!salt || salt.length < 8) return false
+  return !!parsePbkdf2(hash)
+}
+
 async function requireUserManagerInTransaction(): Promise<User> {
   const actor = await currentActorInTransaction()
   if (!actor || !hasPerm(actor, 'users')) throw new Error('Bạn không có quyền quản lý người dùng')
@@ -393,10 +413,27 @@ export async function login(username: string, password: string): Promise<User> {
   return refreshed
 }
 
-export async function changePassword(userId: string, newPassword: string): Promise<void> {
+export async function changePassword(
+  userId: string,
+  newPassword: string,
+  opts?: { currentPassword?: string },
+): Promise<void> {
   const initial = await dbx.users.get(userId)
   if (!initial || initial.deleted || !initial.active) throw new Error('Không tìm thấy tài khoản đang hoạt động')
   validatePassword(newPassword, initial.role)
+
+  const actorEarly = await getCurrentActor()
+  const verifiedSelf = isRecentlyVerifiedUser(userId)
+  const signedInSelf = actorEarly?.id === userId
+  // Tự đổi MK (không phải forced-reset sau login) phải xác nhận MK hiện tại.
+  if (signedInSelf && !verifiedSelf) {
+    const current = opts?.currentPassword
+    if (!current) throw new Error('Nhập mật khẩu hiện tại')
+    if (!await verifyPassword(current, initial.salt, initial.passwordHash)) {
+      throw new Error('Mật khẩu hiện tại không đúng')
+    }
+  }
+
   const salt = genSalt()
   const passwordHash = await hashPassword(newPassword, salt)
   const updatedAt = Date.now()
@@ -405,9 +442,9 @@ export async function changePassword(userId: string, newPassword: string): Promi
     if (!cur || cur.deleted || !cur.active) throw new Error('Không tìm thấy tài khoản đang hoạt động')
     validatePassword(newPassword, cur.role)
     const actor = await currentActorInTransaction()
-    const verifiedSelf = isRecentlyVerifiedUser(userId)
-    const signedInSelf = actor?.id === userId
-    if (!verifiedSelf && !signedInSelf) {
+    const stillVerifiedSelf = isRecentlyVerifiedUser(userId)
+    const stillSignedInSelf = actor?.id === userId
+    if (!stillVerifiedSelf && !stillSignedInSelf) {
       if (!actor || !hasPerm(actor, 'users')) throw new Error('Bạn không có quyền đổi mật khẩu tài khoản này')
       if (cur.role === 'owner' && actor.role !== 'owner') throw new Error('Chỉ chủ cửa hàng được đổi mật khẩu chủ cửa hàng')
     }

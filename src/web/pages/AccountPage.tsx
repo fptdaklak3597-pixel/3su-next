@@ -17,7 +17,6 @@ import {
   createPairCode,
   enterExistingCloudShop,
   getCloudRole,
-  getCloudShopId,
 } from '@/core/sync/cloud'
 import { useCloudSession } from '@/shared/useCloudSession'
 import { WebCloudAuth } from '@/shared/WebCloudAuth'

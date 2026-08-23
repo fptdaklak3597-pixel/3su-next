@@ -8,7 +8,8 @@ import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { fmtNum } from '@/core/format'
+import { fmtNum, vnDaysAgo, vnToday } from '@/core/format'
+import { salesInDateRange } from '@/core/domain/sales'
 import { saveStocktake, forecastStock, selectStocktakeRows } from '@/core/domain/inventory'
 import { logError } from '@/core/errorLogger'
 import { ConfirmDialog } from '@/shared/components'
@@ -32,7 +33,7 @@ export function StocktakePage() {
     [],
     [] as Product[],
   )
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(29), vnToday()), [], [] as Sale[])
 
   /* ─── Kiểm kê ─── */
   const rows = useMemo(
@@ -53,9 +54,19 @@ export function StocktakePage() {
   const diffCount = rows.filter((r) => r.actual !== r.system).length
   const saveRows = selectStocktakeRows(rows, new Set(Object.keys(touched)))
 
-  function markActual(productId: string, value: number) {
+  function markActual(productId: string, raw: string) {
     setTouched((t) => ({ ...t, [productId]: true }))
-    setActual((a) => ({ ...a, [productId]: value }))
+    if (raw.trim() === '') {
+      setActual((a) => {
+        const next = { ...a }
+        delete next[productId]
+        return next
+      })
+      return
+    }
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return
+    setActual((a) => ({ ...a, [productId]: n }))
   }
 
   async function handleSaveStocktake() {
@@ -140,7 +151,7 @@ export function StocktakePage() {
                     type="number"
                     inputMode="numeric"
                     value={actual[r.productId] ?? r.system}
-                    onChange={(e) => markActual(r.productId, Number(e.target.value) || 0)}
+                    onChange={(e) => markActual(r.productId, e.target.value)}
                   />
                 </div>
               )

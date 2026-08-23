@@ -131,10 +131,11 @@ describe('S2 / M10 — nợ khách sàn 0', () => {
     expect((await dbx.customers.get(c.id))!.debt).toBe(0)
   })
 
-  it('thu 500 khi nợ 100 → debt 0, phiếu 100', async () => {
+  it('thu vượt nợ → từ chối; thu đúng → debt 0', async () => {
     const c = await addCustomer({ name: 'An', phone: '', note: '', wholesale: false })
     await dbx.customers.update(c.id, { debt: 100 })
-    await payDebt(c.id, 500)
+    await expect(payDebt(c.id, 500)).rejects.toThrow(/vượt công nợ/)
+    expect(await payDebt(c.id, 100)).toBe(100)
     expect((await dbx.customers.get(c.id))!.debt).toBe(0)
     const pays = await dbx.debtPayments.toArray()
     expect(pays).toHaveLength(1)

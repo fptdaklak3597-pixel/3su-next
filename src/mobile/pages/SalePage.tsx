@@ -7,14 +7,14 @@ import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { matchesSearch, fmt, fmtShort } from '@/core/format'
+import { matchesSearch, fmt, fmtShort, vnDaysAgo, vnToday } from '@/core/format'
 import {
-  bestSellerIds, suggestUnits, cartUnitPrice,
+  bestSellerIds, suggestUnits, cartUnitPrice, salesInDateRange,
   mergeCartLine, setCartLineQty, stockAddWarning,
 } from '@/core/domain/sales'
 import { playPosSound } from '@/core/browser/posSound'
 import { productCategories } from '@/core/domain/inventory'
-import { parseCommand, findProductByName, startListening, voiceSupported } from '@/core/browser/voice'
+import { parseCommand, findProductByName, startListening, voiceSupported, resolveUnitRatio } from '@/core/browser/voice'
 import { createBarcodeScan, findProductByBarcode, type ScanHandle } from '@/core/browser/barcode'
 import { attachHidBarcode, isBarcodeLike } from '@/core/browser/hidBarcode'
 import { Sheet, Modal, ConfirmDialog } from '@/shared/components'
@@ -48,7 +48,7 @@ export function SalePage() {
     [],
     [] as Product[],
   )
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(29), vnToday()), [], [])
 
   // Xếp sản phẩm: bán chạy trước
   const ranked = useMemo(() => {
@@ -116,8 +116,9 @@ export function SalePage() {
     for (const it of items) {
       const p = findProductByName(it.name, products)
       if (!p) continue
-      const units = suggestUnits(p)
-      const u = units[0]
+      const u = it.unit
+        ? resolveUnitRatio(p, it.unit)
+        : (suggestUnits(p)[0] ?? resolveUnitRatio(p))
       if (settings.allowNegativeStock === false && stockAddWarning(p.stock, it.qty * u.r) === 'out') { skipped++; continue }
       const existing = next.find((c) => c.productId === p.id && c.unitName === u.n)
       if (existing) existing.qty += it.qty

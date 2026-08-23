@@ -10,7 +10,7 @@ import { fmt, fmtShort, matchesSearch } from '@/core/format'
 import { logError } from '@/core/errorLogger'
 import {
   createSupplier, deleteSupplier, recordSupplierPayment, updateSupplier,
-  supplierDebt, supplierTotalPurchases, totalSupplierDebt,
+  supplierDebt, supplierTotalPurchases, totalSupplierDebt, exportSupplierDebtXlsx,
 } from '@/core/domain/suppliers'
 import { Sheet, ConfirmDialog, EmptyState } from '@/shared/components'
 import { Search, Plus, Phone, Trash2 } from 'lucide-react'
@@ -100,13 +100,16 @@ export function SuppliersPage() {
       <header className="app-hdr bordered">
         <div>
           <div className="font-brand text-[17px] font-medium" style={{ color: 'var(--ink)' }}>Nhà cung cấp</div>
-          <div className="text-[11px]" style={{ color: 'var(--mute)' }}>
+          <div className="text-xs" style={{ color: 'var(--mute)' }}>
             {suppliers.length} NCC · nợ {fmtShort(debtSum)}đ
           </div>
         </div>
-        <button className="btn-back" onClick={() => setShowAdd(true)} aria-label="Thêm NCC">
-          <Plus size={18} />
-        </button>
+        <div className="flex gap-2">
+          <button className="btn-ghost text-sm" onClick={() => { try { void exportSupplierDebtXlsx(suppliers, receipts, payments) } catch (e) { logError(e, 'ncc.xlsx') } }}>Excel</button>
+          <button className="btn-back" onClick={() => setShowAdd(true)} aria-label="Thêm NCC">
+            <Plus size={18} />
+          </button>
+        </div>
       </header>
 
       <div className="px-4 pt-3 pb-2">

@@ -154,10 +154,13 @@ export function createHttpTransport(opts: HttpTransportOpts): SyncTransport {
         throw new Error('Phản hồi pull không hợp lệ')
       }
       const watermark = body.appliedGcBeforeMs
+      const minSeq = body.minSeq
+      const extra: Pick<PullResult, 'appliedGcBeforeMs' | 'minSeq'> = {}
       if (Number.isSafeInteger(watermark) && watermark! > 0 && watermark! <= Date.now()) {
-        return { ops: body.ops, seq: body.seq, appliedGcBeforeMs: watermark }
+        extra.appliedGcBeforeMs = watermark
       }
-      return { ops: body.ops, seq: body.seq }
+      if (Number.isSafeInteger(minSeq) && minSeq! >= 0) extra.minSeq = minSeq
+      return { ops: body.ops, seq: body.seq, ...extra }
     },
     async pushSnapshot(s: SnapshotFile, upToSeq: number): Promise<void> {
       const gzipBase64 = await gzipJson(s)

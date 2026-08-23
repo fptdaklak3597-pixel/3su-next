@@ -20,7 +20,10 @@ export async function voidSale(
   saleId: Parameters<typeof voidSaleCore>[0],
   reason: Parameters<typeof voidSaleCore>[1],
 ): ReturnType<typeof voidSaleCore> {
-  await voidSaleCore(saleId, reason)
+  const result = await voidSaleCore(saleId, reason)
   const sale = await dbx.sales.get(saleId)
   if (sale) await reconcileProductBatchProjections(sale.items.map((item) => item.productId))
+  return result
 }
+
+export { salesInDateRange } from './sales-core'

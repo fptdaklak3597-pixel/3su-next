@@ -12,6 +12,8 @@ export interface PullResult {
   seq: number
   /** Mốc server xác nhận: marker HLC cũ hơn có thể xóa. */
   appliedGcBeforeMs?: number
+  /** Seq nhỏ nhất server còn giữ. lastSeq+1 < minSeq → phải kéo snapshot. */
+  minSeq?: number
 }
 
 export type ServerMsg =

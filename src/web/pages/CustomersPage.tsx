@@ -5,9 +5,11 @@ import { useState, useMemo } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { fmt, matchesSearch } from '@/core/format'
+import { fmt, matchesSearch, vnDaysAgo, vnToday } from '@/core/format'
 import { logError } from '@/core/errorLogger'
 import { addCustomer, deleteCustomer, payDebt, customerSegments, debtReceiptSale } from '@/core/domain/customers'
+import { salesInDateRange } from '@/core/domain/sales'
+import { exportCustomerDebtXlsx } from '@/core/domain/reports'
 import { dispatchPrint, printResultToast } from '@/core/browser/printQueue'
 import { payQrSrc } from '@/core/domain/vietqr'
 import { ConfirmDialog, Sheet } from '@/shared/components'
@@ -33,7 +35,7 @@ export function WebCustomersPage() {
     [],
     [] as Customer[],
   )
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(364), vnToday()), [], [] as Sale[])
   const segs = useMemo(() => customerSegments(customers, sales), [customers, sales])
 
   const filtered = useMemo(() => {
@@ -82,21 +84,21 @@ export function WebCustomersPage() {
   async function handlePay() {
     if (!payFor || payAmount <= 0) return
     try {
-      await payDebt(payFor.id, payAmount)
+      const applied = await payDebt(payFor.id, payAmount)
       const r = await dispatchPrint({
-        sale: debtReceiptSale(payAmount, payFor.id),
+        sale: debtReceiptSale(applied, payFor.id),
         shop,
         printer: settings.printer,
         customerName: payFor.name,
         cashier: user?.name || user?.username || 'Thu nợ',
       })
       const t = printResultToast(r)
-      showToast(`✓ Đã thu ${fmt(payAmount)} · ${t.text}`, t.kind)
+      showToast(`✓ Đã thu ${fmt(applied)} · ${t.text}`, t.kind)
       setPayFor(null)
       setPayAmount(0)
     } catch (e) {
       logError(e, 'customer.pay')
-      showToast('Lỗi khi thu tiền', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi thu tiền', 'bad')
     }
   }
 
@@ -107,7 +109,10 @@ export function WebCustomersPage() {
           <h2>Khách hàng</h2>
           <p>{totalDebt > 0 ? `${debtN} khách còn nợ ${fmt(totalDebt)}` : 'Chưa ai nợ tiền'}</p>
         </div>
-        <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm khách</button>
+        <div className="web-ph-actions">
+          <button className="web-btn" onClick={() => { try { void exportCustomerDebtXlsx(customers) } catch (e) { logError(e, 'debt.xlsx') } }}>Xuất Excel</button>
+          <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm khách</button>
+        </div>
       </div>
 
       <div className="web-chips">

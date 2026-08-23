@@ -119,6 +119,36 @@ export function supplierMonthlyStatement(
   }
 }
 
+export function supplierDebtToAoa(
+  suppliers: Supplier[],
+  receipts: GoodsReceipt[],
+  payments: SupplierPayment[],
+): unknown[][] {
+  const rows = suppliers
+    .filter((s) => !s.deleted)
+    .map((s) => ({ name: s.name, phone: s.phone, debt: supplierDebt(s.id, receipts, payments) }))
+    .filter((s) => s.debt > 0)
+    .sort((a, b) => b.debt - a.debt)
+  return [
+    ['NCC', 'SĐT', 'Nợ'],
+    ...rows.map((s) => [s.name, s.phone, s.debt]),
+    [],
+    ['Tổng', '', rows.reduce((sum, s) => sum + s.debt, 0)],
+  ]
+}
+
+export async function exportSupplierDebtXlsx(
+  suppliers: Supplier[],
+  receipts: GoodsReceipt[],
+  payments: SupplierPayment[],
+): Promise<void> {
+  const XLSX = await import('xlsx')
+  const ws = XLSX.utils.aoa_to_sheet(supplierDebtToAoa(suppliers, receipts, payments))
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Cong no NCC')
+  XLSX.writeFile(wb, `3su-cong-no-ncc-${today()}.xlsx`)
+}
+
 /** Tổng công nợ tất cả NCC. */
 export function totalSupplierDebt(
   suppliers: Supplier[],

@@ -2,7 +2,7 @@
  * 3SU Next — Kho hàng (Inventory)
  * Port từ 16-inventory.js: product list, filters, stock badges, HSD.
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
@@ -10,6 +10,7 @@ import { useApp } from '@/core/store'
 import { fmt, fmtShort, matchesSearch, expiryStatus } from '@/core/format'
 import { lowStockItems, outOfStockItems, inventoryValue, productCategories } from '@/core/domain/inventory'
 import { seed500, seedCategories } from '@/core/domain/seed'
+import { exportCatalogXlsx } from '@/web/lib/catalogXlsx'
 import { logError } from '@/core/errorLogger'
 import { Sheet } from '@/shared/components'
 import { Search, Plus, PackagePlus, ClipboardCheck, Sparkles } from 'lucide-react'
@@ -26,6 +27,7 @@ export function InventoryPage() {
   const [seedOpen, setSeedOpen] = useState(false)
   const [seedStock, setSeedStock] = useState(0)
   const [seeding, setSeeding] = useState(false)
+  const [seedCats, setSeedCats] = useState<{ cat: string; count: number }[]>([])
   const showToast = useApp((s) => s.showToast)
 
   const products = useLiveQuery(
@@ -35,7 +37,10 @@ export function InventoryPage() {
   )
 
   const cats = useMemo(() => productCategories(products), [products])
-  const seedCats = useMemo(() => seedCategories(), [])
+  useEffect(() => {
+    if (!seedOpen) return
+    void seedCategories().then(setSeedCats).catch((e) => logError(e, 'seedCategories'))
+  }, [seedOpen])
   const lowN = lowStockItems(products, settings.lowStock).length
   const outN = outOfStockItems(products).length
   const totalValue = inventoryValue(products)
@@ -69,11 +74,12 @@ export function InventoryPage() {
       <header className="app-hdr bordered">
         <div>
           <div className="font-brand text-[17px] font-medium" style={{ color: 'var(--ink)' }}>Kho hàng</div>
-          <div className="text-[11px]" style={{ color: 'var(--mute)' }}>
+          <div className="text-xs" style={{ color: 'var(--mute)' }}>
             {filtered.length}/{products.length} món · {fmtShort(totalValue)} vốn
           </div>
         </div>
         <div className="flex gap-2">
+          <button className="btn-ghost text-sm" onClick={() => { try { void exportCatalogXlsx(products) } catch (e) { logError(e, 'kho.xlsx') } }}>Excel</button>
           <button className="btn-back" onClick={() => navigate('/kiem-ke')} aria-label="Kiểm kê">
             <ClipboardCheck size={17} />
           </button>

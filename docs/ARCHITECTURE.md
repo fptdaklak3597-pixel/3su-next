@@ -217,42 +217,36 @@ không đưa vào store — tránh hai nguồn sự thật.
 
 ## 7. Đồng bộ (sync engine)
 
-Xem [engine.ts](file:///d:/claude/3su/3su-next/src/core/sync/engine.ts). Port từ
-`55-cloud-sync-v2` / `58-cloud-sync-v3` / `59-cloud-sync-router` của 3su-v2.7.4.
+Xem [engine.ts](file:///d:/claude/3su/3su-next/src/core/sync/engine.ts). Outbox local-first;
+transport HTTP/WS tới `3su-cloud` (Durable Object + D1).
 
 ### 7.1 Mô hình
 
 ```
-UI gọi enqueueSync(type, payload)
+UI gọi enqueueOp(type, payload) trong cùng transaction với dữ liệu
         │
         ▼
-  thêm SyncOp vào syncQueue (IndexedDB)  ← ghi trước, sync sau
+  SyncOp → syncQueue + appliedOps (IndexedDB)
         │
-        ▼ (nếu online)
+        ▼ (mode sync/solo, online, không cloud:paused)
   flushQueue():
-    - lấy op theo createdAt, lọc attempts < MAX_ATTEMPTS (10)
-    - adapter.push(op) → xoá op khỏi queue
-    - lỗi → attempts++, lưu lastError; đủ 10 lần → bỏ op chết + logError
-    - adapter.pull(lastSync) → kéo thay đổi từ cloud
+    - lọc attempts < MAX_PUSH_ATTEMPTS (10); op đã đủ lần → quarantine (sync:poisoned)
+    - transport.pushOps(batch) → xoá id trong acked
+    - batch lỗi → đẩy từng op; fail → attempts++ / lastError; đủ 10 → quarantine
+    - pullOps(since lastSeq) → applyOps (poison/blocked phía pull riêng)
         │
         ▼
-  setState → emit tới listeners (UI cập nhật badge)
+  setState → emit tới listeners (UI cập nhật badge + SyncDiagnosticsPanel)
 ```
 
 ### 7.2 Đặc tính
 
 - **Retry backoff**: vòng lặp nền `startSyncLoop()` chạy mỗi 30s; sync lại ngay khi có
   sự kiện `online`.
-- **Idempotency**: mỗi op có `id` duy nhất (`uid('op')`), server từ chối op trùng.
-- **Delta**: `pull(since)` chỉ kéo thay đổi kể từ mốc `lastSyncAt`.
-- **Tách biệt error reporting**: sync và ghi lỗi đi hai đường riêng, không dùng chung.
-- **Adapter hoá**: backend hiện tại là Firebase Firestore, nhưng có thể thay bằng
-  Cloudflare Worker + D1 (như 3su-v2.7.4) chỉ bằng cách đổi `setSyncAdapter(...)`.
-
-### 7.3 Sync health watchdog
-
-`syncHealth` (trong errorLogger) theo dõi `lastPushOk` / `lastPushErr` / `lastPullOk`
-để phát hiện sync "chết lặng" (không lỗi nhưng không đẩy được).
+- **Idempotency**: mỗi op có `id` = HLC; cloud bỏ qua `op_id` trùng; receiver dùng `appliedOps`.
+- **Delta**: `pullOps(since)` kéo theo `seq` / `lastSeq`.
+- **Poison wedge**: push và pull đều quarantine op terminal; không kẹt cả hàng đợi.
+- **Transport**: `HttpTransport` (`setTransport`) — REST `/ops` + WebSocket bump.
 
 ---
 
@@ -343,3 +337,15 @@ StocktakePage (nhập số thực tế từng SP)
   `.stock-badge`, `.tab-bar`, `.web-sidebar`, `.side-item`…
 - TailwindCSS bổ trợ utility, nhưng màu sắc nhất quán qua CSS variables để đổi theme
   một chỗ.
+
+---
+
+## 12. Authoritative money/stock (scaffolding)
+
+`src/core/authoritative/` chứa processor + `saleCommands` + cờ `authoritativeMoneyStock`.
+Khi cờ bật, `enqueueOp` chặn các op legacy tiền/kho (`sale.commit`, `gr.commit`, …).
+
+**Production mặc định tắt.** Bật chỉ khi `import.meta.env.DEV` hoặc
+`VITE_ALLOW_AUTHORITATIVE=1`. UI bán hàng vẫn dùng luồng legacy; đừng bật cờ trên
+shop thật cho đến khi `confirmSaleAuthoritative` được wire đủ vào Sale/Checkout và
+server.

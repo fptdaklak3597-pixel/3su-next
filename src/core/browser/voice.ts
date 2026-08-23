@@ -45,6 +45,8 @@ const UNIT_PREFIX = /^(gói|chai|cái|hộp|ký|kg|lon|bịch|cuốn|quả|trái
 export interface ParsedItem {
   name: string
   qty: number
+  /** Đơn vị nói (nếu khớp UNIT_PREFIX) */
+  unit?: string
 }
 
 /**
@@ -65,16 +67,31 @@ export function parseCommand(text: string): ParsedItem[] {
     const words = seg.split(' ')
     const { qty, consumed } = parseQty(words)
     let rest = words.slice(consumed).join(' ')
+    const unitMatch = rest.match(UNIT_PREFIX)
+    const spokenUnit = unitMatch?.[1]
     rest = rest.replace(UNIT_PREFIX, '').trim()
     // bỏ từ đệm bán hàng
     rest = rest.replace(/^(bán|cho|lấy|thêm)\s+/, '').trim()
     if (!rest) continue
-    out.push({ name: rest, qty: qty > 0 ? qty : 1 })
+    out.push({ name: rest, qty: qty > 0 ? qty : 1, unit: spokenUnit })
   }
   return out
 }
 
-/** Khớp tên (đã chuẩn hoá) với sản phẩm: exact → contains → từ đầu. */
+/** Khớp đơn vị nói với product.units; không khớp → đơn vị gốc ratio 1. */
+export function resolveUnitRatio(
+  product: Product,
+  spokenUnit?: string,
+): { n: string; r: number } {
+  const base = { n: product.unit || 'cái', r: 1 }
+  if (!spokenUnit) return base
+  const want = spokenUnit.toLowerCase()
+  if (base.n.toLowerCase() === want) return base
+  const hit = (product.units ?? []).find((u) => u.n.toLowerCase() === want)
+  if (hit && Number.isFinite(hit.r) && hit.r > 0) return { n: hit.n, r: hit.r }
+  return base
+}
+
 export function findProductByName(text: string, products: Product[]): Product | null {
   const t = text.toLowerCase().trim()
   if (!t) return null

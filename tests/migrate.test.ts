@@ -44,6 +44,28 @@ describe('migrate 3SU cũ', () => {
     expect(checksumOf(data).debtSum).toBe(2000)
   })
 
+  it('importLegacy xóa hàng đợi/cursor sync và tạm dừng cloud (nhánh dữ liệu mới)', async () => {
+    await dbx.syncQueue.clear()
+    await dbx.commandQueue.clear()
+    await dbx.meta.clear()
+    await dbx.syncQueue.put({ id: 'op_old', type: 'product.upsert', createdAt: 1 } as never)
+    await dbx.commandQueue.put({ id: 'q_old', type: 'sale.create', createdAt: 1, status: 'pending' } as never)
+    await dbx.meta.put({ key: 'sync:lastSeq', value: 42 })
+    await dbx.meta.put({ key: 'cloud:shopId', value: 'shop_old' })
+
+    const { data } = previewLegacy({
+      products: [{ id: 'p1', name: 'Sữa', stock: 3, price: 1, cost: 1 }],
+      sales: [],
+      customers: [],
+    })
+    await importLegacy(data)
+
+    expect(await dbx.syncQueue.count()).toBe(0)
+    expect(await dbx.commandQueue.count()).toBe(0)
+    expect(await dbx.meta.get('sync:lastSeq')).toBeUndefined()
+    expect((await dbx.meta.get('cloud:paused'))?.value).toBe(true)
+  })
+
   it('file thiếu products thì reject', () => {
     expect(() => previewLegacy({ sales: [], customers: [] })).toThrow(/products/)
   })

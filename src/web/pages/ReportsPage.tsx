@@ -1,3 +1,4 @@
+
 /**
  * Báo cáo web — kỳ, KPI, top hàng, thanh toán.
  */
@@ -6,7 +7,8 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, fmtShort } from '@/core/format'
-import { buildReport, exportReportXlsx, type ReportFilters, type ReportMetric, type ReportPreset } from '@/core/domain/reports'
+import { salesInDateRange } from '@/core/domain/sales'
+import { buildReport, exportReportXlsx, reportSalesWindow, type ReportFilters, type ReportMetric, type ReportPreset } from '@/core/domain/reports'
 import { logError } from '@/core/errorLogger'
 import { productCategories } from '@/core/domain/inventory'
 import { answerQuestion } from '@/core/browser/quickAnswers'
@@ -32,7 +34,14 @@ export function WebReportsPage() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
 
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const salesWindow = useMemo(() => reportSalesWindow({
+    preset, from, to, metric, cat, pay: 'all', customerId: null, compare: true,
+  }), [preset, from, to, metric, cat])
+  const sales = useLiveQuery(
+    () => salesInDateRange(salesWindow.from, salesWindow.to),
+    [salesWindow.from, salesWindow.to],
+    [] as Sale[],
+  )
   const customers = useLiveQuery(() => dbx.customers.toArray(), [], [] as Customer[])
   const products = useLiveQuery(() => dbx.products.filter((p) => !p.deleted).toArray(), [], [] as Product[])
   const cats = useMemo(() => productCategories(products), [products])

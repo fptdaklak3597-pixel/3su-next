@@ -6,8 +6,9 @@ import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { fmt, fmtShort, expiryStatus, daysToExpiry } from '@/core/format'
+import { fmt, fmtShort, expiryStatus, daysToExpiry, vnDaysAgo, vnToday } from '@/core/format'
 import { inventoryValue, productCategories, forecastStock } from '@/core/domain/inventory'
+import { salesInDateRange } from '@/core/domain/sales'
 import { WebSeedSheet } from '@/web/components/WebSeedSheet'
 import { logError } from '@/core/errorLogger'
 import { filterProducts, paginate, type StockFilter } from '@/web/lib/listFilters'
@@ -32,7 +33,7 @@ export function WebInventoryPage() {
     [],
     [] as Product[],
   )
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(29), vnToday()), [], [] as Sale[])
 
   const cats = useMemo(() => productCategories(products), [products])
   const catCount = useMemo(() => {

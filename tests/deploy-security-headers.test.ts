@@ -15,12 +15,18 @@ describe('Cloudflare Pages security headers', () => {
     expect(text).toContain("object-src 'none'")
   })
 
-  it('bật HSTS và hạn chế browser capabilities không dùng', async () => {
+  it('bật HSTS; camera/mic self cho quét mã + giọng nói; chặn capability khác', async () => {
     const text = await headersFile()
     expect(text).toMatch(/Strict-Transport-Security: max-age=\d+/)
-    expect(text).toContain('camera=()')
-    expect(text).toContain('microphone=()')
+    expect(text).toContain('camera=(self)')
+    expect(text).toContain('microphone=(self)')
     expect(text).toContain('geolocation=()')
+  })
+
+  it('CSP có default-src và script-src', async () => {
+    const text = await headersFile()
+    expect(text).toContain("default-src 'self'")
+    expect(text).toContain("script-src 'self'")
   })
 
   it('không cache callback đăng nhập và trang admin', async () => {

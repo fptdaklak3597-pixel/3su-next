@@ -156,9 +156,24 @@ export async function restoreLocalBackup(data: BackupData): Promise<void> {
 
   const safe = stripBackupCredentials(data)
   await restoreBackup(safe, { userMode: 'preserve-local' })
-  await dbx.transaction('rw', [dbx.syncQueue, dbx.appliedOps, dbx.meta], async () => {
+  await dbx.transaction(
+    'rw',
+    [
+      dbx.syncQueue,
+      dbx.appliedOps,
+      dbx.meta,
+      dbx.commandQueue,
+      dbx.commandResults,
+      dbx.canonicalEvents,
+      dbx.syncConflicts,
+    ],
+    async () => {
     await dbx.syncQueue.clear()
     await dbx.appliedOps.clear()
+    await dbx.commandQueue.clear()
+    await dbx.commandResults.clear()
+    await dbx.canonicalEvents.clear()
+    await dbx.syncConflicts.clear()
     await dbx.meta.bulkDelete(LOCAL_RESTORE_RESET_KEYS)
     await dbx.meta.put({ key: 'cloud:paused', value: true })
     await dbx.meta.put({

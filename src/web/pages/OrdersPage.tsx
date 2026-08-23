@@ -6,9 +6,9 @@ import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { voidSale } from '@/core/domain/sales'
+import { voidSale, salesInDateRange } from '@/core/domain/sales'
 import { logError } from '@/core/errorLogger'
-import { fmt, formatTime, localDay, today, daysAgo, matchesSearch } from '@/core/format'
+import { fmt, formatTime, localDay, today, daysAgo, matchesSearch, vnDaysAgo, vnToday } from '@/core/format'
 import { paginate, payLabel } from '@/web/lib/listFilters'
 import { WebDateRange } from '@/web/components/WebDateRange'
 import type { Sale, Customer } from '@/core/types'
@@ -28,7 +28,7 @@ export function WebOrdersPage() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
 
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(59), vnToday()), [], [] as Sale[])
   const customers = useLiveQuery(() => dbx.customers.toArray(), [], [] as Customer[])
   const names = useMemo(() => new Map(customers.map((c) => [c.id, c.name])), [customers])
 
@@ -153,10 +153,10 @@ export function WebOrdersPage() {
                   ? customers.find((c) => c.id === voidTarget.customerId)
                   : undefined
                 if (voidTarget.debtAmount > 0 && cust && cust.debt < voidTarget.debtAmount) {
-                  showToast('Khách đã trả cho đơn này', 'ok')
+                  showToast('Khách đã trả một phần/toàn bộ đơn này — sẽ tạo phiếu hoàn nếu cần', 'ok')
                 }
-                await voidSale(voidTarget.id, voidReason.trim())
-                showToast('Đã hủy đơn', 'ok')
+                const { refund } = await voidSale(voidTarget.id, voidReason.trim())
+                showToast(refund > 0 ? `Đã hủy đơn · hoàn khách ${fmt(refund)}` : 'Đã hủy đơn', 'ok')
               } catch (e) {
                 logError(e, 'order.void')
                 showToast(e instanceof Error ? e.message : 'Lỗi khi hủy đơn', 'bad')

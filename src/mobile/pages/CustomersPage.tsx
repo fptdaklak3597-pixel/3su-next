@@ -9,6 +9,7 @@ import { useApp } from '@/core/store'
 import { fmt, matchesSearch } from '@/core/format'
 import { logError } from '@/core/errorLogger'
 import { addCustomer, deleteCustomer, payDebt } from '@/core/domain/customers'
+import { exportCustomerDebtXlsx } from '@/core/domain/reports'
 import { payQrSrc } from '@/core/domain/vietqr'
 import { ConfirmDialog, Sheet } from '@/shared/components'
 import { Search, Plus, Trash2 } from 'lucide-react'
@@ -66,13 +67,13 @@ export function CustomersPage() {
   async function handlePay() {
     if (!payFor || payAmount <= 0) return
     try {
-      await payDebt(payFor.id, payAmount)
-      showToast(`✓ Đã thu ${fmt(payAmount)}`, 'ok')
+      const applied = await payDebt(payFor.id, payAmount)
+      showToast(`✓ Đã thu ${fmt(applied)}`, 'ok')
       setPayFor(null)
       setPayAmount(0)
     } catch (e) {
       logError(e, 'customer.pay')
-      showToast('Lỗi khi thu tiền', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi thu tiền', 'bad')
     }
   }
 
@@ -81,13 +82,16 @@ export function CustomersPage() {
       <header className="app-hdr bordered">
         <div>
           <div className="font-brand text-[17px] font-medium" style={{ color: 'var(--ink)' }}>Khách hàng</div>
-          <div className="text-[11px]" style={{ color: 'var(--mute)' }}>
+          <div className="text-xs" style={{ color: 'var(--mute)' }}>
             {customers.length} khách · nợ {fmt(totalDebt)}
           </div>
         </div>
-        <button className="btn-back" onClick={() => setShowAdd(true)} aria-label="Thêm khách">
-          <Plus size={18} />
-        </button>
+        <div className="flex gap-2">
+          <button className="btn-ghost text-sm" onClick={() => { try { void exportCustomerDebtXlsx(customers) } catch (e) { logError(e, 'debt.xlsx') } }}>Excel</button>
+          <button className="btn-back" onClick={() => setShowAdd(true)} aria-label="Thêm khách">
+            <Plus size={18} />
+          </button>
+        </div>
       </header>
 
       <div className="px-4 pt-3 pb-2">

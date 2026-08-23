@@ -1,3 +1,4 @@
+import { salesInDateRange } from '@/core/domain/sales'
 /**
  * 3SU Next — Lịch sử đơn hàng
  * Port từ 15-orders.js: filter theo ngày/pay/khách/search, nhóm theo ngày.
@@ -6,7 +7,7 @@ import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
-import { fmt, fmtShort, formatTime, localDay, today, yesterday, formatDate, daysAgo, matchesSearch } from '@/core/format'
+import { fmt, fmtShort, formatTime, localDay, today, yesterday, formatDate, daysAgo, matchesSearch, vnDaysAgo, vnToday } from '@/core/format'
 import { ChevronLeft, Search } from 'lucide-react'
 import type { Sale } from '@/core/types'
 
@@ -19,7 +20,7 @@ export function OrdersPage() {
   const [pay, setPay] = useState<PayFilter>('all')
   const [query, setQuery] = useState('')
 
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(59), vnToday()), [], [] as Sale[])
   const customers = useLiveQuery(() => dbx.customers.toArray(), [], [])
 
   const filtered = useMemo(() => {

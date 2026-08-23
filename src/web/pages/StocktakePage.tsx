@@ -6,7 +6,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { fmtNum } from '@/core/format'
+import { fmtNum, vnDaysAgo, vnToday } from '@/core/format'
+import { salesInDateRange } from '@/core/domain/sales'
 import { forecastStock, saveStocktake, selectStocktakeRows } from '@/core/domain/inventory'
 import { createPurchaseOrder, forecastToPoRows } from '@/core/domain/purchase'
 import { attachHidBarcode } from '@/core/browser/hidBarcode'
@@ -31,7 +32,7 @@ export function WebStocktakePage() {
   const suppliers = useLiveQuery(() => dbx.suppliers.filter((s) => !s.deleted).toArray(), [], [] as Supplier[])
 
   const products = useLiveQuery(() => dbx.products.filter((p) => !p.deleted).toArray(), [], [] as Product[])
-  const sales = useLiveQuery(() => dbx.sales.toArray(), [], [] as Sale[])
+  const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(29), vnToday()), [], [] as Sale[])
 
   const rows = useMemo(
     () => products.slice().sort((a, b) => a.name.localeCompare(b.name, 'vi')).map((p) => ({
@@ -46,9 +47,19 @@ export function WebStocktakePage() {
   const diffCount = rows.filter((r) => r.actual !== r.system).length
   const saveRows = selectStocktakeRows(rows, new Set(Object.keys(touched)))
 
-  function markActual(productId: string, value: number) {
+  function markActual(productId: string, raw: string) {
     setTouched((t) => ({ ...t, [productId]: true }))
-    setActual((a) => ({ ...a, [productId]: value }))
+    if (raw.trim() === '') {
+      setActual((a) => {
+        const next = { ...a }
+        delete next[productId]
+        return next
+      })
+      return
+    }
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return
+    setActual((a) => ({ ...a, [productId]: n }))
   }
   const forecast = useMemo(() => forecastStock(products, sales, 30), [products, sales])
 
@@ -161,7 +172,7 @@ export function WebStocktakePage() {
                             style={{ width: 88, height: 30, textAlign: 'center' }}
                             type="number"
                             value={actual[r.productId] ?? r.system}
-                            onChange={(e) => markActual(r.productId, Number(e.target.value) || 0)}
+                            onChange={(e) => markActual(r.productId, e.target.value)}
                           />
                         </td>
                         <td style={{ color: diff === 0 ? undefined : diff > 0 ? 'var(--ok)' : 'var(--bad)' }}>

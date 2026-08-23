@@ -5,6 +5,7 @@ import { dbx } from '../db'
 import { uid, localDay, daysAgo } from '../format'
 import { makeOp, persistOp, enqueueOp, requestFlush } from '../sync/engine'
 import type { Customer, Sale, DebtPayment } from '../types'
+import { requireOwnerAdmin } from './auth'
 
 export interface CustomerSegments {
   totals: Record<string, number>
@@ -79,9 +80,11 @@ export async function addCustomer(input: { name: string; phone: string; note: st
 export async function updateCustomer(id: string, patch: Partial<Customer>): Promise<void> {
   const c = await dbx.customers.get(id)
   if (!c) return
+  // Không cho UI ghi đè field suy ra từ đơn hàng
+  const { debt: _d, totalSpent: _ts, orderCount: _oc, ...safePatch } = patch
   await dbx.transaction('rw', [dbx.customers, dbx.syncQueue, dbx.appliedOps], async () => {
     const op = makeOp('customer.upsert', null)
-    const updated: Customer = { ...c, ...patch, id, updatedAt: Date.now(), hlc: op.hlc }
+    const updated: Customer = { ...c, ...safePatch, id, updatedAt: Date.now(), hlc: op.hlc }
     const omit = new Set(['id', 'debt', 'totalSpent', 'orderCount', 'fieldHlc', 'hlc', 'deletedHlc'])
     const customer: Record<string, unknown> = { id }
     const fieldHlc = { ...(c.fieldHlc ?? {}) }
@@ -101,6 +104,7 @@ export async function updateCustomer(id: string, patch: Partial<Customer>): Prom
 }
 
 export async function deleteCustomer(id: string): Promise<void> {
+  await requireOwnerAdmin()
   const c = await dbx.customers.get(id)
   if (!c) return
   await dbx.transaction('rw', [dbx.customers, dbx.syncQueue, dbx.appliedOps], async () => {
@@ -142,11 +146,14 @@ export async function clampNegativeCustomerDebts(): Promise<number> {
   return n
 }
 
-export async function payDebt(customerId: string, amount: number, note?: string): Promise<void> {
+export async function payDebt(customerId: string, amount: number, note?: string): Promise<number> {
   const c0 = await dbx.customers.get(customerId)
   if (!c0) throw new Error('Không tìm thấy khách hàng')
-  const clamped = Math.min(Math.round(amount), Math.max(0, c0.debt))
-  if (clamped <= 0) return
+  const asked = Math.round(amount)
+  if (!Number.isFinite(asked) || asked <= 0) throw new Error('Số tiền thu không hợp lệ')
+  if (asked > c0.debt) throw new Error(`Số thu vượt công nợ (${c0.debt.toLocaleString('vi-VN')}đ)`)
+  const clamped = Math.min(asked, Math.max(0, c0.debt))
+  if (clamped <= 0) return 0
   const dp: DebtPayment = {
     id: uid('dp'),
     customerId,
@@ -167,4 +174,5 @@ export async function payDebt(customerId: string, amount: number, note?: string)
     await enqueueOp('debt.pay', dp)
   })
   requestFlush()
+  return dp.amount
 }
