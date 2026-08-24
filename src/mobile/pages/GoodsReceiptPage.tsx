@@ -17,7 +17,7 @@ import { saveGoodsReceipt, suggestSellPrice, detectPriceSpike, lastPurchaseCost 
 import { createSupplier } from '@/core/domain/suppliers'
 import { logError } from '@/core/errorLogger'
 import { Sheet, ConfirmDialog } from '@/shared/components'
-import { ChevronLeft, Plus, Search, Trash2, AlertTriangle, ChevronDown } from 'lucide-react'
+import { ChevronLeft, Plus, Search, Trash2, AlertTriangle, ChevronDown, FileText } from 'lucide-react'
 import type { Product, GoodsReceiptRow, Supplier, PriceLogEntry } from '@/core/types'
 
 interface DraftRow extends GoodsReceiptRow {
@@ -156,7 +156,9 @@ export function GoodsReceiptPage() {
         <div className="font-brand text-[17px] font-medium flex-1 text-center" style={{ color: 'var(--ink)' }}>
           Nhập hàng
         </div>
-        <div className="w-9" />
+        <button className="btn-back" onClick={() => navigate('/nhap-hang/hoa-don')} aria-label="Nhập từ hoá đơn">
+          <FileText size={18} />
+        </button>
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 pb-40 max-w-[520px] mx-auto w-full">

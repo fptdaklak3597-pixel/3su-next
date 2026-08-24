@@ -133,6 +133,7 @@ export function WebGoodsReceiptPage() {
           <p>{rows.length} mặt hàng · {fmt(total)}</p>
         </div>
         <div className="web-ph-actions">
+          <button type="button" className="web-btn" onClick={() => navigate('/nhap-hang/hoa-don')}>Nhập từ hoá đơn</button>
           <button type="button" className="web-btn" onClick={() => setPickerOpen(true)}>+ Thêm hàng</button>
           <button type="button" className="web-btn pri" disabled={rows.length === 0 || saving} onClick={() => setConfirmSave(true)}>
             Lưu phiếu

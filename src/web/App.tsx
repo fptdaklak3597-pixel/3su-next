@@ -30,6 +30,7 @@ const WebProductDetailPage = lazy(() => import('./pages/ProductDetailPage').then
 const WebReportsPage = lazy(() => import('./pages/ReportsPage').then((m) => ({ default: m.WebReportsPage })))
 const WebSettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.WebSettingsPage })))
 const WebGoodsReceiptPage = lazy(() => import('./pages/GoodsReceiptPage').then((m) => ({ default: m.WebGoodsReceiptPage })))
+const WebInvoiceImportPage = lazy(() => import('./pages/InvoiceImportPage').then((m) => ({ default: m.WebInvoiceImportPage })))
 const WebPurchaseOrdersPage = lazy(() => import('./pages/PurchaseOrdersPage').then((m) => ({ default: m.WebPurchaseOrdersPage })))
 const WebStocktakePage = lazy(() => import('./pages/StocktakePage').then((m) => ({ default: m.WebStocktakePage })))
 const WebSuppliersPage = lazy(() => import('./pages/SuppliersPage').then((m) => ({ default: m.WebSuppliersPage })))
@@ -157,6 +158,7 @@ export function WebApp() {
                   <Route path="/kho" element={<WebInventoryPage />} />
                   <Route path="/kho/:id" element={<WebProductDetailPage />} />
                   <Route path="/nhap-hang" element={<WebGoodsReceiptPage />} />
+                  <Route path="/nhap-hang/hoa-don" element={<WebInvoiceImportPage />} />
                   <Route path="/don-mua" element={<WebPurchaseOrdersPage />} />
                   <Route path="/kiem-ke" element={<WebStocktakePage />} />
                   <Route path="/cong-cu" element={<WebToolsPage />} />
@@ -185,7 +187,6 @@ export function WebApp() {
 
                 <Route path="/tai-khoan" element={<WebAccountPage />} />
                 <Route path="/ghi-chu" element={<WebNotesPage />} />
-                <Route path="/nhap-hang/hoa-don" element={<Navigate to="/nhap-hang" replace />} />
                 <Route path="/doi-soat" element={<Navigate to="/cai-dat" replace />} />
                 <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
                 <Route path="*" element={<Navigate to="/" replace />} />

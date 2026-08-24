@@ -30,6 +30,7 @@ const CustomersPage = lazy(() => import('./pages/CustomersPage').then((m) => ({ 
 const ReportsPage = lazy(() => import('./pages/ReportsPage').then((m) => ({ default: m.ReportsPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const GoodsReceiptPage = lazy(() => import('./pages/GoodsReceiptPage').then((m) => ({ default: m.GoodsReceiptPage })))
+const InvoiceImportPage = lazy(() => import('./pages/InvoiceImportPage').then((m) => ({ default: m.InvoiceImportPage })))
 const PurchaseOrdersPage = lazy(() => import('./pages/PurchaseOrdersPage').then((m) => ({ default: m.PurchaseOrdersPage })))
 const StocktakePage = lazy(() => import('./pages/StocktakePage').then((m) => ({ default: m.StocktakePage })))
 const SuppliersPage = lazy(() => import('./pages/SuppliersPage').then((m) => ({ default: m.SuppliersPage })))
@@ -152,6 +153,7 @@ export function MobileApp() {
                   <Route path="/kho" element={<InventoryPage />} />
                   <Route path="/kho/:id" element={<ProductDetailPage />} />
                   <Route path="/nhap-hang" element={<GoodsReceiptPage />} />
+                  <Route path="/nhap-hang/hoa-don" element={<InvoiceImportPage />} />
                   <Route path="/don-mua" element={<PurchaseOrdersPage />} />
                   <Route path="/kiem-ke" element={<StocktakePage />} />
                   <Route path="/cong-cu" element={<ToolsPage />} />
@@ -178,7 +180,6 @@ export function MobileApp() {
                   <Route path="/hoa-don" element={<InvoicesPage />} />
                 </Route>
 
-                <Route path="/nhap-hang/hoa-don" element={<Navigate to="/nhap-hang" replace />} />
                 <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />

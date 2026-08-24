@@ -1,14 +1,14 @@
 /**
  * 3SU Next — Nhập hàng từ hoá đơn (UI)
  * Port từ 24-invoice-import.js: chọn file hoá đơn (XML/HTML/CSV/Excel/PDF/ảnh),
- * parse tự động → preview sửa → khớp sản phẩm trong kho → lưu phiếu nhập.
+ * parse tự động → preview sửa → khớp sản phẩm (PMATCH v2.7.4) → lưu phiếu nhập.
  */
-import { useState, useMemo, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { fmt, today, normalizeVi, uid } from '@/core/format'
+import { fmt, today, normalizeVi, uid, matchesSearch } from '@/core/format'
 import { parseInvoiceFile, type ParsedInvoice, type ParsedItem } from '@/core/domain/invoiceImport'
 import { fileToBase64, scanInvoiceImages } from '@/core/ai/client'
 import { parseGeminiInvoiceJson } from '@/core/ai/invoiceScan'
@@ -18,24 +18,47 @@ import { saveGoodsReceipt } from '@/core/domain/inventory'
 import { addProduct } from '@/core/domain/inventory'
 import { createSupplier } from '@/core/domain/suppliers'
 import { logError } from '@/core/errorLogger'
-import { ConfirmDialog } from '@/shared/components'
-import { ChevronLeft, Upload, FileText, Trash2, Link2, Plus } from 'lucide-react'
+import {
+  candidates,
+  matchLine,
+  manualMatch,
+  newProductMatch,
+  resolveMatchForCommit,
+  type ProductAlias,
+  type ProductMatch,
+} from '@/core/domain/productMatcher'
+import { learnProductAlias, loadProductAliases } from '@/core/domain/productAliases'
+import { ConfirmDialog, Sheet } from '@/shared/components'
+import { ChevronLeft, Upload, FileText, Trash2 } from 'lucide-react'
 import type { Product, Supplier } from '@/core/types'
 
 interface EditRow extends ParsedItem {
   key: string
-  /** productId đã khớp ('' = tạo mới) */
-  matchId: string
+  match: ProductMatch
+  confirmed: boolean
 }
 
-/** Điểm khớp tên (0..1) giữa tên hoá đơn và sản phẩm — fold tiếng Việt + token overlap. */
-function matchScore(a: string, b: string): number {
-  const na = normalizeVi(a).split(/\s+/).filter(Boolean)
-  const nb = new Set(normalizeVi(b).split(/\s+/).filter(Boolean))
-  if (!na.length || !nb.size) return 0
-  let hit = 0
-  na.forEach((t) => { if (nb.has(t)) hit++ })
-  return hit / Math.max(na.length, nb.size)
+function matchTone(row: EditRow): 'ok' | 'sug' | 'none' | 'new' {
+  const m = row.match
+  if (m.mode === 'new') return 'new'
+  if (m.mode === 'product' && m.pid) {
+    if (m.why === 'fuzzy' && !row.confirmed) return 'sug'
+    return 'ok'
+  }
+  return 'none'
+}
+
+function matchStyle(tone: ReturnType<typeof matchTone>): { background: string; color: string; border: string } {
+  if (tone === 'ok') {
+    return { background: 'color-mix(in srgb, var(--up) 12%, var(--paper))', color: 'var(--up)', border: '1px solid color-mix(in srgb, var(--up) 35%, transparent)' }
+  }
+  if (tone === 'sug') {
+    return { background: 'var(--warn-bg)', color: 'var(--warn)', border: '1px solid color-mix(in srgb, var(--warn) 40%, transparent)' }
+  }
+  if (tone === 'new') {
+    return { background: 'var(--paper-2)', color: 'var(--mute)', border: '1px solid var(--hair)' }
+  }
+  return { background: 'color-mix(in srgb, var(--down) 8%, var(--paper))', color: 'var(--down)', border: '1.5px dashed color-mix(in srgb, var(--down) 55%, transparent)' }
 }
 
 export function InvoiceImportPage() {
@@ -51,6 +74,10 @@ export function InvoiceImportPage() {
   const [date, setDate] = useState(today())
   const [confirmSave, setConfirmSave] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [aliases, setAliases] = useState<ProductAlias[]>([])
+  const [pickKey, setPickKey] = useState<string | null>(null)
+  const [pickQ, setPickQ] = useState('')
+  const lastCatalogKey = useRef('')
 
   const products = useLiveQuery(
     () => dbx.products.filter((p) => !p.deleted).toArray(),
@@ -62,19 +89,32 @@ export function InvoiceImportPage() {
     [],
     [] as Supplier[],
   )
+  const catalogKey = `${products.length}|${aliases.length}|${supId}`
 
-  /** Tự khớp mỗi dòng với sản phẩm trong kho (score ≥ 0.5). */
-  const autoMatch = useMemo(() => {
-    return (name: string): string => {
-      let best = ''
-      let bestScore = 0.5
-      for (const p of products) {
-        const s = matchScore(name, p.name)
-        if (s > bestScore) { bestScore = s; best = p.id }
-      }
-      return best
+  useEffect(() => {
+    void loadProductAliases().then(setAliases)
+  }, [])
+
+  function applyMatch(name: string, sku: string, nextSupId = supId): ProductMatch {
+    return matchLine(name, sku, nextSupId, products, aliases)
+  }
+
+  useEffect(() => {
+    if (!inv) {
+      lastCatalogKey.current = ''
+      return
     }
-  }, [products])
+    if (catalogKey === lastCatalogKey.current) return
+    lastCatalogKey.current = catalogKey
+    setRows((rs) => {
+      if (!rs.length) return rs
+      return rs.map((r) => ({
+        ...r,
+        match: matchLine(r.name, r.sku, supId, products, aliases),
+        confirmed: false,
+      }))
+    })
+  }, [catalogKey, aliases, products, supId, inv])
 
   async function handleFile(file: File) {
     setLoading(true)
@@ -101,16 +141,20 @@ export function InvoiceImportPage() {
       setInv(parsed)
       setSupName(parsed.supplier.name || '')
       setDate(parsed.date || today())
-      // Khớp NCC theo tên/MST
+      const als = aliases.length ? aliases : await loadProductAliases()
+      if (als !== aliases) setAliases(als)
       const sup = suppliers.find(
         (s) => (parsed.supplier.mst && s.phone === parsed.supplier.mst) ||
           (parsed.supplier.name && normalizeVi(s.name) === normalizeVi(parsed.supplier.name)),
       )
+      const nextSupId = sup?.id || ''
       if (sup) setSupId(sup.id)
+      else setSupId('')
       setRows(parsed.items.map((it) => ({
         ...it,
         key: uid('ir'),
-        matchId: autoMatch(it.name),
+        match: matchLine(it.name, it.sku, nextSupId, products, als),
+        confirmed: false,
       })))
     } catch (e) {
       logError(e, 'invoiceImport.parse')
@@ -125,16 +169,31 @@ export function InvoiceImportPage() {
   }
   function removeRow(key: string) {
     setRows((rs) => rs.filter((r) => r.key !== key))
+    if (pickKey === key) { setPickKey(null); setPickQ('') }
   }
 
   const total = rows.reduce((a, r) => a + r.qty * r.cost, 0)
-  const newCount = rows.filter((r) => !r.matchId).length
+  const newCount = rows.filter((r) => !resolveMatchForCommit(r.match, r.confirmed).productId).length
+  const pickRow = rows.find((r) => r.key === pickKey) || null
+  const pickList = (() => {
+    if (!pickRow) return [] as { p: Product; score: number | null }[]
+    const q = pickQ.trim()
+    if (q) {
+      return products
+        .filter((p) => matchesSearch(`${p.name} ${p.cat} ${p.barcode}`, q))
+        .slice(0, 30)
+        .map((p) => ({ p, score: null }))
+    }
+    return candidates(pickRow.name, products, 8).map((c) => ({
+      p: c.p as Product,
+      score: c.score,
+    }))
+  })()
 
   async function handleSave() {
     if (rows.length === 0) { showToast('Không có dòng nào để nhập', 'bad'); return }
     setSaving(true)
     try {
-      // Tạo NCC mới nếu chưa có
       let supplierId = supId
       let supplierName = supName.trim() || 'NCC lẻ'
       if (!supplierId && supName.trim()) {
@@ -147,11 +206,12 @@ export function InvoiceImportPage() {
         supplierName = s.name
       }
 
-      // Tạo sản phẩm mới cho dòng chưa khớp
       const prices: Record<string, number> = {}
       const grRows = []
+      const toLearn: { name: string; sku: string; pid: string }[] = []
       for (const r of rows) {
-        let productId = r.matchId
+        const resolved = resolveMatchForCommit(r.match, r.confirmed)
+        let productId = resolved.productId
         if (!productId) {
           const p = await addProduct({
             name: r.name, cat: '', price: r.price || 0, cost: r.cost || 0,
@@ -160,6 +220,9 @@ export function InvoiceImportPage() {
           productId = p.id
         } else if (r.price > 0) {
           prices[productId] = r.price
+        }
+        if (resolved.learn && productId) {
+          toLearn.push({ name: r.name, sku: r.sku || '', pid: productId })
         }
         grRows.push({
           productId, name: r.name, unit: r.unit || 'cái',
@@ -173,6 +236,7 @@ export function InvoiceImportPage() {
         date, expiry: '', note: inv?.note || ('Nhập từ hoá đơn' + (inv?.shdon ? ' ' + inv.shdon : '')),
         rows: grRows, prices,
       })
+      await Promise.all(toLearn.map((x) => learnProductAlias(x.name, x.sku, supplierId, x.pid)))
       showToast(`✓ Đã nhập kho ${fmt(gr.total)}${newCount ? ` (+${newCount} SP mới)` : ''}`, 'ok')
       navigate('/kho')
     } catch (e) {
@@ -204,20 +268,19 @@ export function InvoiceImportPage() {
             </div>
             <div className="text-center">
               <div className="text-[15px] font-medium mb-1" style={{ color: 'var(--ink)' }}>Chọn file hoá đơn</div>
-              <div className="text-[12.5px]" style={{ color: 'var(--mute)' }}>
+              <div className="text-[12px]" style={{ color: 'var(--mute)' }}>
                 Hỗ trợ XML eInvoice, HTML, CSV, Excel, PDF, ZIP và ảnh (OCR). Tự động đọc tên hàng, SL, đơn giá.
               </div>
             </div>
             <button className="btn-cta flex items-center gap-2" onClick={() => fileRef.current?.click()} disabled={loading}>
               <Upload size={16} /> {loading ? 'Đang đọc…' : 'Chọn file hoá đơn'}
             </button>
-            {error && <div className="text-[12.5px] text-center" style={{ color: 'var(--down)' }}>{error}</div>}
+            {error && <div className="text-[12px] text-center" style={{ color: 'var(--down)' }}>{error}</div>}
           </div>
         )}
 
         {inv && (
           <>
-            {/* Thông tin NCC */}
             <div className="card p-3 flex flex-col gap-2 mb-3">
               <input className="field-input" placeholder="Tên nhà cung cấp" value={supName} onChange={(e) => { setSupName(e.target.value); setSupId('') }} />
               {suppliers.length > 0 && (
@@ -239,32 +302,56 @@ export function InvoiceImportPage() {
             <div className="section-label">Dòng hàng ({rows.length}){newCount ? ` · ${newCount} mới` : ''}</div>
             <div className="flex flex-col gap-2">
               {rows.map((r) => {
-                const matched = products.find((p) => p.id === r.matchId)
+                const matched = r.match.mode === 'product' ? products.find((p) => p.id === r.match.pid) : undefined
+                const tone = matchTone(r)
+                const fuzzyPending = tone === 'sug' && matched
                 return (
                   <div key={r.key} className="card p-3">
                     <div className="flex items-start justify-between gap-2 mb-2">
                       <input
                         className="field-input !py-1.5 text-sm flex-1"
                         value={r.name}
-                        onChange={(e) => updateRow(r.key, { name: e.target.value })}
+                        onChange={(e) => {
+                          const name = e.target.value
+                          updateRow(r.key, { name, match: applyMatch(name, r.sku), confirmed: false })
+                        }}
                       />
                       <button onClick={() => removeRow(r.key)} aria-label="Xóa dòng" className="p-1">
                         <Trash2 size={15} style={{ color: 'var(--down)' }} />
                       </button>
                     </div>
-                    {/* Khớp sản phẩm */}
-                    <button
-                      className="flex items-center gap-1.5 text-[11.5px] mb-2 px-2 py-1 rounded-lg w-full text-left"
-                      style={{ background: 'var(--paper-2)', color: matched ? 'var(--up)' : 'var(--mute)' }}
-                      onClick={() => {
-                        const id = autoMatch(r.name)
-                        updateRow(r.key, { matchId: id })
-                        if (!id) showToast('Không tìm thấy SP khớp — sẽ tạo mới khi lưu', 'bad')
-                      }}
+                    <div
+                      className="flex items-start gap-1.5 text-[12px] mb-2 px-2.5 py-2 rounded-[10px] w-full leading-snug font-medium"
+                      style={matchStyle(tone)}
                     >
-                      {matched ? <Link2 size={12} /> : <Plus size={12} />}
-                      {matched ? `Khớp: ${matched.name}` : 'Tạo sản phẩm mới'}
-                    </button>
+                      <button
+                        type="button"
+                        className="flex-1 min-w-0 text-left"
+                        onClick={() => { setPickKey(r.key); setPickQ('') }}
+                      >
+                        {fuzzyPending && (
+                          <>≈ {matched.name} · gợi ý {Math.round((r.match.score || 0) * 100)}% — không xác nhận sẽ tạo mới</>
+                        )}
+                        {tone === 'ok' && matched && (
+                          <>✓ {matched.name}{r.match.why === 'alias' ? ' · đã học' : r.match.why === 'manual' ? '' : ' · trùng tên'} (tồn {matched.stock || 0})</>
+                        )}
+                        {tone === 'new' && '+ Tạo sản phẩm mới trong kho'}
+                        {tone === 'none' && '+ Sẽ tạo SP mới khi lưu — chạm để ghép SP có sẵn'}
+                      </button>
+                      {fuzzyPending && (
+                        <button
+                          type="button"
+                          className="shrink-0 px-2 py-0.5 rounded-md text-[11px] font-bold text-white"
+                          style={{ background: '#10b981' }}
+                          onClick={() => updateRow(r.key, {
+                            confirmed: true,
+                            match: { ...r.match, why: 'manual' },
+                          })}
+                        >
+                          Xác nhận
+                        </button>
+                      )}
+                    </div>
                     <div className="grid grid-cols-3 gap-2">
                       <label className="flex flex-col gap-1">
                         <span className="text-[11px]" style={{ color: 'var(--mute)' }}>SL</span>
@@ -284,7 +371,7 @@ export function InvoiceImportPage() {
               })}
             </div>
 
-            <button className="btn-ghost w-full mt-3 text-[12px]" onClick={() => { setInv(null); setRows([]); setError('') }}>
+            <button className="btn-ghost w-full mt-3 text-[12px]" onClick={() => { setInv(null); setRows([]); setError(''); setPickKey(null) }}>
               Đọc file khác
             </button>
           </>
@@ -317,6 +404,70 @@ export function InvoiceImportPage() {
           e.target.value = ''
         }}
       />
+
+      <Sheet
+        open={!!pickRow}
+        onClose={() => { setPickKey(null); setPickQ('') }}
+        title="Ghép với sản phẩm trong kho"
+      >
+        {pickRow && (
+          <div className="flex flex-col gap-3">
+            <div className="text-[12px]" style={{ color: 'var(--mute)' }}>
+              Dòng hoá đơn: <b style={{ color: 'var(--ink)' }}>{pickRow.name}</b>
+              {pickRow.sku ? ` · mã ${pickRow.sku}` : ''}
+            </div>
+            <input
+              className="field-input"
+              placeholder="Tìm trong kho (sai dấu, viết tắt cũng được)…"
+              value={pickQ}
+              onChange={(e) => setPickQ(e.target.value)}
+              autoFocus
+            />
+            <div className="flex flex-col gap-1 max-h-[42vh] overflow-y-auto">
+              <button
+                type="button"
+                className="w-full text-left px-3 py-2.5 rounded-xl text-[13px] font-medium"
+                style={{ background: 'var(--paper-2)', color: 'var(--ink)' }}
+                onClick={() => {
+                  updateRow(pickRow.key, { match: newProductMatch(pickRow.match.cands), confirmed: false })
+                  setPickKey(null)
+                  setPickQ('')
+                }}
+              >
+                + Tạo sản phẩm mới: “{pickRow.name}”
+              </button>
+              {pickList.map(({ p, score }) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className="w-full text-left px-3 py-2.5 rounded-xl flex items-center gap-2"
+                  style={{ background: 'var(--paper-2)' }}
+                  onClick={() => {
+                    updateRow(pickRow.key, { match: manualMatch(p.id, pickRow.match.cands), confirmed: true })
+                    setPickKey(null)
+                    setPickQ('')
+                  }}
+                >
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-[13px] font-medium truncate" style={{ color: 'var(--ink)' }}>{p.name}</span>
+                    <span className="block text-[12px]" style={{ color: 'var(--mute)' }}>
+                      tồn {p.stock || 0} {p.unit || ''} · vốn {fmt(p.cost || 0)}
+                    </span>
+                  </span>
+                  {score != null && (
+                    <b className="text-[12px] shrink-0" style={{ color: 'var(--ink)' }}>{Math.round(score * 100)}%</b>
+                  )}
+                </button>
+              ))}
+              {pickList.length === 0 && (
+                <div className="text-center text-[12px] py-3" style={{ color: 'var(--mute)' }}>
+                  Không có gợi ý đủ giống — gõ ô trên để tìm trong kho
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </Sheet>
 
       <ConfirmDialog
         open={confirmSave}
