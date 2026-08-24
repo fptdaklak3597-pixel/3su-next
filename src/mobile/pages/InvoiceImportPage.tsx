@@ -10,6 +10,9 @@ import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, today, normalizeVi, uid } from '@/core/format'
 import { parseInvoiceFile, type ParsedInvoice, type ParsedItem } from '@/core/domain/invoiceImport'
+import { fileToBase64, scanInvoiceImages } from '@/core/ai/client'
+import { parseGeminiInvoiceJson } from '@/core/ai/invoiceScan'
+import { apiBase } from '@/core/sync/cloud'
 import { invoiceLoaders } from '@/core/browser/invoiceLoaders'
 import { saveGoodsReceipt } from '@/core/domain/inventory'
 import { addProduct } from '@/core/domain/inventory'
@@ -77,7 +80,20 @@ export function InvoiceImportPage() {
     setLoading(true)
     setError('')
     try {
-      const parsed = await parseInvoiceFile(file, invoiceLoaders)
+      let parsed: ParsedInvoice | null = null
+      if (file.type.startsWith('image/') && apiBase()) {
+        try {
+          const part = await fileToBase64(file)
+          const text = await scanInvoiceImages([part])
+          parsed = parseGeminiInvoiceJson(text)
+        } catch (scanErr) {
+          const scanMsg = scanErr instanceof Error ? scanErr.message : 'Gemini không đọc được ảnh'
+          showToast(`AI không đọc được hoá đơn (${scanMsg}) — đang thử OCR local`, 'bad')
+        }
+      }
+      if (!parsed) {
+        parsed = await parseInvoiceFile(file, invoiceLoaders)
+      }
       if (!parsed.items.length) {
         setError('Không đọc được dòng hàng nào từ hoá đơn này. Thử file XML/HTML/CSV hoặc kiểm tra lại.')
         return

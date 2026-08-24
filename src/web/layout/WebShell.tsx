@@ -5,6 +5,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Menu } from 'lucide-react'
+import { AiChatDock } from '@/shared/AiChatDock'
 import { useApp } from '@/core/store'
 import { hasPerm } from '@/core/domain/auth'
 import type { UserPerms } from '@/core/types'
@@ -77,7 +78,7 @@ export function WebShell() {
   const posMode = path.startsWith('/ban-hang') || path.startsWith('/thanh-toan')
 
   const onOverview = path === '/'
-  const onHang = path.startsWith('/kho') || path.startsWith('/kiem-ke')
+  const onHang = path.startsWith('/kho') || path.startsWith('/kiem-ke') || path.startsWith('/bang-gia-si')
   const onGiao = path.startsWith('/don-hang') || path.startsWith('/nhap-hang') || path.startsWith('/don-mua') || path.startsWith('/hoa-don')
   const onDoi = path.startsWith('/khach-hang') || path.startsWith('/nha-cung-cap')
   const onBao = path.startsWith('/bao-cao')
@@ -138,6 +139,7 @@ export function WebShell() {
               {can('inventory') && (
                 <NavDrop k="hang" open={open} label="Hàng hóa" active={onHang} onToggle={toggle}>
                   <button type="button" onClick={() => go('/kho')}>Danh sách hàng hóa<small>Giá lẻ / sỉ, tồn, HSD</small></button>
+                  <button type="button" onClick={() => go('/bang-gia-si')}>Bảng giá sỉ<small>Công thức −% / −tiền</small></button>
                   <button type="button" onClick={() => go('/kiem-ke?tab=forecast')}>Dự báo nhập<small>Sắp hết theo tốc độ bán</small></button>
                   <button type="button" onClick={() => go('/kiem-ke')}>Kiểm kê<small>Đối chiếu tồn thực tế</small></button>
                 </NavDrop>
@@ -218,6 +220,7 @@ export function WebShell() {
           <Outlet />
         </main>
       </div>
+      <AiChatDock />
     </div>
   )
 }

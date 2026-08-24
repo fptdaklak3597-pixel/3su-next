@@ -10,6 +10,7 @@ import { useApp } from '@/core/store'
 import { hasPerm } from '@/core/domain/auth'
 import type { UserPerms } from '@/core/types'
 import { ToolsSheet } from './ToolsSheet'
+import { AiChatDock } from '@/shared/AiChatDock'
 
 const TABS: Array<{
   path: string
@@ -76,6 +77,7 @@ export function MobileShell() {
         </nav>
       )}
       <ToolsSheet open={toolsOpen} onClose={() => setToolsOpen(false)} />
+      <AiChatDock />
     </>
   )
 }

@@ -14,6 +14,7 @@ import { exportErrorLogText, logError } from '@/core/errorLogger'
 import { useInstallPrompt, useDisplayMode } from '@/shared/pwa'
 import { ConfirmDialog } from '@/shared/components'
 import { SyncDiagnosticsPanel } from '@/shared/SyncDiagnosticsPanel'
+import { AiSettingsPanel } from '@/shared/AiSettingsPanel'
 import { ROLE_LABEL } from '@/core/domain/auth'
 import {
   Store, SlidersHorizontal, Palette, Printer, QrCode,
@@ -278,6 +279,8 @@ export function SettingsPage() {
           </p>
           <SyncDiagnosticsPanel variant="mobile" />
         </Section>
+
+        <AiSettingsPanel variant="mobile" />
 
         {/* Dữ liệu */}
         <Section icon={<Download size={15} />} title="Dữ liệu">
