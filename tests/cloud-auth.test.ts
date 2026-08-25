@@ -29,6 +29,7 @@ describe('cloud email gate', () => {
     expect(cloudAuthMessage({ code: 'auth/missing-email' })).toMatch(/Nhập lại email/)
     expect(cloudAuthMessage({ code: 'auth/expired-action-code' })).toMatch(/hết hạn/)
     expect(cloudAuthMessage({ code: 'auth/no-auth-event' })).toMatch(/Google/)
+    expect(cloudAuthMessage({ code: 'auth/internal-error' })).toMatch(/Firebase/)
     expect(cloudAuthMessage(new Error('Unable to process request due to missing initial state'))).toMatch(/Google/)
     expect(cloudAuthMessage(new Error('Error 400: origin_mismatch'))).toMatch(/origin/)
     expect(cloudAuthMessage(new Error('gis-timeout'))).toMatch(/Chrome/)

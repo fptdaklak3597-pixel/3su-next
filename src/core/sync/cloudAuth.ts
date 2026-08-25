@@ -56,6 +56,8 @@ export function cloudAuthMessage(e: unknown): string {
       return 'Trình duyệt chặn cửa sổ Google. Cho phép popup rồi thử lại.'
     case 'auth/unauthorized-domain':
       return 'Tên miền này chưa được phép đăng nhập. Liên hệ người cài app.'
+    case 'auth/internal-error':
+      return 'Lỗi xác thực Firebase. Thử Google, hoặc tải lại trang rồi gửi lại email.'
     case 'auth/redirect-cancelled-by-user':
       return 'Đã hủy đăng nhập Google.'
     case 'auth/no-auth-event':
