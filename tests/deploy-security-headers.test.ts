@@ -29,6 +29,13 @@ describe('Cloudflare Pages security headers', () => {
     expect(text).toContain("script-src 'self'")
   })
 
+  it('cho phép iframe Firebase cùng origin + popup Google', async () => {
+    const text = await headersFile()
+    expect(text).toContain("frame-src 'self'")
+    expect(text).toContain('Cross-Origin-Opener-Policy: same-origin-allow-popups')
+    expect(text).toMatch(/\/__\/auth\/\*[\s\S]*X-Frame-Options: SAMEORIGIN/)
+  })
+
   it('không cache callback đăng nhập và trang admin', async () => {
     const text = await headersFile()
     expect(text).toMatch(/\/__\/gis[\s\S]*Cache-Control: no-store/)
