@@ -1,4 +1,5 @@
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
+import { applyProductionEnvForAppBuild } from './scripts/apply-production-env'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'node:path'
@@ -248,9 +249,18 @@ function mobileEntry(app: AppName): Plugin {
   }
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const app = appOf(mode)
   const current = APP_CONFIG[app]
+  const merged = applyProductionEnvForAppBuild(
+    command,
+    mode,
+    loadEnv(mode, process.cwd(), ''),
+    loadEnv('production', process.cwd(), ''),
+  )
+  for (const [key, value] of Object.entries(merged)) {
+    if (!process.env[key]) process.env[key] = String(value)
+  }
 
   return {
     define: {
