@@ -8,9 +8,9 @@ import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { matchesSearch, fmt, fmtNum, vnDaysAgo, vnToday } from '@/core/format'
 import {
-  bestSellerIds, suggestUnits, cartUnitPrice, confirmSale, customerHabits,
-  mergeCartLine, setCartLineQty, removeCartLine, discountToAmount, stockAddWarning,
-  salesInDateRange, DENOMINATIONS, type CartItem, type DiscountKind,
+  bestSellerIds, suggestUnits, cartUnitPrice, checkoutFingerprint, confirmCheckoutSale, maybeQueueEinvoiceForSale, customerHabits,
+  mergeCartLine, setCartLineQty, removeCartLine, discountToAmount, effectiveCashTendered, stockAddWarning,
+  salesInDateRange, DENOMINATIONS, type CartItem, saleUsesWholesale,
 } from '@/core/domain/sales'
 import { playPosSound } from '@/core/browser/posSound'
 import { PrintStatusDot } from '@/shared/PrintStatus'
@@ -28,6 +28,7 @@ import { Sheet, Modal, ConfirmDialog } from '@/shared/components'
 import { Search, Minus, Plus, Mic, ScanLine, Zap, X, Printer } from 'lucide-react'
 import type { Product, Customer, PayMethod, Sale } from '@/core/types'
 import { logError } from '@/core/errorLogger'
+import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
 
 export function WebSalePage() {
   const navigate = useNavigate()
@@ -40,6 +41,8 @@ export function WebSalePage() {
   const setCustomerId = useApp((s) => s.setCustomerId)
   const discount = useApp((s) => s.discount)
   const setDiscount = useApp((s) => s.setDiscount)
+  const discountKind = useApp((s) => s.discountKind)
+  const setDiscountKind = useApp((s) => s.setDiscountKind)
   const payMethod = useApp((s) => s.payMethod)
   const setPayMethod = useApp((s) => s.setPayMethod)
   const settings = useApp((s) => s.settings)
@@ -47,6 +50,10 @@ export function WebSalePage() {
   const celebrate = useApp((s) => s.celebrate)
   const shop = useApp((s) => s.shop)
   const user = useApp((s) => s.user)
+  const tendered = useApp((s) => s.tendered)
+  const setTendered = useApp((s) => s.setTendered)
+  const cashEntered = useApp((s) => s.cashEntered)
+  const setCashEntered = useApp((s) => s.setCashEntered)
 
   const [query, setQuery] = useState('')
   const [cat, setCat] = useState('hot')
@@ -58,13 +65,12 @@ export function WebSalePage() {
   const [scanOpen, setScanOpen] = useState(false)
   const [outPending, setOutPending] = useState<{ p: Product; qty: number; unit: { n: string; r: number } } | null>(null)
   const [custOpen, setCustOpen] = useState(false)
-  const [tendered, setTendered] = useState(0)
-  const [discountKind, setDiscountKind] = useState<DiscountKind>('amount')
   const [processing, setProcessing] = useState(false)
-  const [doneSale, setDoneSale] = useState<Sale | null>(null)
+  const [doneSale, setDoneSale] = useState<{ sale: Sale; customerName: string | null } | null>(null)
   const [cartOpen, setCartOpen] = useState(false)
   const stopListenRef = useRef<(() => void) | null>(null)
   const confirmGate = useRef(createConfirmGate())
+  const idempKeyRef = useRef<string | null>(null)
   const scanRef = useRef<ScanHandle | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -81,7 +87,7 @@ export function WebSalePage() {
   )
 
   const customer = customerId ? customers.find((c) => c.id === customerId) : null
-  const useWs = wholesaleMode || !!customer?.wholesale
+  const useWs = saleUsesWholesale(wholesaleMode, customer)
   const cats = useMemo(() => productCategories(products), [products])
 
   const ranked = useMemo(() => {
@@ -216,17 +222,32 @@ export function WebSalePage() {
   const discountAmt = discountToAmount(subtotal, discount, discountKind)
   const final = Math.max(0, subtotal - discountAmt)
   const isDebt = payMethod === 'debt'
-  const effectiveTendered = isDebt ? 0 : (payMethod === 'cash' ? (tendered || final) : final)
-  const change = isDebt ? 0 : Math.max(0, effectiveTendered - final)
-  const debtAmount = isDebt ? final : (payMethod === 'cash' ? Math.max(0, final - effectiveTendered) : 0)
-  const canConfirm = cart.length > 0 && (debtAmount === 0 || !!customerId)
+  const cash = effectiveCashTendered({ payMethod, total: final, tendered, cashEntered })
+  const effectiveTendered = cash.tendered
+  const change = cash.change
+  const debtAmount = cash.debtAmount
+  const canConfirm = cart.length > 0
+    && !cash.needsCashEntry
+    && (debtAmount === 0 || !!customerId)
+  const leave = useUnsavedDraftGuard(cart.length > 0)
+
+  const cartFingerprint = checkoutFingerprint({
+    items: cart,
+    discount: discountAmt,
+    payMethod,
+    tendered: effectiveTendered,
+    customerId,
+    wholesale: useWs,
+  })
+  useEffect(() => { idempKeyRef.current = null }, [cartFingerprint])
 
   async function handleConfirm() {
     if (!canConfirm) return
     if (!confirmGate.current.tryEnter()) return
     setProcessing(true)
     try {
-      const { sale, warnings } = await confirmSale({
+      if (!idempKeyRef.current) idempKeyRef.current = cartFingerprint
+      const result = await confirmCheckoutSale({
         items: cart,
         products,
         discount: discountAmt,
@@ -234,11 +255,23 @@ export function WebSalePage() {
         tendered: effectiveTendered,
         customerId,
         wholesale: useWs,
+        idempotencyKey: idempKeyRef.current,
       })
+      if (result.status === 'pending') {
+        showToast(result.banner, 'bad')
+        return
+      }
+      const { sale, warnings } = result
+      void maybeQueueEinvoiceForSale(sale)
       playPosSound('sale', settings.soundOn)
       celebrate(sale.total, `Hay lắm${shop.name ? ' ' + shop.name.split(' ').slice(-1)[0] : ''}!`, 1000)
-      showToast(warnings[0] || ('✓ Đã chốt đơn ' + fmt(sale.total)), warnings.length ? 'bad' : 'ok')
-      const customerName = customerId ? customers.find((c) => c.id === customerId)?.name : null
+      showToast(
+        '✓ Đã chốt đơn ' + fmt(sale.total) + (warnings[0] ? ' · ' + warnings[0] : ''),
+        warnings.length ? 'warn' : 'ok',
+      )
+      const customerName = customerId ? customers.find((c) => c.id === customerId)?.name ?? null : null
+      setDoneSale({ sale, customerName })
+      clearCart()
       const printed = await dispatchPrint({
         sale,
         shop,
@@ -250,11 +283,6 @@ export function WebSalePage() {
         const t = printResultToast(printed)
         showToast(t.text, t.kind)
       }
-      if (settings.printer.autoPrintAfterSale && printed.via === 'none' && !settings.printer.cloudRelay && !settings.printer.lanAgentUrl) {
-        setDoneSale(sale)
-      }
-      clearCart()
-      setTendered(0)
     } catch (e) {
       logError(e, 'web.sale.confirm')
       showToast(e instanceof Error ? e.message : 'Lỗi khi chốt đơn', 'bad')
@@ -346,7 +374,7 @@ export function WebSalePage() {
               const extra = units.filter((u) => u.r > 1)
               return (
                 <div key={p.id} className="web-pc">
-                  <button type="button" className="n" style={{ flex: 1, textAlign: 'left', background: 'none', border: 0, cursor: 'pointer' }} onClick={() => addToCart(p)}>
+                  <button type="button" className="web-pc-hit n" style={{ flex: 1, textAlign: 'left', background: 'none', border: 0, cursor: 'pointer' }} onClick={() => addToCart(p)}>
                     {p.name}
                     <div className="s">
                       {p.unit || 'cái'} · còn {p.stock}
@@ -354,10 +382,15 @@ export function WebSalePage() {
                       {p.stock <= 0 ? ' · HẾT' : p.stock <= settings.lowStock ? ' · sắp hết' : ''}
                     </div>
                   </button>
-                  {extra.map((u) => (
-                    <button key={u.n} type="button" className="web-chip" style={{ margin: 0 }} onClick={() => addToCart(p, 1, u)}>{u.n}×{u.r}</button>
-                  ))}
-                  <div className="p">{fmtNum(price)}</div>
+                  <div className="web-pc-units" data-empty={extra.length === 0 ? '' : undefined}>
+                    {extra.map((u) => (
+                      <button key={u.n} type="button" className="web-pc-unit" onClick={() => addToCart(p, 1, u)}>
+                        <span className="web-pc-unit-n">{u.n}</span>
+                        <span className="web-pc-unit-x">×{u.r}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="web-pc-foot"><div className="p">{fmtNum(price)}</div></div>
                 </div>
               )
             })}
@@ -383,7 +416,7 @@ export function WebSalePage() {
               {cart.length} món · {customer ? customer.name : 'khách lẻ'}
             </span>
             {cart.length > 0 && (
-              <button type="button" className="web-chip" style={{ marginLeft: 'auto' }} onClick={() => { clearCart(); setTendered(0) }}>Xóa giỏ</button>
+              <button type="button" className="web-chip" style={{ marginLeft: 'auto' }} onClick={() => { clearCart(); setTendered(0); setCashEntered(false) }}>Xóa giỏ</button>
             )}
           </h3>
           <div className="web-pos-lines flex-1 overflow-y-auto min-h-0">
@@ -440,15 +473,20 @@ export function WebSalePage() {
                     type="number"
                     min={0}
                     value={tendered || ''}
-                    onChange={(e) => setTendered(Number(e.target.value) || 0)}
-                    placeholder={String(final || '')}
+                    onChange={(e) => {
+                      const raw = e.target.value
+                      if (raw === '') { setTendered(0); setCashEntered(false); return }
+                      setTendered(Number(raw) || 0)
+                      setCashEntered(true)
+                    }}
+                    placeholder="Nhập số" 
                   />
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '6px 0' }}>
                   {DENOMINATIONS.map((d) => (
-                    <button key={d} type="button" className="web-chip" onClick={() => setTendered(d)}>{fmtNum(d)}</button>
+                    <button key={d} type="button" className="web-chip" onClick={() => { setTendered(d); setCashEntered(true) }}>{fmtNum(d)}</button>
                   ))}
-                  <button type="button" className="web-chip ora" onClick={() => setTendered(final)}>Đủ</button>
+                  <button type="button" className="web-chip ora" onClick={() => { setTendered(final); setCashEntered(true) }}>Đủ</button>
                 </div>
                 <div className="web-ln"><span>Tiền thối</span><span style={{ color: 'var(--ok)' }}>{fmtNum(change)}</span></div>
               </>
@@ -531,10 +569,36 @@ export function WebSalePage() {
         onCancel={() => setOutPending(null)}
       />
 
-      <Sheet open={!!doneSale} onClose={() => setDoneSale(null)} title="Thanh toán thành công">
+      <Sheet
+        open={!!doneSale}
+        onClose={() => setDoneSale(null)}
+        title="Thanh toán thành công"
+        overlayClassName="sheet-overlay--print"
+        closeOnOverlay={false}
+        portal
+      >
         <p className="web-sub" style={{ marginBottom: 12 }}>In hóa đơn cho khách?</p>
         <div className="web-settings-actions">
-          <button type="button" className="web-btn pri" onClick={() => setDoneSale(null)}>Bán tiếp</button>
+          <button
+            type="button"
+            className="web-btn pri"
+            onClick={() => {
+              if (!doneSale) return
+              void dispatchPrint({
+                sale: doneSale.sale,
+                shop,
+                printer: settings.printer,
+                customerName: doneSale.customerName,
+                cashier: user?.name || user?.username || '',
+              }).then((r) => {
+                const t = printResultToast(r)
+                showToast(t.text, t.kind)
+              })
+            }}
+          >
+            <Printer size={15} /> In hóa đơn
+          </button>
+          <button type="button" className="web-btn" onClick={() => setDoneSale(null)}>Bán tiếp</button>
           {canUseBluetoothPrint() && (
             <button
               type="button"
@@ -542,10 +606,10 @@ export function WebSalePage() {
               onClick={() => {
                 if (!doneSale) return
                 void printTicketBluetooth(saleTicketFromContext({
-                  sale: doneSale,
+                  sale: doneSale.sale,
                   shop,
                   printer: settings.printer,
-                  customerName: customer?.name ?? null,
+                  customerName: doneSale.customerName,
                   cashier: user?.name || user?.username || '',
                 }), { requestIfNeeded: true }).then(
                   () => showToast('Đang in máy nhiệt…', 'ok'),
@@ -562,10 +626,10 @@ export function WebSalePage() {
             onClick={() => {
               if (!doneSale) return
               const ok = printReceiptLocal({
-                sale: doneSale,
+                sale: doneSale.sale,
                 shop,
                 printer: settings.printer,
-                customerName: customer?.name ?? null,
+                customerName: doneSale.customerName,
                 cashier: user?.name || user?.username || '',
               })
               if (!ok) showToast('Không in được trên máy này', 'bad')
@@ -577,6 +641,7 @@ export function WebSalePage() {
           <button type="button" className="web-btn" onClick={() => { setDoneSale(null); navigate('/') }}>Về trang chủ</button>
         </div>
       </Sheet>
+      {leave.dialog}
     </div>
   )
 }

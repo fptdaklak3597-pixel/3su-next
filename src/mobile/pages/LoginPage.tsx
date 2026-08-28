@@ -9,7 +9,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx, setCurrentUser } from '@/core/db'
 import { useApp } from '@/core/store'
 import { logError } from '@/core/errorLogger'
-import { login, createUser, changePassword } from '@/core/domain/auth'
+import { login, createUser, changePassword, passwordMeetsPolicy, passwordPolicyMessage, minimumPasswordLength } from '@/core/domain/auth'
 import { Store, LogIn, Delete } from 'lucide-react'
 import type { User } from '@/core/types'
 
@@ -30,6 +30,8 @@ export function LoginPage() {
   const [pending, setPending] = useState<User | null>(null)
   const [newPw, setNewPw] = useState('')
   const [newPw2, setNewPw2] = useState('')
+  const selected = users.find((u) => u.username === username)
+  const pinMin = setup ? minimumPasswordLength('owner') : selected ? minimumPasswordLength(selected.role) : 0
 
   async function finishLogin(u: User) {
     if (u.passwordNeedsReset) {
@@ -76,7 +78,7 @@ export function LoginPage() {
 
   async function handleReset() {
     if (!pending) return
-    if (newPw.length < 4) { showToast('Mật khẩu tối thiểu 4 ký tự', 'bad'); return }
+    if (!passwordMeetsPolicy(newPw, pending.role)) { showToast(passwordPolicyMessage(pending.role), 'bad'); return }
     if (newPw !== newPw2) { showToast('Hai mật khẩu không khớp', 'bad'); return }
     setBusy(true)
     try {
@@ -100,7 +102,7 @@ export function LoginPage() {
         <div className="w-full max-w-[360px] card p-5 flex flex-col gap-3">
           <div className="font-brand text-lg" style={{ color: 'var(--ink)' }}>Đổi mật khẩu lần đầu</div>
           <p className="text-sm" style={{ color: 'var(--mute)' }}>{pending.name} — mật khẩu tạm, hãy đặt mật khẩu mới.</p>
-          <input className="field-input" type="password" placeholder="Mật khẩu mới" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+          <input className="field-input" type="password" placeholder={"Tối thiểu " + minimumPasswordLength(pending.role) + " ký tự"} value={newPw} onChange={(e) => setNewPw(e.target.value)} />
           <input className="field-input" type="password" placeholder="Nhập lại" value={newPw2} onChange={(e) => setNewPw2(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void handleReset()} />
           <button className="btn-cta" disabled={busy} onClick={() => void handleReset()}>Lưu và vào app</button>
         </div>
@@ -154,7 +156,7 @@ export function LoginPage() {
           />
           <input
             className="field-input"
-            placeholder="PIN hoặc mật khẩu"
+            placeholder={pinMin ? `PIN hoặc mật khẩu (tối thiểu ${pinMin} ký tự)` : 'PIN hoặc mật khẩu'}
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

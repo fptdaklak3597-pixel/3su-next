@@ -4,7 +4,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { PackagePlus, BarChart3, Truck, StickyNote, Settings, X, Plus, Pin, Users, Check } from 'lucide-react'
+import { PackagePlus, BarChart3, Truck, StickyNote, Settings, X, Plus, Pin, Users, Check, Scale } from 'lucide-react'
 import { Sheet } from '@/shared/components'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
@@ -22,6 +22,7 @@ const ITEMS: Array<{
 }> = [
   { path: '/nhap-hang', label: 'Nhập hàng', sub: 'Phiếu nhập kho nhanh', icon: PackagePlus, perm: 'inventory' },
   { path: '/bao-cao', label: 'Báo cáo', sub: 'Doanh thu, lời, xu hướng', icon: BarChart3, perm: 'reports' },
+  { path: '/doi-soat', label: 'Đối soát', sub: 'So sổ tiền mặt, CK, nợ', icon: Scale, perm: 'reports' },
   { path: '/nha-cung-cap', label: 'Nhà cung cấp', sub: 'Nguồn hàng và công nợ', icon: Truck, perm: 'suppliers' },
   { path: '/khach-hang', label: 'Khách hàng', sub: 'Nợ và lịch sử mua', icon: Users, perm: 'sell' },
   { notes: true, label: 'Ghi chú', sub: 'Việc cần làm, ý tưởng', icon: StickyNote },

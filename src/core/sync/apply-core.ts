@@ -8,7 +8,7 @@
  * - Kiểm kê cộng diff (actual − system): không nuốt đơn máy kia đã áp, cũng không nuốt delta local khi localStock = system + pending.
  */
 import { dbx, retainLocalPrivilegedVerifier } from '../db'
-import { applyStockDeltaToBatches, consumeBatchesFefo, liveBatchExpiry, restoreBatchesFefo } from '../domain/inventory'
+import { applyStockDeltaToBatches, consumeBatchesFefoAllowNegative, isCatalogUnitRatio, liveBatchExpiry, MAX_STOCK_QTY_DELTA, restoreBatchesFefo } from '../domain/inventory'
 import { getThisDeviceId } from '../domain/devices'
 import { allocateCustomerDebt, allocationForSale } from '../domain/debt-allocation'
 import { compareHlc } from './hlc'
@@ -29,6 +29,9 @@ const POISON_META = 'sync:poisoned'
 const BLOCKED_META = 'sync:blocked'
 const MAX_DIAGNOSTIC_OPS = 200
 
+export const MAX_BLOCKED_ATTEMPTS = 200
+export const BLOCKED_TTL_MS = 24 * 60 * 60 * 1000
+
 export class SyncDependencyError extends Error {
   constructor(message: string) {
     super(message)
@@ -48,6 +51,8 @@ export interface PoisonedOp {
   type: string
   message: string
   at: number
+  attempts?: number
+  op?: SyncOp
 }
 
 export interface BlockedOp extends PoisonedOp {}
@@ -58,6 +63,8 @@ function diagnosticRecord(op: SyncOp, err: unknown): PoisonedOp {
     type: op.type,
     message: err instanceof Error ? err.message : String(err),
     at: Date.now(),
+    attempts: 1,
+    op,
   }
 }
 
@@ -68,8 +75,14 @@ async function readDiagnosticOps(key: string): Promise<PoisonedOp[]> {
 
 async function upsertDiagnosticOp(key: string, op: SyncOp, err: unknown): Promise<void> {
   const prev = await readDiagnosticOps(key)
-  const next = [...prev.filter((p) => p.id !== op.id), diagnosticRecord(op, err)]
-    .slice(-MAX_DIAGNOSTIC_OPS)
+  const existing = prev.find((p) => p.id === op.id)
+  const rec = diagnosticRecord(op, err)
+  if (existing) {
+    rec.at = existing.at
+    rec.attempts = (existing.attempts ?? 1) + 1
+    rec.op = op
+  }
+  const next = [...prev.filter((p) => p.id !== op.id), rec].slice(-MAX_DIAGNOSTIC_OPS)
   await dbx.meta.put({ key, value: next })
 }
 
@@ -203,9 +216,57 @@ function dependencyError(message: string): never {
   throw new SyncDependencyError(message)
 }
 
+function assertSaleUnitRatios(sale: Sale, products: Map<string, Product>): void {
+  for (const it of sale.items) {
+    const p = products.get(it.productId)
+    if (!p) dependencyError('sale.commit thiếu SP ' + it.productId)
+    if (!isCatalogUnitRatio(p, it.unitRatio)) {
+      payloadError('sale.commit unitRatio không có trong catalog')
+    }
+  }
+}
+
+type DerivedGrLine = {
+  productId: string
+  addQty: number
+  money: number
+  expiry?: string
+}
+
+/** Tồn/giá vốn từ gr.rows — bỏ addQty/newCost/newPrice/purchasedDelta trên patch. */
+function deriveGrLinesFromRows(gr: NonNullable<GrCommitPayload['gr']>, products: Map<string, Product>): DerivedGrLine[] {
+  const rows = Array.isArray(gr.rows) ? gr.rows : []
+  if (!rows.length) payloadError('gr.commit thiếu dòng hàng')
+  const byProduct = new Map<string, DerivedGrLine>()
+  for (const row of rows) {
+    if (!row?.productId || !Number.isFinite(row.qty) || row.qty <= 0 || !Number.isFinite(row.cost) || row.cost < 0) {
+      payloadError('gr.commit có dòng không hợp lệ')
+    }
+    const ratio = Number.isFinite(row.unitRatio) && row.unitRatio > 0 ? row.unitRatio : 0
+    if (!ratio) payloadError('gr.commit có dòng không hợp lệ')
+    const p = products.get(row.productId)
+    if (!p) dependencyError('gr.commit thiếu SP ' + row.productId)
+    if (!isCatalogUnitRatio(p, ratio)) {
+      payloadError('gr.commit unitRatio không có trong catalog')
+    }
+    const addQty = row.qty * ratio
+    const money = row.qty * row.cost
+    const expiry = row.expiry || undefined
+    const cur = byProduct.get(row.productId)
+    if (!cur) {
+      byProduct.set(row.productId, { productId: row.productId, addQty, money, expiry })
+    } else {
+      cur.addQty += addQty
+      cur.money += money
+      if (expiry && (!cur.expiry || expiry < cur.expiry)) cur.expiry = expiry
+    }
+  }
+  return [...byProduct.values()]
+}
+
 /**
- * Tin dòng hàng (qty/price/cost), không tin tổng tiền từ payload.
- * Công thức khớp confirmSale local — mọi thiết bị hội tụ cùng số.
+ * Biên lai đã chốt: tin giá dòng payload, tính lại tổng/nợ/thối từ dòng.
+ * Catalog chỉ ràng unitRatio. Giá SP đổi sau không sửa đơn cũ.
  */
 function recomputeSaleMoney(sale: Sale): Sale {
   for (const it of sale.items) {
@@ -263,13 +324,16 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (!raw?.id || !Array.isArray(raw.items) || raw.items.length === 0) {
         payloadError('sale.commit thiếu id hoặc dòng hàng')
       }
+      const catalog = new Map<string, Product>()
       for (const it of raw.items) {
         if (!it?.productId || !Number.isFinite(it.qty) || !Number.isFinite(it.unitRatio) || it.qty <= 0 || it.unitRatio <= 0) {
           payloadError('sale.commit có dòng hàng không hợp lệ')
         }
         const p = await dbx.products.get(it.productId)
         if (!p) dependencyError('sale.commit thiếu SP ' + it.productId)
+        catalog.set(p.id, p)
       }
+      assertSaleUnitRatios(raw, catalog)
       const sale = recomputeSaleMoney(raw)
       if (sale.customerId) {
         const c = await dbx.customers.get(sale.customerId)
@@ -287,7 +351,7 @@ async function applyOne(op: SyncOp): Promise<void> {
           p.stock -= deducted
           p.updatedAt = Date.now()
           if (p.batches?.length) {
-            p.batches = consumeBatchesFefo(p.batches, deducted).batches
+            p.batches = consumeBatchesFefoAllowNegative(p.batches, deducted)
             p.expiry = liveBatchExpiry(p.batches)
             for (const b of p.batches) await dbx.batches.put(b)
           }
@@ -372,7 +436,7 @@ async function applyOne(op: SyncOp): Promise<void> {
             const slice = allocationForSale(allocateCustomerDebt(forAlloc, pays, sale.customerId), sale.id)
             c.debt = Math.max(0, c.debt - slice.unpaid)
             if (slice.allocated > 0) {
-              const dpId = `dp_void_${op.id}`
+              const dpId = `dp_void_${sale.id}`
               if (!(await dbx.debtPayments.get(dpId))) {
                 await dbx.debtPayments.add({
                   id: dpId,
@@ -421,8 +485,10 @@ async function applyOne(op: SyncOp): Promise<void> {
       return
     }
     case 'stock.adjust': {
+      // Không có actor trên wire để phân quyền. Peer stock.adjust vẫn được áp.
       const pl = op.payload as Partial<StockAdjustPayload> | null
       if (!pl?.productId || !Number.isFinite(pl.delta)) payloadError('stock.adjust thiếu productId hoặc delta')
+      if (Math.abs(pl.delta as number) > MAX_STOCK_QTY_DELTA) payloadError('stock.adjust lệch tồn quá lớn')
       const mvId = 'mv_' + op.id
       if (await dbx.stockMoves.get(mvId)) return
       const p = await dbx.products.get(pl.productId)
@@ -452,6 +518,7 @@ async function applyOne(op: SyncOp): Promise<void> {
         if (!row?.productId) payloadError('stocktake.commit có dòng thiếu productId')
         const diff = typeof row.diff === 'number' ? row.diff : row.actual - row.system
         if (!Number.isFinite(diff)) payloadError('stocktake.commit có diff không hợp lệ')
+        if (Math.abs(diff) > MAX_STOCK_QTY_DELTA) payloadError('stocktake.commit lệch tồn quá lớn')
         const p = await dbx.products.get(row.productId)
         if (!p) dependencyError('stocktake thiếu SP ' + row.productId)
         if (p.stockSetHlc && compareHlc(op.hlc, p.stockSetHlc) <= 0) continue
@@ -489,13 +556,17 @@ async function applyOne(op: SyncOp): Promise<void> {
       }
       const amount = Math.round(dp.amount)
       if (amount === 0) payloadError('debt.pay thiếu dữ liệu hợp lệ')
+      if (amount < 0) payloadError('debt.pay không nhận số âm — hoàn tiền đi qua sale.void')
+      if (String(dp.id).startsWith('dp_void_')) {
+        payloadError('debt.pay không nhận phiếu hoàn hủy đơn')
+      }
       if (await dbx.debtPayments.get(dp.id)) return
       const c = await dbx.customers.get(dp.customerId)
       if (!c) dependencyError('debt.pay thiếu khách ' + dp.customerId)
-      const rounded: DebtPayment = { ...dp, amount }
-      await dbx.debtPayments.add(rounded)
-      // amount > 0: thu nợ; amount < 0: phiếu hoàn (không đổi số dư — đã xử lý lúc void)
-      if (amount > 0) c.debt = Math.max(0, c.debt - amount)
+      const applied = Math.min(amount, Math.max(0, Math.round(c.debt)))
+      if (applied <= 0) return
+      await dbx.debtPayments.add({ ...dp, amount: applied })
+      c.debt = Math.max(0, c.debt - applied)
       c.updatedAt = Date.now()
       await dbx.customers.put(c)
       return
@@ -503,58 +574,98 @@ async function applyOne(op: SyncOp): Promise<void> {
     case 'gr.commit': {
       const payload = op.payload as Partial<GrCommitPayload> | null
       const grRaw = payload?.gr
-      const patches = payload?.patches
-      const supplierDelta = payload?.supplierDelta
-      if (!grRaw?.id || !Array.isArray(patches)) payloadError('gr.commit thiếu phiếu hoặc patches')
-      if (await dbx.goodsReceipts.get(grRaw.id)) return
-      for (const pt of patches) {
-        if (!pt?.productId || !Number.isFinite(pt.addQty)) payloadError('gr.commit có patch không hợp lệ')
-        if (!(await dbx.products.get(pt.productId))) dependencyError('gr.commit thiếu SP ' + pt.productId)
+      if (!grRaw?.id || !Array.isArray(grRaw.rows) || grRaw.rows.length === 0) {
+        payloadError('gr.commit thiếu phiếu hoặc dòng hàng')
       }
+      if (await dbx.goodsReceipts.get(grRaw.id)) return
+      const catalog = new Map<string, Product>()
+      for (const row of grRaw.rows) {
+        if (!row?.productId) payloadError('gr.commit có dòng không hợp lệ')
+        if (!catalog.has(row.productId)) {
+          const p = await dbx.products.get(row.productId)
+          if (!p) dependencyError('gr.commit thiếu SP ' + row.productId)
+          catalog.set(p.id, p)
+        }
+      }
+      const lines = deriveGrLinesFromRows(grRaw, catalog)
       const expectedTotal = recomputeGoodsReceiptTotal(grRaw)
       const gr = { ...grRaw, total: expectedTotal }
       await dbx.goodsReceipts.add(gr)
       const moveOccurrences = new Map<string, number>()
-      for (const pt of patches) {
-        const p = await dbx.products.get(pt.productId)
-        if (!p) dependencyError('gr.commit thiếu SP ' + pt.productId)
-        p.stock += pt.addQty
+      let rowIndex = 0
+      for (const line of lines) {
+        const p = await dbx.products.get(line.productId)
+        if (!p) dependencyError('gr.commit thiếu SP ' + line.productId)
+        const addQty = line.addQty
+        const oldStock = p.stock
+        const newStock = oldStock + addQty
+        let appliedCost = p.cost
+        if (oldStock <= 0) appliedCost = Math.round(addQty > 0 ? line.money / addQty : p.cost)
+        else if (newStock > 0) appliedCost = Math.round((oldStock * p.cost + line.money) / newStock)
+        p.stock += addQty
+        const expiry = line.expiry || gr.expiry || undefined
         if (!p.grHlc || compareHlc(op.hlc, p.grHlc) > 0) {
-          p.cost = pt.newCost
-          if (pt.newPrice) p.price = pt.newPrice
-          if (pt.expiry) p.expiry = pt.expiry
+          p.cost = appliedCost
+          if (expiry) p.expiry = expiry
           p.grHlc = op.hlc
         }
-        for (const b of pt.batches ?? []) {
-          if (!(await dbx.batches.get(b.id))) {
-            await dbx.batches.add(b)
-            p.batches = [...(p.batches || []), b]
+        let noExpiryQty = 0
+        for (const row of gr.rows.filter((r) => r.productId === line.productId)) {
+          const ratio = Number.isFinite(row.unitRatio) && row.unitRatio > 0 ? row.unitRatio : 1
+          const qty = row.qty * ratio
+          const exp = row.expiry || gr.expiry
+          if (exp) {
+            const batchId = `bt_${op.id}_${line.productId}_${rowIndex}`
+            rowIndex += 1
+            if (!(await dbx.batches.get(batchId))) {
+              const costBase = row.cost / ratio
+              const batch = {
+                id: batchId,
+                qty,
+                remain: qty,
+                cost: Math.round(costBase || row.cost),
+                expiry: exp,
+                date: gr.date,
+                supId: gr.supplierId || '',
+                supName: gr.supplier,
+              }
+              await dbx.batches.add(batch)
+              p.batches = [...(p.batches || []), batch]
+            }
+          } else {
+            noExpiryQty += qty
           }
         }
+        if (noExpiryQty > 0) await applyStockDeltaToBatches(p, noExpiryQty)
         p.updatedAt = Date.now()
         await dbx.products.put(p)
-        for (const pl of pt.priceLogRows ?? []) {
-          if (!(await dbx.priceLog.get(pl.id))) await dbx.priceLog.add(pl)
+        const plId = `pl_${op.id}_${line.productId}`
+        if (!(await dbx.priceLog.get(plId))) {
+          await dbx.priceLog.add({
+            id: plId,
+            productId: line.productId,
+            supId: gr.supplierId || '',
+            supName: gr.supplier,
+            cost: addQty > 0 ? Math.round(line.money / addQty) : appliedCost,
+            ts: Date.now(),
+          })
         }
         await dbx.stockMoves.add({
-          id: nextDocumentMoveId(op.id, pt.productId, moveOccurrences),
-          productId: pt.productId,
+          id: nextDocumentMoveId(op.id, line.productId, moveOccurrences),
+          productId: line.productId,
           type: 'purchase',
-          qty: pt.addQty,
-          cost: pt.newCost,
+          qty: addQty,
+          cost: appliedCost,
           note: 'Nhập: ' + gr.code,
           refId: gr.id,
           date: gr.date,
           ts: Date.now(),
         })
       }
-      if (supplierDelta) {
-        if (!supplierDelta.supplierId) payloadError('gr.commit supplierDelta thiếu supplierId')
-        const sup = await dbx.suppliers.get(supplierDelta.supplierId)
+      // purchasedDelta / debtDelta / patches từ client không tin.
+      if (gr.supplierId) {
+        const sup = await dbx.suppliers.get(gr.supplierId)
         if (sup) {
-          const debtDelta = Number.isFinite(supplierDelta.debtDelta) ? supplierDelta.debtDelta : 0
-          // purchasedDelta tin từ Σ dòng hàng, không tin client
-          sup.debt += debtDelta
           sup.totalPurchased += expectedTotal
           sup.orderCount += 1
           sup.updatedAt = Date.now()
@@ -797,7 +908,17 @@ async function applyOne(op: SyncOp): Promise<void> {
       }
       const cur = await dbx.users.get(user.id)
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
-      await dbx.users.put(retainLocalPrivilegedVerifier({ ...user, hlc: op.hlc }, cur))
+      // Privilege and feature bits are origin-local (createUser/updateUser).
+      // Ignore payload.actorRole and payload.perms. Sync never grants
+      // owner/admin/perms.all, and remotes do not raise staff bits
+      // (users/settings/inventory/sell/...). New staff arrive empty.
+      const privileged = cur?.role === 'owner' || cur?.role === 'admin'
+      const role: User['role'] = (cur?.role === 'owner' || cur?.role === 'admin') ? cur.role : 'staff'
+      const perms: User['perms'] = cur ? { ...(cur.perms ?? {}) } : {}
+      if (!privileged) delete perms.all
+      const next = { ...user, role, perms }
+      delete (next as { actorRole?: unknown }).actorRole
+      await dbx.users.put(retainLocalPrivilegedVerifier({ ...next, hlc: op.hlc }, cur))
       return
     }
     case 'user.password': {
@@ -832,6 +953,7 @@ async function applyOne(op: SyncOp): Promise<void> {
       const payload = op.payload as { userId?: string } | null
       if (!payload?.userId) payloadError('user.delete thiếu userId')
       const cur = await dbx.users.get(payload.userId)
+      if (cur?.role === 'owner') return
       if (cur && (!cur.hlc || compareHlc(op.hlc, cur.hlc) > 0)) {
         await dbx.users.put({ ...cur, deleted: true, active: false, hlc: op.hlc })
       }

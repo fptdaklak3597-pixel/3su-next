@@ -15,11 +15,14 @@ describe('P2 bố cục POS', () => {
 
     expect(theme).toMatch(/@media\s*\(min-width:\s*1100px\)/)
     expect(theme).toContain('.web-plist.is-tiles')
-    expect(theme).toMatch(/minmax\(\s*168px/)
-    expect(theme).toMatch(/\.web-plist\.is-tiles\s+\.web-pc[\s\S]*min-height:\s*88px/)
+    expect(theme).toMatch(/minmax\(\s*172px/)
+    expect(theme).toMatch(/\.web-plist\.is-tiles\s+\.web-pc[\s\S]*min-height:\s*120px/)
+    expect(theme).toContain('.web-pc-units')
+    expect(theme).toContain('.web-pc-unit')
 
     expect(sale).toContain('is-tiles')
     expect(sale).toContain('is-list')
+    expect(sale).toContain('web-pc-units')
     expect(sale).toMatch(/query\.trim\(\)/)
   })
 
@@ -53,5 +56,19 @@ describe('P2 bố cục POS', () => {
     const icoBlock = shell.match(/<div className="web-bar-r">([\s\S]*?)<\/div>\s*<\/nav>/)
     expect(icoBlock?.[1] ?? '').not.toMatch(/<Printer/)
     expect(icoBlock?.[1] ?? '').not.toMatch(/<Settings/)
+  })
+
+  it('mobile catalog: ô SP cột cố định, chip đơn vị 2 cột', async () => {
+    const css = await read('src/index.css')
+    const sale = await read('src/mobile/pages/SalePage.tsx')
+
+    expect(css).toContain('.sale-item-units')
+    expect(css).toMatch(/grid-template-columns:\s*repeat\(2/)
+    expect(css).toContain('.sale-item-foot')
+    expect(css).toMatch(/min-height:\s*108px/)
+
+    expect(sale).toContain('sale-item-hit')
+    expect(sale).toContain('sale-item-foot')
+    expect(sale).toContain('data-empty')
   })
 })

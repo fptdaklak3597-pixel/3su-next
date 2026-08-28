@@ -22,7 +22,10 @@ export function AiChatDock() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, open])
 
-  if (!cloudOk) return null
+  const uiPreview = import.meta.env.DEV
+    && typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).get('preview') === '1'
+  if (!cloudOk && !uiPreview) return null
 
   async function handleSend() {
     const t = input.trim()

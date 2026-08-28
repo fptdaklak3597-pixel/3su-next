@@ -11,6 +11,7 @@ import type { Product, PurchaseOrder, PurchaseOrderRow, StockForecast } from '..
 import { applyGoodsReceiptInTx } from './inventory'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
 import { withExclusiveLock } from '../offline'
+import { requirePermission } from './auth'
 
 /** Dự báo → dòng PO (chỉ món gợi ý nhập > 0). */
 export function forecastToPoRows(
@@ -73,6 +74,7 @@ function normalizePoRows(rows: PurchaseOrderInput['rows']): PurchaseOrderRow[] {
 
 /** Tạo đơn mua hàng (trạng thái đã đặt). */
 export async function createPurchaseOrder(input: PurchaseOrderInput): Promise<PurchaseOrder> {
+  await requirePermission('inventory')
   const rows = normalizePoRows(input.rows)
   const date = input.date ?? today()
   const code = 'PO-' + date.replace(/-/g, '') + '-' + String(Math.floor(Math.random() * 900) + 100)
@@ -114,6 +116,7 @@ export async function updatePurchaseOrderStatus(
   id: string,
   status: PurchaseOrder['status'],
 ): Promise<void> {
+  await requirePermission('inventory')
   await withExclusiveLock('po-status-' + id, async () => {
     await dbx.transaction('rw', [dbx.purchaseOrders, dbx.syncQueue, dbx.appliedOps], async () => {
       const po = await dbx.purchaseOrders.get(id)
@@ -161,6 +164,7 @@ export async function receivePurchaseOrder(
     qtys?: Record<string, number>
   } = {},
 ): Promise<void> {
+  await requirePermission('inventory')
   await withExclusiveLock('po-receive-' + id, async () => {
     await dbx.transaction(
       'rw',

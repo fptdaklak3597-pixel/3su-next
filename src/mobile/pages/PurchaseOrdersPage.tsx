@@ -2,7 +2,7 @@
  * 3SU Next — Đơn mua hàng (Purchase Orders)
  * Port từ 26-purchase-orders.js: gom phiếu nhập + PO, tạo đơn, nhận hàng vào kho.
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
@@ -14,6 +14,8 @@ import {
   aggregatePurchases, PO_STATUS_LABEL,
 } from '@/core/domain/purchase'
 import { Sheet, ConfirmDialog, EmptyState } from '@/shared/components'
+import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
+import { DRAFT_PO, clearDraft, loadFreshDraft, persistPoDraft, type PoDraft } from '@/core/domain/drafts'
 import { ChevronLeft, Plus, Search, Trash2, PackageCheck } from 'lucide-react'
 import type { Product, Supplier, PurchaseOrder, PurchaseOrderRow } from '@/core/types'
 
@@ -157,6 +159,9 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
   const [pickerOpen, setPickerOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [note, setNote] = useState('')
+  const draftReady = useRef(false)
+  const dirty = rows.length > 0 || !!note.trim() || !!supplierId
+  const leave = useUnsavedDraftGuard(open && dirty)
 
   const suppliers = useLiveQuery(() => dbx.suppliers.filter((s) => !s.deleted).toArray(), [], [] as Supplier[])
   const products = useLiveQuery(() => dbx.products.filter((p) => !p.deleted).toArray(), [], [] as Product[])
@@ -164,6 +169,30 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
 
   const total = rows.reduce((a, r) => a + r.qty * r.cost, 0)
   const supplier = suppliers.find((s) => s.id === supplierId)
+
+  useEffect(() => {
+    if (!open) { draftReady.current = false; return }
+    void loadFreshDraft<PoDraft>(DRAFT_PO).then((d) => {
+      if (!d) { draftReady.current = true; return }
+      setSupplierId(d.supplierId)
+      setRows((d.rows || []) as DraftRow[])
+      setNote(d.note)
+      draftReady.current = true
+    }).catch(() => { draftReady.current = true })
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !draftReady.current) return
+    const tmr = window.setTimeout(() => {
+      void persistPoDraft({
+        supplierId,
+        supplierName: supplier?.name || '',
+        rows,
+        note,
+      })
+    }, 400)
+    return () => window.clearTimeout(tmr)
+  }, [open, supplierId, rows, note, supplier?.name])
 
   function addRow(p: Product) {
     setRows((rs) => {
@@ -200,6 +229,8 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
         date: today(),
       })
       showToast(`✓ Đã tạo ${po.code}`, 'ok')
+      leave.allowLeave()
+      await clearDraft(DRAFT_PO)
       setRows([]); setNote(''); setSupplierId('')
       onClose()
     } catch (e) {
@@ -209,6 +240,8 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
   }
 
   return (
+    <>
+    {leave.dialog}
     <Sheet open={open} onClose={onClose} title="Tạo đơn mua hàng">
       <div className="flex flex-col gap-3">
         <select className="field-input" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
@@ -264,6 +297,7 @@ function CreatePoSheet({ open, onClose }: { open: boolean; onClose: () => void }
         </div>
       </Sheet>
     </Sheet>
+    </>
   )
 }
 

@@ -2,12 +2,13 @@
  * 3SU Next — Nhà cung cấp & Công nợ NCC
  * Port từ 50-auth-cloud-ai.js (renderSuppliers) + nghiệp vụ suppliers.ts.
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, fmtShort, matchesSearch } from '@/core/format'
 import { logError } from '@/core/errorLogger'
+import { createConfirmGate } from '@/core/confirmGate'
 import {
   createSupplier, deleteSupplier, recordSupplierPayment, updateSupplier,
   supplierDebt, supplierTotalPurchases, totalSupplierDebt, exportSupplierDebtXlsx,
@@ -26,6 +27,8 @@ export function SuppliersPage() {
   const [editForm, setEditForm] = useState({ name: '', phone: '' })
   const [form, setForm] = useState({ name: '', phone: '', address: '', note: '', leadDays: 2 })
   const [payAmount, setPayAmount] = useState(0)
+  const [processing, setProcessing] = useState(false)
+  const confirmGate = useRef(createConfirmGate())
 
   const suppliers = useLiveQuery(() => dbx.suppliers.filter((s) => !s.deleted).toArray(), [], [] as Supplier[])
   const receipts = useLiveQuery(() => dbx.goodsReceipts.toArray(), [], [])
@@ -58,6 +61,8 @@ export function SuppliersPage() {
 
   async function handlePay() {
     if (!payFor) return
+    if (!confirmGate.current.tryEnter()) return
+    setProcessing(true)
     try {
       await recordSupplierPayment({ supplierId: payFor.id, amount: payAmount, note: 'Trả nợ NCC' })
       showToast(`✓ Đã trả ${fmt(payAmount)}`, 'ok')
@@ -66,6 +71,9 @@ export function SuppliersPage() {
     } catch (e) {
       logError(e, 'supplier.pay')
       showToast(e instanceof Error ? e.message : 'Lỗi khi trả nợ', 'bad')
+    } finally {
+      setProcessing(false)
+      confirmGate.current.leave()
     }
   }
 
@@ -89,7 +97,7 @@ export function SuppliersPage() {
       setDelTarget(null)
     } catch (e) {
       logError(e, 'supplier.delete')
-      showToast('Lỗi khi xóa', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi xóa', 'bad')
     }
   }
 
@@ -144,7 +152,7 @@ export function SuppliersPage() {
             <button className="ml-2 p-1.5" onClick={() => { setEditTarget(s); setEditForm({ name: s.name, phone: s.phone || '' }) }} aria-label="Sửa NCC" style={{ color: 'var(--mute-2)' }}>
               Sửa
             </button>
-            <button className="ml-2 p-1.5" onClick={() => setDelTarget(s)} aria-label="Xóa NCC" style={{ color: 'var(--mute-2)' }}>
+            <button className="ml-2 p-1.5" disabled={debt > 0} onClick={() => { if (debt > 0) return; setDelTarget(s) }} aria-label="Xóa NCC" style={{ color: 'var(--mute-2)', opacity: debt > 0 ? 0.4 : 1 }}>
               <Trash2 size={15} />
             </button>
           </div>
@@ -184,7 +192,7 @@ export function SuppliersPage() {
           ))}
           <button className="chip flex-1 justify-center" onClick={() => setPayAmount(payDebt)}>Đủ</button>
         </div>
-        <button className="btn-cta" onClick={handlePay} disabled={payAmount <= 0}>
+        <button className="btn-cta" onClick={handlePay} disabled={processing || payAmount <= 0 || payAmount > payDebt}>
           Xác nhận trả {payAmount > 0 ? fmt(payAmount) : ''}
         </button>
       </Sheet>

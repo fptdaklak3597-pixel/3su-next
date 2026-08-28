@@ -2,16 +2,24 @@
  * 3SU Next — UI components dùng chung (Modal, Sheet, Toast, Celebration)
  */
 import { type ReactNode, useEffect } from 'react'
+import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmtShort } from '@/core/format'
+import { syncStatusBadge } from '@/core/domain/health-banners'
 import { useServiceWorkerUpdate } from '@/shared/pwa'
 
 /* ─── Bottom Sheet ─── */
-export function Sheet({ open, onClose, title, children }: {
+export function Sheet({ open, onClose, title, children, overlayClassName, closeOnOverlay = true, portal = false }: {
   open: boolean
   onClose: () => void
   title?: string
   children: ReactNode
+  overlayClassName?: string
+  closeOnOverlay?: boolean
+  portal?: boolean
 }) {
   useEffect(() => {
     if (!open) return
@@ -21,8 +29,8 @@ export function Sheet({ open, onClose, title, children }: {
   }, [open, onClose])
 
   if (!open) return null
-  return (
-    <div className="sheet-overlay" onClick={onClose}>
+  const node = (
+    <div className={['sheet-overlay', overlayClassName].filter(Boolean).join(' ')} onClick={closeOnOverlay ? onClose : undefined}>
       <div className="sheet-panel" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-grab" />
         {title && <h2 className="font-brand text-lg font-medium mb-4" style={{ color: 'var(--ink)' }}>{title}</h2>}
@@ -30,6 +38,7 @@ export function Sheet({ open, onClose, title, children }: {
       </div>
     </div>
   )
+  return portal ? createPortal(node, document.body) : node
 }
 
 /* ─── Modal (centered) ─── */
@@ -56,12 +65,16 @@ export function Modal({ open, onClose, children }: {
 }
 
 /* ─── Confirm dialog ─── */
-export function ConfirmDialog({ open, title, message, confirmLabel = 'Xác nhận', danger, onConfirm, onCancel }: {
+export function ConfirmDialog({
+  open, title, message, confirmLabel = 'Xác nhận', danger, confirmDisabled, children, onConfirm, onCancel,
+}: {
   open: boolean
   title: string
   message: string
   confirmLabel?: string
   danger?: boolean
+  confirmDisabled?: boolean
+  children?: ReactNode
   onConfirm: () => void
   onCancel: () => void
 }) {
@@ -69,10 +82,13 @@ export function ConfirmDialog({ open, title, message, confirmLabel = 'Xác nhậ
     <Modal open={open} onClose={onCancel}>
       <h3 className="font-brand text-base font-medium mb-2" style={{ color: 'var(--ink)' }}>{title}</h3>
       <p className="text-sm mb-5" style={{ color: 'var(--mute)' }}>{message}</p>
+      {children}
       <div className="flex gap-2">
         <button className="btn-ghost flex-1" onClick={onCancel}>Hủy</button>
         <button
           className={`flex-1 py-3 rounded-xl font-semibold text-sm text-white ${danger ? 'bg-down' : 'bg-ink'}`}
+          disabled={confirmDisabled}
+          style={confirmDisabled ? { opacity: 0.45 } : undefined}
           onClick={onConfirm}
         >
           {confirmLabel}
@@ -102,14 +118,36 @@ export function CelebrationHost() {
   )
 }
 
-/* ─── Offline bar ─── */
+/* ─── Offline / sync bar ─── */
 export function OfflineBar() {
+  const navigate = useNavigate()
   const online = useApp((s) => s.online)
-  if (online) return null
+  const sync = useApp((s) => s.sync)
+  const poisonedRow = useLiveQuery(() => dbx.meta.get('sync:poisoned'), [])
+  const poisoned = Array.isArray(poisonedRow?.value) ? poisonedRow.value.length : 0
+  const badge = syncStatusBadge({
+    online,
+    pendingOps: sync.pendingOps,
+    status: sync.status,
+    poisoned,
+  })
+  if (!online) {
+    return (
+      <div className="text-center py-1.5 text-xs font-medium text-white bg-mute-2" style={{ zIndex: 50 }}>
+        Mất mạng — dữ liệu lưu trên máy, sẽ đồng bộ khi có mạng lại
+      </div>
+    )
+  }
+  if (!badge) return null
   return (
-    <div className="text-center py-1.5 text-xs font-medium text-white bg-mute-2" style={{ zIndex: 50 }}>
-      Mất mạng — dữ liệu lưu trên máy, sẽ đồng bộ khi có mạng lại
-    </div>
+    <button
+      type="button"
+      className={`w-full text-center py-1.5 text-xs font-medium text-white ${badge.tone === 'bad' ? 'bg-down' : 'bg-mute-2'}`}
+      style={{ zIndex: 50 }}
+      onClick={() => { if (badge.to) navigate(badge.to) }}
+    >
+      {badge.to ? `${badge.text} — mở Cài đặt` : badge.text}
+    </button>
   )
 }
 

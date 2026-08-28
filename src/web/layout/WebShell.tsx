@@ -84,15 +84,16 @@ export function WebShell() {
   const onBao = path.startsWith('/bao-cao')
   const onHe = path.startsWith('/cai-dat') || path.startsWith('/nguoi-dung') || path.startsWith('/tai-khoan') || path.startsWith('/thiet-bi') || path.startsWith('/may-in') || path.startsWith('/ghi-chu') || path.startsWith('/cong-cu')
 
+  const pendingBit = online && sync.pendingOps > 0 ? ` · ${sync.pendingOps}` : ''
   const syncLabel = !online
     ? 'Mất mạng'
     : sync.status === 'syncing'
-      ? 'Đang đồng bộ'
+      ? `Đang đồng bộ${pendingBit}`
       : sync.status === 'ok'
-        ? 'Đã đồng bộ'
+        ? `Đã đồng bộ${pendingBit}`
         : sync.status === 'error'
           ? 'Lỗi đồng bộ'
-          : 'Sẵn sàng'
+          : `Sẵn sàng${pendingBit}`
 
   function go(to: string) {
     setOpen(null)

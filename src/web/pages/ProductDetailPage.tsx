@@ -12,7 +12,10 @@ import { createBarcodeScan, type ScanHandle } from '@/core/browser/barcode'
 import { createScanSession } from '@/core/browser/barcodeSession'
 import { expiryText, fmt } from '@/core/format'
 import { logError } from '@/core/errorLogger'
+import { createConfirmGate } from '@/core/confirmGate'
 import { ConfirmDialog, Modal } from '@/shared/components'
+import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
+import { DRAFT_PRODUCT, clearDraft, loadFreshDraft, persistProductDraft, type ProductDraft } from '@/core/domain/drafts'
 import type { PriceLogEntry, Product } from '@/core/types'
 
 function PriceLogCard({ productId }: { productId: string }) {
@@ -66,9 +69,14 @@ export function WebProductDetailPage() {
     pack1n: '', pack1r: 0, pack2n: '', pack2r: 0,
   })
   const [confirmDel, setConfirmDel] = useState(false)
+  const [confirmStock, setConfirmStock] = useState(false)
   const [scanOpen, setScanOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const confirmGate = useRef(createConfirmGate())
   const dirtyRef = useRef(false)
+  const [dirty, setDirty] = useState(false)
+  const [draftHydrated, setDraftHydrated] = useState(false)
+  const leave = useUnsavedDraftGuard(dirty)
   const nameRef = useRef<HTMLInputElement>(null)
   const barcodeRef = useRef<HTMLInputElement>(null)
   const scanRef = useRef<ScanHandle | null>(null)
@@ -77,10 +85,35 @@ export function WebProductDetailPage() {
 
   const set = (k: string, v: string | number) => {
     dirtyRef.current = true
+    setDirty(true)
     setForm((f) => ({ ...f, [k]: v }))
   }
 
-  useEffect(() => { dirtyRef.current = false }, [id])
+  useEffect(() => {
+    dirtyRef.current = false
+    setDirty(false)
+    setDraftHydrated(false)
+    let cancelled = false
+    void loadFreshDraft<ProductDraft>(DRAFT_PRODUCT).then((d) => {
+      if (cancelled) return
+      const pid = isNew ? 'new' : (id || '')
+      if (d && d.productId === pid && d.form && typeof d.form === 'object') {
+        setForm((prev) => ({ ...prev, ...(d.form as typeof prev) }))
+        dirtyRef.current = true
+        setDirty(true)
+      }
+      setDraftHydrated(true)
+    }).catch(() => { if (!cancelled) setDraftHydrated(true) })
+    return () => { cancelled = true }
+  }, [id, isNew])
+
+  useEffect(() => {
+    if (!dirty || !draftHydrated) return
+    const tmr = window.setTimeout(() => {
+      void persistProductDraft({ isNew, productId: isNew ? 'new' : (id || ''), form })
+    }, 400)
+    return () => window.clearTimeout(tmr)
+  }, [form, dirty, draftHydrated, isNew, id])
 
   useEffect(() => {
     if (isNew) {
@@ -90,7 +123,7 @@ export function WebProductDetailPage() {
   }, [isNew, id])
 
   useEffect(() => {
-    if (product && !dirtyRef.current) {
+    if (product && !dirtyRef.current && draftHydrated) {
       setForm({
         name: product.name,
         cat: product.cat,
@@ -107,13 +140,16 @@ export function WebProductDetailPage() {
         pack2r: product.units[1]?.r || 0,
       })
     }
-  }, [product])
+  }, [product, draftHydrated])
 
   useEffect(() => () => { sessionRef.current?.cancel(); scanRef.current?.cancel() }, [])
 
   const margin = marginMeta(form.price, form.cost)
+  const stockDelta = !isNew && product && form.stock !== product.stock
+    ? form.stock - product.stock
+    : null
 
-  async function handleSave() {
+  async function persistProduct() {
     if (!form.name.trim()) {
       showToast('Nhập tên sản phẩm', 'bad')
       nameRef.current?.focus()
@@ -123,6 +159,7 @@ export function WebProductDetailPage() {
       form.pack1n.trim() && form.pack1r > 1 ? { n: form.pack1n.trim(), r: form.pack1r } : null,
       form.pack2n.trim() && form.pack2r > 1 ? { n: form.pack2n.trim(), r: form.pack2r } : null,
     ].filter(Boolean) as { n: string; r: number }[]
+    if (!confirmGate.current.tryEnter()) return
     setSaving(true)
     try {
       if (isNew) {
@@ -140,13 +177,24 @@ export function WebProductDetailPage() {
         })
         showToast('✓ Đã lưu', 'ok')
       }
+      leave.allowLeave()
+      await clearDraft(DRAFT_PRODUCT)
       navigate('/kho')
     } catch (e) {
       logError(e, 'product.save')
-      showToast('Lỗi khi lưu', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi lưu', 'bad')
     } finally {
       setSaving(false)
+      confirmGate.current.leave()
     }
+  }
+
+  async function handleSave() {
+    if (stockDelta != null) {
+      setConfirmStock(true)
+      return
+    }
+    await persistProduct()
   }
 
   async function handleDelete() {
@@ -156,7 +204,7 @@ export function WebProductDetailPage() {
       navigate('/kho')
     } catch (e) {
       logError(e, 'product.delete')
-      showToast('Lỗi khi xóa', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi xóa', 'bad')
     }
   }
 
@@ -192,7 +240,13 @@ export function WebProductDetailPage() {
     <div className="web-ph-actions">
       <button type="button" className="web-btn" onClick={() => navigate('/kho')}>Hàng hóa</button>
       {!isNew && (
-        <button type="button" className="web-btn danger" onClick={() => setConfirmDel(true)}>Xóa</button>
+        <button
+          type="button"
+          className="web-btn danger"
+          disabled={(product?.stock ?? 0) > 0}
+          title={(product?.stock ?? 0) > 0 ? 'Điều chỉnh tồn về 0 rồi mới xóa' : 'Xóa sản phẩm'}
+          onClick={() => (product?.stock ?? 0) <= 0 && setConfirmDel(true)}
+        >Xóa</button>
       )}
       <button type="button" className="web-btn pri" disabled={saving} onClick={() => void handleSave()}>
         {saving ? 'Đang lưu…' : isNew ? 'Thêm sản phẩm' : 'Lưu'}
@@ -461,14 +515,25 @@ export function WebProductDetailPage() {
       </Modal>
 
       <ConfirmDialog
+        open={confirmStock}
+        title="Đổi tồn kho?"
+        message={stockDelta == null
+          ? ''
+          : `Tồn trên máy này sẽ thành ${form.stock} ${form.unit || ''} (đổi ${stockDelta > 0 ? '+' : ''}${stockDelta}). Máy khác cộng/trừ ${stockDelta}, không ghi đè tồn họ.`}
+        confirmLabel="Lưu tồn"
+        onConfirm={() => { setConfirmStock(false); void persistProduct() }}
+        onCancel={() => setConfirmStock(false)}
+      />
+      <ConfirmDialog
         open={confirmDel}
         title="Xóa sản phẩm?"
-        message={`"${product?.name}" sẽ bị xóa khỏi kho. Lịch sử bán hàng vẫn giữ nguyên.`}
+        message={`"${product?.name}" sẽ bị xóa khỏi kho. Lịch sử bán hàng vẫn giữ nguyên. Còn tồn thì phải điều chỉnh về 0 trước.`}
         confirmLabel="Xóa"
         danger
         onConfirm={handleDelete}
         onCancel={() => setConfirmDel(false)}
       />
+      {leave.dialog}
     </div>
   )
 }

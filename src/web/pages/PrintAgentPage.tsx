@@ -14,7 +14,7 @@ import {
   getCloudIdToken, isCloudEmailPending, isFirebaseConfigured, waitCloudUser,
 } from '@/core/sync/firebase'
 import {
-  ackCloudPrintJob, claimCloudPrintJob, cloudPrintErrorMessage,
+  ackCloudPrintJob, claimCloudPrintJob, cloudPrintErrorMessage, retryPrintTicket,
   connectPrintAgentSocket, listCloudPrintJobs,
 } from '@/core/browser/printQueue'
 import { printTicketLocal } from '@/core/browser/print'
@@ -45,6 +45,7 @@ export function WebPrintAgentPage() {
   const stopRef = useRef(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
+  const [retryTicket, setRetryTicket] = useState<PrintTicket | null>(null)
 
   const drain = useCallback(async () => {
     if (busyDrain.current) return
@@ -60,6 +61,7 @@ export function WebPrintAgentPage() {
         const ok = printTicketLocal(ticket)
         await ackCloudPrintJob(job.id, ok ? 'done' : 'error', ok ? '' : 'in lỗi')
         if (ok) setPrinted((n) => n + 1)
+        else setRetryTicket(ticket)
       }
       if (!stopRef.current) {
         setPhase('ready')
@@ -219,6 +221,25 @@ export function WebPrintAgentPage() {
         {phase === 'error' && (
           <div className="web-card web-print-agent-panel">
             <button type="button" className="web-btn pri" onClick={() => window.location.reload()}>Thử lại</button>
+            {retryTicket && (
+              <button
+                type="button"
+                className="web-btn"
+                onClick={() => {
+                  void retryPrintTicket(retryTicket, printer, shop).then((r) => {
+                    if (r.via !== 'none') {
+                      showToast('Đã gửi in lại', 'ok')
+                      setPhase('ready')
+                    } else {
+                      showToast(r.error || 'In lại lỗi', 'bad')
+                    }
+                  }).catch((e) => {
+                    logError(e, 'print.retry')
+                    showToast(e instanceof Error ? e.message : 'In lại lỗi', 'bad')
+                  })
+                }}
+              >Thử in lại</button>
+            )}
           </div>
         )}
       </div>

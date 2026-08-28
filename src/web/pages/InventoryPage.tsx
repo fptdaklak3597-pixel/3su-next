@@ -118,6 +118,7 @@ export function WebInventoryPage() {
           <button className="web-btn" onClick={handleExport} disabled={products.length === 0}>Xuất Excel</button>
           <button className="web-btn" onClick={() => importRef.current?.click()}>Nhập Excel</button>
           <button className="web-btn" onClick={() => navigate('/nhap-hang')}>Nhập hàng</button>
+          <button className="web-btn" onClick={() => navigate('/bang-gia-si')}>Bảng giá sỉ</button>
           <button className="web-btn pri" onClick={() => navigate('/kho/new')}>+ Thêm mới</button>
         </div>
         <input

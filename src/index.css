@@ -459,6 +459,7 @@
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .toast.bad { background: var(--down); color: #fff; }
   .toast.ok { background: var(--up); color: #fff; }
+  .toast.warn { background: var(--warn); color: #fff; }
 
   /* ─── Modal / bottom sheet ─── */
   .sheet-overlay {
@@ -471,6 +472,10 @@
     align-items: flex-end;
     justify-content: center;
     animation: fadeIn .2s ease both;
+  }
+  /* Tờ in sau chốt phải đè hiệu ứng “Hay lắm” (z-index 200), không thì nút In hóa đơn bị che. */
+  .sheet-overlay--print {
+    z-index: 250;
   }
   .sheet-panel {
     width: 100%;
@@ -1159,11 +1164,21 @@
 }
 
 /* ─── AI Chat Dock ─── */
+.ai-dock-anchor {
+  position: relative;
+  z-index: 40;
+  height: 0;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+.ai-dock-anchor:has(.ai-dock) {
+  z-index: 110;
+}
 .ai-fab {
   position: fixed;
   right: 16px;
   bottom: calc(16px + var(--safe-bot));
-  z-index: 900;
+  z-index: 40;
   width: 52px;
   height: 52px;
   border-radius: 999px;
@@ -1188,6 +1203,17 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+/* Neo ngay trên tab bar — không đè Thêm / Kho. Màn POS không có tab thì vẫn góc dưới. */
+.ai-dock-anchor .ai-fab,
+.ai-dock-anchor .ai-dock {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  pointer-events: auto;
+}
+.ai-dock-anchor .ai-dock {
+  max-height: min(520px, calc(100dvh - 160px));
 }
 .ai-dock-head {
   display: flex;

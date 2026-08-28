@@ -19,18 +19,16 @@ import { forecastStock } from '@/core/domain/inventory'
 import { fmt, localDay, today, yesterday, daysToExpiry, escapeHtml, vnDaysAgo, vnToday } from '@/core/format'
 import type { Product, Sale, Customer } from '@/core/types'
 import { PrintStatusLine } from '@/shared/PrintStatus'
-import { useDisplayMode, useInstallPrompt } from '@/shared/pwa'
+import { InstallAppCard } from '@/shared/InstallAppCard'
 import { WebSeedSheet } from '@/web/components/WebSeedSheet'
+import { RestorePausedBanner } from '@/shared/RestorePausedBanner'
+import { ShopHealthBanners } from '@/shared/ShopHealthBanners'
 
 export function WebHomePage() {
   const navigate = useNavigate()
   const settings = useApp((s) => s.settings)
   const shop = useApp((s) => s.shop)
   const [seedOpen, setSeedOpen] = useState(false)
-  const { canInstall, installed, promptInstall } = useInstallPrompt()
-  const displayMode = useDisplayMode()
-  const showInstall = displayMode !== 'standalone' && !installed
-
   const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(13), vnToday()), [], [] as Sale[])
   const customers = useLiveQuery(() => dbx.customers.filter((c) => !c.deleted).toArray(), [], [] as Customer[])
   const products = useLiveQuery(() => dbx.products.filter((p) => !p.deleted).toArray(), [], [] as Product[])
@@ -76,6 +74,8 @@ export function WebHomePage() {
         
         {/* ─── CỘT TRÁI (NỘI DUNG CHÍNH - 68%) ─── */}
         <div className="web-dash-main">
+          <RestorePausedBanner />
+          <ShopHealthBanners />
           
           {/* Onboarding khi cửa hàng mới chưa có hàng */}
           {emptyShop && (
@@ -192,17 +192,7 @@ export function WebHomePage() {
         {/* ─── CỘT PHẢI (WIDGETS & TIỆN ÍCH - 32%) ─── */}
         <div className="web-dash-side">
           
-          {showInstall && (
-            <div className="web-card" style={{ marginBottom: 16 }}>
-              <h3 style={{ margin: '0 0 4px', fontSize: 13.5 }}>Ghim ra màn hình</h3>
-              <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--kv-muted)', lineHeight: 1.4 }}>
-                {canInstall ? 'Cài như phần mềm — lần sau mở từ desktop.' : 'Mở bằng Chrome rồi thêm ra màn hình chính.'}
-              </p>
-              <button type="button" className="web-btn pri" disabled={!canInstall} onClick={() => void promptInstall()}>
-                Cài đặt ứng dụng
-              </button>
-            </div>
-          )}
+          <InstallAppCard variant="web" />
 
           {/* Widget Máy in — giống mockup */}
           <div className="web-card" style={{ marginBottom: 16 }}>

@@ -15,11 +15,12 @@ import { dbx, getMeta, setMeta } from '../db'
 import type { SyncOp, OpType, SyncState } from '../types'
 import { createHlcClock, type HlcClock } from './hlc'
 import { getThisDeviceId } from '../domain/devices'
-import { applyOps, recordPoisonedOp } from './apply'
+import { applyOps, expireStaleBlockedOps, getBlockedOps, recordPoisonedOp, replayBlockedOps } from './apply'
 import { exportSnapshot, importSnapshot } from './snapshot'
 import { decideFlush, type SyncMode } from './mode'
 import { nullTransport, type SyncTransport, type ServerMsg } from './transport'
 import { logError } from '../errorLogger'
+import { isCachedLicenseFresh, isLicenseBlocked, loadCachedLicense } from './license'
 import { setPrintAgentOnline } from '../browser/printPresence'
 import { assertNoLegacyMoneyOp } from '../authoritative/genesis'
 import {
@@ -264,6 +265,14 @@ async function pushOutboxBatch(batch: SyncOp[]): Promise<void> {
 async function runFlushOnce(): Promise<void> {
   if (await flushBlocked()) { setState({ status: 'offline' }); return }
   if (!navigator.onLine) { setState({ status: 'offline' }); return }
+  const shopId = await getMeta<string>('cloud:shopId', '')
+  if (shopId) {
+    const lic = await loadCachedLicense()
+    if (!lic || isLicenseBlocked(lic) || !(await isCachedLicenseFresh())) {
+      setState({ status: 'offline', error: 'Cửa hàng đã bị khóa hoặc chưa có giấy phép' })
+      return
+    }
+  }
   setState({ status: 'syncing', error: null })
   try {
     const outbox = await dbx.syncQueue.orderBy('createdAt').toArray()
@@ -334,7 +343,13 @@ export function lastSeqAfterSnapshot(_oldLastSeq: number, upToSeq: number): numb
 }
 
 /** Kéo snapshot cloud. force=true ghi đè máy này (hỏi trước ở UI). */
+let snapshotImportDepth = 0
+
 export async function pullCloudSnapshot(force = false): Promise<boolean> {
+  if (force) {
+    const pending = await dbx.syncQueue.count()
+    if (pending > 0) throw new Error('Còn lệnh chờ đồng bộ — đẩy lên cloud xong rồi mới kéo bản sao')
+  }
   if (!force) {
     const lastSeq = await getMeta<number>('sync:lastSeq', 0)
     if (lastSeq > 0) return false
@@ -348,10 +363,16 @@ export async function pullCloudSnapshot(force = false): Promise<boolean> {
     await getMeta<number>('sync:lastSeq', 0),
     got.upToSeq,
   )
-  await importSnapshot(got.snapshot)
-  await setMeta('sync:lastSeq', snapshotSeq)
-  await setMeta('sync:lastSnapshotSeq', snapshotSeq)
-  return true
+  snapshotImportDepth += 1
+  try {
+    await importSnapshot(got.snapshot)
+    await setMeta('sync:lastSeq', snapshotSeq)
+    await setMeta('sync:lastSnapshotSeq', snapshotSeq)
+    await pullSince()
+    return true
+  } finally {
+    snapshotImportDepth -= 1
+  }
 }
 
 /** Đẩy bản sao máy này lên cloud (nút Thiết bị). */
@@ -361,6 +382,36 @@ export async function pushLocalSnapshot(): Promise<void> {
   await transport.pushSnapshot(exp.snapshot, lastSeq)
   await setMeta('sync:lastSnapshotAt', Date.now())
   await setMeta('sync:lastSnapshotSeq', lastSeq)
+}
+
+
+function opSeq(op: SyncOp | undefined): number | undefined {
+  const seq = (op as SyncOp & { seq?: number } | undefined)?.seq
+  return typeof seq === 'number' && Number.isSafeInteger(seq) ? seq : undefined
+}
+
+/** Cursor chỉ vượt op đã apply/poison. Không nhảy qua op đang blocked (kể cả trang look-ahead). */
+async function applyCursorAfterPage(appliedSeq: number, ops: SyncOp[]): Promise<number> {
+  const blocked = await getBlockedOps()
+  const blockedIds = new Set(blocked.map((b) => b.id))
+  const blockedAhead = blocked
+    .map((b) => opSeq(b.op))
+    .filter((seq): seq is number => seq !== undefined && seq > appliedSeq)
+  const stopBefore = blockedAhead.length ? Math.min(...blockedAhead) : Infinity
+
+  const sequenced = ops
+    .map((op) => ({ op, seq: opSeq(op) }))
+    .filter((row): row is { op: SyncOp; seq: number } => row.seq !== undefined)
+    .sort((a, b) => a.seq - b.seq)
+
+  let cursor = appliedSeq
+  for (const { op, seq } of sequenced) {
+    if (seq <= cursor) continue
+    if (blockedIds.has(op.id) || seq >= stopBefore) return cursor
+    if (!(await dbx.appliedOps.get(op.id))) return cursor
+    cursor = seq
+  }
+  return cursor < stopBefore ? cursor : Math.max(appliedSeq, stopBefore - 1)
 }
 
 function pulledUpTo(since: number, ops: SyncOp[], cloudSeq: number): number {
@@ -398,7 +449,9 @@ async function pullSince(): Promise<void> {
       throw new Error(`Đồng bộ vượt quá ${MAX_PULL_PAGES} trang trong một lượt`)
     }
 
-    const since = await getMeta<number>('sync:lastSeq', 0)
+    const appliedSeq = await getMeta<number>('sync:lastSeq', 0)
+    const lookAhead = await getMeta<number>('sync:lookAheadSeq', 0)
+    const since = lookAhead > appliedSeq ? lookAhead : appliedSeq
     const res = await transport.pullOps(since, PULL_PAGE)
     if (!res || !Array.isArray(res.ops) || !Number.isSafeInteger(res.seq) || res.seq < 0) {
       throw new Error('Phản hồi pull không hợp lệ')
@@ -407,6 +460,9 @@ async function pullSince(): Promise<void> {
       throw new Error(`Máy chủ trả quá giới hạn ${PULL_PAGE} op`)
     }
     if (needsSnapshotCatchUp(since, res.minSeq)) {
+      if (snapshotImportDepth > 0) {
+        throw new Error('Snapshot catch-up lặp trong lúc đang nhập bản sao')
+      }
       await pullCloudSnapshot(true)
       continue
     }
@@ -418,15 +474,46 @@ async function pullSince(): Promise<void> {
     }
 
     if (res.ops.length > 0) await applyOps(res.ops)
-    const upTo = pulledUpTo(since, res.ops, res.seq)
-    if (fullPage && upTo <= since) {
+    await replayBlockedOps()
+    await expireStaleBlockedOps()
+
+    const applyCursor = await applyCursorAfterPage(appliedSeq, res.ops)
+    const pageMax = pulledUpTo(since, res.ops, res.seq)
+    const blocked = await getBlockedOps()
+    const blockedOnPage = res.ops.some((op) => blocked.some((b) => b.id === op.id))
+
+    if (fullPage && pageMax <= since && !blockedOnPage) {
       throw new Error('Đồng bộ không tiến cursor; đã dừng để tránh vòng lặp vô hạn')
     }
-    if (upTo > since) await setMeta('sync:lastSeq', upTo)
+    const blockedAhead = blocked
+      .map((b) => opSeq(b.op))
+      .filter((seq): seq is number => seq !== undefined && seq > appliedSeq && (lookAhead === 0 || seq <= Math.max(lookAhead, pageMax)))
+    if (blockedOnPage) {
+      if (applyCursor > appliedSeq) await setMeta('sync:lastSeq', applyCursor)
+    } else if (pageMax > since) {
+      await setMeta('sync:lastSeq', pageMax)
+    }
+    if (blockedAhead.length === 0 && lookAhead > appliedSeq) {
+      await setMeta('sync:lastSeq', Math.max(applyCursor, lookAhead, await getMeta<number>('sync:lastSeq', 0)))
+      await setMeta('sync:lookAheadSeq', 0)
+    } else if (applyCursor >= lookAhead) {
+      await setMeta('sync:lookAheadSeq', 0)
+    }
     last = res
     await ingestAppliedOpsGcWatermark(res.appliedGcBeforeMs)
-    if (!fullPage) break
 
+    const cloudHasMore = fullPage || (Number.isSafeInteger(res.seq) && res.seq > pageMax)
+    if (blockedOnPage && cloudHasMore && pageMax > since) {
+      await setMeta('sync:lookAheadSeq', pageMax)
+      previousFullPage = fingerprint
+      continue
+    }
+
+    if (!fullPage) break
+    if (blockedOnPage && applyCursor <= appliedSeq) {
+      setState({ status: 'ok', error: null })
+      break
+    }
     previousFullPage = fingerprint
   }
 

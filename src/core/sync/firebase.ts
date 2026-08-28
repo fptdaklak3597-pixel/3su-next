@@ -225,11 +225,13 @@ async function doCompletePendingSignIn(emailOverride?: string): Promise<User | n
     }
   }
   if (hasPendingRedirect()) {
+    const userStarted = isGoogleRedirectPending()
     try {
       const redirect = await getRedirectResult(a)
       if (redirect?.user) return redirect.user
     } catch (e) {
-      rememberAuthError(e)
+      // State Firebase sót từ lần iframe bị chặn — đừng biến mọi lần F5 thành lỗi đỏ.
+      if (userStarted) rememberAuthError(e)
     }
   }
   return a.currentUser

@@ -3,16 +3,18 @@
  * Nhịp bố cục lấy từ claude.ai/login; thương hiệu và copy là 3SU.
  */
 import { useApp } from '@/core/store'
-import { isFirebaseConfigured } from '@/core/sync/firebase'
+import { cloudSignOut, isFirebaseConfigured } from '@/core/sync/firebase'
 import { apiBase } from '@/core/sync/cloud'
 import { AuthStage } from './AuthStageArt'
 import { WebCloudAuth } from './WebCloudAuth'
 import { CloudShopJoin } from './CloudShopJoin'
+import { CloudVerifyEmail } from './CloudVerifyEmail'
+import { markCloudNeedShop, markCloudShopEntered } from './useCloudSession'
 
-export function AuthBootSplash() {
+export function AuthBootSplash({ message }: { message?: string } = {}) {
   return (
     <div className="auth-boot" role="status">
-      <p>Đang mở cửa hàng…</p>
+      <p>{message ?? 'Đang mở cửa hàng…'}</p>
     </div>
   )
 }
@@ -58,6 +60,33 @@ export function CloudShopJoinScreen() {
             <CloudShopJoin
               onReady={() => showToast('Đã vào cửa hàng', 'ok')}
               onError={(msg) => showToast(msg, 'bad')}
+            />
+          </div>
+        </div>
+        <AuthStage />
+      </div>
+    </div>
+  )
+}
+
+
+export function CloudVerifyEmailScreen() {
+  const showToast = useApp((s) => s.showToast)
+  return (
+    <div className="auth-screen">
+      <div className="auth-logo">3SU</div>
+      <div className="auth-layout">
+        <div className="auth-col">
+          <h1 className="auth-display">Bán hàng chưa bao giờ<br />dễ đến thế</h1>
+          <div className="auth-well">
+            <CloudVerifyEmail
+              onReady={(shopId) => {
+                if (shopId) markCloudShopEntered()
+                else markCloudNeedShop()
+              }}
+              onError={(msg) => showToast(msg, 'bad')}
+              onInfo={(msg) => showToast(msg, 'ok')}
+              onBack={() => { void cloudSignOut() }}
             />
           </div>
         </div>

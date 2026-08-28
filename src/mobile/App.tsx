@@ -3,10 +3,15 @@
  * Root component: boot DB, sync, theme, routing.
  */
 import { lazy, Suspense, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import {
+  createBrowserRouter, createRoutesFromElements, RouterProvider,
+  Route, Navigate, Outlet,
+} from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp } from '@/core/store'
 import { dbx, getSettings, getShop, getCurrentUser, getTrial } from '@/core/db'
+import { hydrateCartDraft, useCartDraftPersistence } from '@/shared/useCartDraftPersistence'
+import { useDraftLeaveGuard } from '@/shared/useDraftLeaveGuard'
 import { onSyncState, startSyncLoop } from '@/core/sync/engine'
 import { useOnline } from '@/shared/pwa'
 import { ToastHost, CelebrationHost, OfflineBar, SwUpdateBanner } from '@/shared/components'
@@ -14,7 +19,7 @@ import { PermissionRoute } from '@/shared/PermissionRoute'
 import { MobileShell } from './layout/MobileShell'
 import { LoginPage } from './pages/LoginPage'
 import { useCloudSession } from '@/shared/useCloudSession'
-import { AuthBootSplash, CloudAuthScreen, CloudShopJoinScreen } from '@/shared/CloudAuthScreen'
+import { AuthBootSplash, CloudAuthScreen, CloudShopJoinScreen, CloudVerifyEmailScreen } from '@/shared/CloudAuthScreen'
 import { ShopLicenseScreen, useShopLicense } from '@/shared/ShopLicenseGate'
 import { isLicenseBlocked } from '@/core/sync/license'
 import { useShopUsageTracker } from '@/core/sync/usageTracker'
@@ -36,15 +41,17 @@ const StocktakePage = lazy(() => import('./pages/StocktakePage').then((m) => ({ 
 const SuppliersPage = lazy(() => import('./pages/SuppliersPage').then((m) => ({ default: m.SuppliersPage })))
 const UsersPage = lazy(() => import('./pages/UsersPage').then((m) => ({ default: m.UsersPage })))
 const DevicesPage = lazy(() => import('./pages/DevicesPage').then((m) => ({ default: m.DevicesPage })))
+const ReconcilePage = lazy(() => import('@/web/pages/ReconcilePage').then((m) => ({ default: m.WebReconcilePage })))
 const InvoicesPage = lazy(() => import('./pages/InvoicesPage').then((m) => ({ default: m.InvoicesPage })))
 const ToolsPage = lazy(() => import('./pages/ToolsPage').then((m) => ({ default: m.ToolsPage })))
 const MorePage = lazy(() => import('./pages/MorePage').then((m) => ({ default: m.MorePage })))
+const WholesalePricesPage = lazy(() => import('./pages/WholesalePricesPage').then((m) => ({ default: m.WholesalePricesPage })))
 
 function RouteFallback() {
   return <div className="p-6 text-sm" style={{ color: 'var(--mute)' }}>Đang tải…</div>
 }
 
-export function MobileApp() {
+function MobileRoot() {
   const setReady = useApp((s) => s.setReady)
   const setSettings = useApp((s) => s.setSettings)
   const setShop = useApp((s) => s.setShop)
@@ -57,6 +64,9 @@ export function MobileApp() {
   const setTheme = useApp((s) => s.setTheme)
   const largeText = useApp((s) => s.settings.largeText)
   const online = useOnline()
+  const cartDraftReady = useCartDraftPersistence()
+  const cart = useApp((s) => s.cart)
+  useDraftLeaveGuard(cart.length > 0)
 
   useEffect(() => {
     document.documentElement.toggleAttribute('data-font-large', largeText === true)
@@ -75,9 +85,11 @@ export function MobileApp() {
         setUser(user)
         setTrial(trial)
         setTheme(settings.theme)
+        try { await hydrateCartDraft() } catch { /* nháp hỏng không chặn boot */ }
       } catch (e) {
         console.error('Boot failed', e)
       } finally {
+        cartDraftReady.current = true
         if (!cancelled) setReady(true)
       }
     }
@@ -115,80 +127,92 @@ export function MobileApp() {
   const needsShop = cloud === 'need-shop' && !uiPreview
   const licenseOn = cloud === 'in' && !uiPreview
   const license = useShopLicense(licenseOn)
-  const needsLicense = licenseOn && license.ready && isLicenseBlocked(license.value)
+  const needsLicense = licenseOn && license.ready && (!license.value || isLicenseBlocked(license.value))
   useShopUsageTracker(licenseOn && !needsLicense)
   const booting = !ready || (!uiPreview && cloud === 'loading') || (licenseOn && !license.ready)
 
   return (
-    <BrowserRouter>
-      <div className="app-shell">
-        <OfflineBar />
-        <SwUpdateBanner />
-        {booting ? (
-          <AuthBootSplash />
-        ) : needsCloud ? (
-          <CloudAuthScreen />
-        ) : needsShop ? (
-          <CloudShopJoinScreen />
-        ) : needsLicense && license.value ? (
-          <ShopLicenseScreen license={license.value} />
-        ) : needsStaff ? (
-          <LoginPage />
-        ) : (
-          <Suspense fallback={<RouteFallback />}>
-            <Routes>
-              <Route element={<MobileShell />}>
-                <Route path="/" element={<HomePage />} />
-                <Route path="/them" element={<MorePage />} />
-
-                <Route element={<PermissionRoute permission="sell" />}>
-                  <Route path="/ban-hang" element={<SalePage />} />
-                  <Route path="/thanh-toan" element={<CheckoutPage />} />
-                  <Route path="/don-hang" element={<OrdersPage />} />
-                  <Route path="/don-hang/:id" element={<OrderDetailPage />} />
-                  <Route path="/khach-hang" element={<CustomersPage />} />
-                </Route>
-
-                <Route element={<PermissionRoute permission="inventory" />}>
-                  <Route path="/kho" element={<InventoryPage />} />
-                  <Route path="/kho/:id" element={<ProductDetailPage />} />
-                  <Route path="/nhap-hang" element={<GoodsReceiptPage />} />
-                  <Route path="/nhap-hang/hoa-don" element={<InvoiceImportPage />} />
-                  <Route path="/don-mua" element={<PurchaseOrdersPage />} />
-                  <Route path="/kiem-ke" element={<StocktakePage />} />
-                  <Route path="/cong-cu" element={<ToolsPage />} />
-                </Route>
-
-                <Route element={<PermissionRoute permission="reports" />}>
-                  <Route path="/bao-cao" element={<ReportsPage />} />
-                </Route>
-
-                <Route element={<PermissionRoute permission="settings" />}>
-                  <Route path="/cai-dat" element={<SettingsPage />} />
-                  <Route path="/thiet-bi" element={<DevicesPage />} />
-                </Route>
-
-                <Route element={<PermissionRoute permission="suppliers" />}>
-                  <Route path="/nha-cung-cap" element={<SuppliersPage />} />
-                </Route>
-
-                <Route element={<PermissionRoute permission="users" />}>
-                  <Route path="/nguoi-dung" element={<UsersPage />} />
-                </Route>
-
-                <Route element={<PermissionRoute permission="invoices" />}>
-                  <Route path="/hoa-don" element={<InvoicesPage />} />
-                </Route>
-
-                <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
-              </Route>
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
-        )}
-        <ToastHost />
-        <CelebrationHost />
-      </div>
-    </BrowserRouter>
+    <div className="app-shell">
+      <OfflineBar />
+      <SwUpdateBanner />
+      {booting ? (
+        <AuthBootSplash message={licenseOn && !license.ready ? 'Đang kiểm tra giấy phép…' : undefined} />
+      ) : needsCloud ? (
+        <CloudAuthScreen />
+      ) : cloud === 'verify' && !uiPreview ? (
+        <CloudVerifyEmailScreen />
+      ) : needsShop ? (
+        <CloudShopJoinScreen />
+      ) : needsLicense ? (
+        <ShopLicenseScreen license={license.value} />
+      ) : needsStaff ? (
+        <LoginPage />
+      ) : (
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
+      )}
+      <ToastHost />
+      <CelebrationHost />
+    </div>
   )
+}
+
+const mobileRouter = createBrowserRouter(
+  createRoutesFromElements(
+    <Route element={<MobileRoot />}>
+      <Route element={<MobileShell />}>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/them" element={<MorePage />} />
+
+        <Route element={<PermissionRoute permission="sell" />}>
+          <Route path="/ban-hang" element={<SalePage />} />
+          <Route path="/thanh-toan" element={<CheckoutPage />} />
+          <Route path="/don-hang" element={<OrdersPage />} />
+          <Route path="/don-hang/:id" element={<OrderDetailPage />} />
+          <Route path="/khach-hang" element={<CustomersPage />} />
+        </Route>
+
+        <Route element={<PermissionRoute permission="inventory" />}>
+          <Route path="/kho" element={<InventoryPage />} />
+          <Route path="/kho/:id" element={<ProductDetailPage />} />
+          <Route path="/bang-gia-si" element={<WholesalePricesPage />} />
+          <Route path="/nhap-hang" element={<GoodsReceiptPage />} />
+          <Route path="/nhap-hang/hoa-don" element={<InvoiceImportPage />} />
+          <Route path="/don-mua" element={<PurchaseOrdersPage />} />
+          <Route path="/kiem-ke" element={<StocktakePage />} />
+          <Route path="/cong-cu" element={<ToolsPage />} />
+        </Route>
+
+        <Route element={<PermissionRoute permission="reports" />}>
+          <Route path="/bao-cao" element={<ReportsPage />} />
+          <Route path="/doi-soat" element={<ReconcilePage />} />
+        </Route>
+
+        <Route element={<PermissionRoute permission="settings" />}>
+          <Route path="/cai-dat" element={<SettingsPage />} />
+          <Route path="/thiet-bi" element={<DevicesPage />} />
+        </Route>
+
+        <Route element={<PermissionRoute permission="suppliers" />}>
+          <Route path="/nha-cung-cap" element={<SuppliersPage />} />
+        </Route>
+
+        <Route element={<PermissionRoute permission="users" />}>
+          <Route path="/nguoi-dung" element={<UsersPage />} />
+        </Route>
+
+        <Route element={<PermissionRoute permission="invoices" />}>
+          <Route path="/hoa-don" element={<InvoicesPage />} />
+        </Route>
+
+        <Route path="/chuyen-tu-3su-cu" element={<Navigate to="/cai-dat" replace />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Route>,
+  ),
+)
+
+export function MobileApp() {
+  return <RouterProvider router={mobileRouter} />
 }

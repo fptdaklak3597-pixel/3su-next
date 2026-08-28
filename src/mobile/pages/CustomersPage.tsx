@@ -2,13 +2,14 @@
  * 3SU Next — Khách hàng & Công nợ
  * Port từ 15a-customers.js: CRUD, debt tracking, payment history.
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, matchesSearch } from '@/core/format'
 import { logError } from '@/core/errorLogger'
-import { addCustomer, deleteCustomer, payDebt } from '@/core/domain/customers'
+import { createConfirmGate } from '@/core/confirmGate'
+import { addCustomer, deleteCustomer, payDebt, updateCustomer } from '@/core/domain/customers'
 import { exportCustomerDebtXlsx } from '@/core/domain/reports'
 import { payQrSrc } from '@/core/domain/vietqr'
 import { ConfirmDialog, Sheet } from '@/shared/components'
@@ -20,10 +21,14 @@ export function CustomersPage() {
   const settings = useApp((s) => s.settings)
   const [query, setQuery] = useState('')
   const [showAdd, setShowAdd] = useState(false)
+  const [editFor, setEditFor] = useState<Customer | null>(null)
   const [payFor, setPayFor] = useState<Customer | null>(null)
   const [delTarget, setDelTarget] = useState<Customer | null>(null)
-  const [form, setForm] = useState({ name: '', phone: '', note: '' })
+  const [form, setForm] = useState({ name: '', phone: '', note: '', wholesale: false })
+  const [editForm, setEditForm] = useState({ name: '', phone: '', note: '', wholesale: false })
   const [payAmount, setPayAmount] = useState(0)
+  const [processing, setProcessing] = useState(false)
+  const confirmGate = useRef(createConfirmGate())
 
   const customers = useLiveQuery(
     () => dbx.customers.filter((c) => !c.deleted).toArray(),
@@ -42,13 +47,30 @@ export function CustomersPage() {
   async function handleAdd() {
     if (!form.name.trim()) { showToast('Nhập tên khách', 'bad'); return }
     try {
-      await addCustomer({ name: form.name.trim(), phone: form.phone.trim(), note: form.note.trim(), wholesale: false })
+      await addCustomer({ name: form.name.trim(), phone: form.phone.trim(), note: form.note.trim(), wholesale: form.wholesale })
       showToast('✓ Đã thêm khách hàng', 'ok')
       setShowAdd(false)
-      setForm({ name: '', phone: '', note: '' })
+      setForm({ name: '', phone: '', note: '', wholesale: false })
     } catch (e) {
       logError(e, 'customer.add')
       showToast('Lỗi khi thêm', 'bad')
+    }
+  }
+
+  async function handleEdit() {
+    if (!editFor || !editForm.name.trim()) { showToast('Nhập tên khách', 'bad'); return }
+    try {
+      await updateCustomer(editFor.id, {
+        name: editForm.name.trim(),
+        phone: editForm.phone.trim(),
+        note: editForm.note.trim(),
+        wholesale: editForm.wholesale,
+      })
+      showToast('✓ Đã lưu khách', 'ok')
+      setEditFor(null)
+    } catch (e) {
+      logError(e, 'customer.edit')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi sửa', 'bad')
     }
   }
 
@@ -60,12 +82,14 @@ export function CustomersPage() {
       setDelTarget(null)
     } catch (e) {
       logError(e, 'customer.delete')
-      showToast('Lỗi khi xóa', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi xóa', 'bad')
     }
   }
 
   async function handlePay() {
     if (!payFor || payAmount <= 0) return
+    if (!confirmGate.current.tryEnter()) return
+    setProcessing(true)
     try {
       const applied = await payDebt(payFor.id, payAmount)
       showToast(`✓ Đã thu ${fmt(applied)}`, 'ok')
@@ -74,6 +98,9 @@ export function CustomersPage() {
     } catch (e) {
       logError(e, 'customer.pay')
       showToast(e instanceof Error ? e.message : 'Lỗi khi thu tiền', 'bad')
+    } finally {
+      setProcessing(false)
+      confirmGate.current.leave()
     }
   }
 
@@ -110,7 +137,10 @@ export function CustomersPage() {
                 {c.name.charAt(0).toUpperCase()}
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate" style={{ color: 'var(--ink)' }}>{c.name}</div>
+                <div className="text-sm font-medium truncate" style={{ color: 'var(--ink)' }}>
+                  {c.name}
+                  {c.wholesale ? <span className="text-[10px] ml-1 px-1.5 py-0.5 rounded" style={{ background: 'var(--paper)', color: 'var(--mute)' }}>Sỉ</span> : null}
+                </div>
                 <div className="text-[11px]" style={{ color: 'var(--mute)' }}>
                   {c.phone || '—'} · {c.orderCount} đơn
                 </div>
@@ -125,7 +155,21 @@ export function CustomersPage() {
                 )}
               </div>
             </button>
-            <button className="ml-2 p-1.5" onClick={() => setDelTarget(c)} aria-label="Xóa khách" style={{ color: 'var(--mute-2)' }}>
+            <button
+              className="ml-2 text-xs px-2"
+              onClick={() => {
+                setEditFor(c)
+                setEditForm({ name: c.name, phone: c.phone || '', note: c.note || '', wholesale: !!c.wholesale })
+              }}
+            >Sửa</button>
+            <button
+              className="ml-2 p-1.5"
+              onClick={() => c.debt <= 0 && setDelTarget(c)}
+              disabled={c.debt > 0}
+              aria-label={c.debt > 0 ? 'Còn nợ, không xóa được' : 'Xóa khách'}
+              title={c.debt > 0 ? 'Thu hết nợ rồi mới xóa được' : 'Xóa khách'}
+              style={{ color: 'var(--mute-2)', opacity: c.debt > 0 ? 0.4 : 1 }}
+            >
               <Trash2 size={15} />
             </button>
           </div>
@@ -141,7 +185,24 @@ export function CustomersPage() {
           <input className="field-input" placeholder="Tên khách *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <input className="field-input" placeholder="Số điện thoại" type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           <input className="field-input" placeholder="Ghi chú" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+          <label className="flex items-center gap-2 text-sm py-1">
+            <input type="checkbox" checked={form.wholesale} onChange={(e) => setForm({ ...form, wholesale: e.target.checked })} />
+            Khách mua giá sỉ
+          </label>
           <button className="btn-cta mt-2" onClick={handleAdd}>Thêm khách hàng</button>
+        </div>
+      </Sheet>
+
+      <Sheet open={!!editFor} onClose={() => setEditFor(null)} title="Sửa khách hàng">
+        <div className="flex flex-col gap-3">
+          <input className="field-input" placeholder="Tên khách *" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+          <input className="field-input" placeholder="Số điện thoại" type="tel" value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
+          <input className="field-input" placeholder="Ghi chú" value={editForm.note} onChange={(e) => setEditForm({ ...editForm, note: e.target.value })} />
+          <label className="flex items-center gap-2 text-sm py-1">
+            <input type="checkbox" checked={editForm.wholesale} onChange={(e) => setEditForm({ ...editForm, wholesale: e.target.checked })} />
+            Khách mua giá sỉ
+          </label>
+          <button className="btn-cta mt-2" onClick={() => void handleEdit()}>Lưu</button>
         </div>
       </Sheet>
 
@@ -169,7 +230,7 @@ export function CustomersPage() {
             <img src={payQrSrc(settings, payAmount, '3SU thu no')!} alt="VietQR thu nợ" className="mx-auto max-w-[160px] rounded-lg" />
           </div>
         )}
-        <button className="btn-cta" onClick={handlePay} disabled={!payFor || payAmount <= 0 || payAmount > payFor.debt}>
+        <button className="btn-cta" onClick={handlePay} disabled={!payFor || processing || payAmount <= 0 || payAmount > payFor.debt}>
           Xác nhận thu {payAmount > 0 ? fmt(payAmount) : ''}
         </button>
       </Sheet>

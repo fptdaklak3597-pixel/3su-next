@@ -7,6 +7,7 @@ import {
   getPoisonedOps,
   SyncDependencyError,
 } from '@/core/sync/apply'
+import { MAX_STOCK_QTY_DELTA } from '@/core/domain/inventory'
 import { hlcString } from '@/core/sync/hlc'
 import type {
   Product, Customer, Sale, SyncOp, DebtPayment, GoodsReceipt,
@@ -69,6 +70,26 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect((await dbx.products.get('p1'))!.stock).toBe(7)
   })
 
+  it('stock.adjust delta quá lớn → poison, không đổi tồn', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    const op = remoteOp('stock.adjust', { productId: 'p1', delta: MAX_STOCK_QTY_DELTA + 1, reason: 'edit' })
+    expect(await applyOps([op])).toBe(0)
+    expect((await dbx.products.get('p1'))!.stock).toBe(10)
+    expect((await getPoisonedOps()).some((p) => /lệch tồn/i.test(p.message))).toBe(true)
+  })
+
+  it('stocktake.commit diff quá lớn → poison, không đổi tồn', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    const op = remoteOp('stocktake.commit', {
+      id: 'st_huge', date: '2026-08-27',
+      rows: [{ productId: 'p1', name: 'SP', system: 10, actual: 10 + MAX_STOCK_QTY_DELTA + 1, diff: MAX_STOCK_QTY_DELTA + 1 }],
+      note: '', ts: Date.now(),
+    })
+    expect(await applyOps([op])).toBe(0)
+    expect((await dbx.products.get('p1'))!.stock).toBe(10)
+    expect((await getPoisonedOps()).some((p) => /lệch tồn/i.test(p.message))).toBe(true)
+  })
+
   it('sale.commit remote: thêm đơn + trừ kho theo items + cộng nợ/totalSpent khách', async () => {
     await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
     await dbx.customers.put(mkCustomer({ id: 'c1', debt: 0, totalSpent: 0, orderCount: 0 }))
@@ -85,6 +106,24 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect(c.totalSpent).toBe(20000)
     expect(c.orderCount).toBe(1)
     expect(await dbx.sales.get('s_remote_1')).toBeTruthy()
+  })
+
+  it('sale.commit giữ giá dòng biên lai — không định giá lại từ catalog máy nhận', async () => {
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10, price: 5000, cost: 3000 }))
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 0, totalSpent: 0, orderCount: 0 }))
+    const sale: Sale = {
+      id: 's_receipt_1', total: 1, profit: 0, discount: 0, payMethod: 'cash',
+      tendered: 5000, change: 0, debtAmount: 0, customerId: 'c1',
+      date: new Date().toISOString(), synced: false,
+      items: [{ productId: 'p1', name: 'SP', qty: 2, price: 10000, cost: 6000, unit: 'cái', unitRatio: 1 }],
+    }
+    await applyOps([remoteOp('sale.commit', sale)])
+    const saved = (await dbx.sales.get('s_receipt_1'))!
+    expect(saved.items[0].price).toBe(10000)
+    expect(saved.total).toBe(20000)
+    expect(saved.debtAmount).toBe(15000)
+    expect((await dbx.customers.get('c1'))!.debt).toBe(15000)
+    expect((await dbx.customers.get('c1'))!.totalSpent).toBe(20000)
   })
 
   it('sale.commit bỏ qua total/debtAmount giả — tính lại từ items + tendered', async () => {
@@ -277,7 +316,7 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect((await dbx.customers.get('c1'))!.debt).toBe(8999)
   })
 
-  it('gr.commit remote: cộng kho theo patches, chèn batch/priceLog GIỮ NGUYÊN id, đè cost theo grHlc LWW', async () => {
+  it('gr.commit rows rỗng + patches không cộng kho', async () => {
     await dbx.products.put(mkProduct({ id: 'p1', stock: 10, cost: 3000 }))
     const batch: ProductBatch = { id: 'bt1', qty: 5, remain: 5, cost: 4000, expiry: '2026-12-31', date: '2026-08-14' }
     const pl: PriceLogEntry = { id: 'pl1', productId: 'p1', supId: 'sp1', supName: 'NCC A', cost: 4000, ts: Date.now() }
@@ -289,14 +328,11 @@ describe('applyOps — idempotent + delta + LWW', () => {
       gr,
       patches: [{ productId: 'p1', addQty: 5, newCost: 4000, newPrice: 9000, expiry: '2026-12-31', batches: [batch], priceLogRows: [pl] }],
     }
-    await applyOps([remoteOp('gr.commit', payload)])
-    const p = (await dbx.products.get('p1'))!
-    expect(p.stock).toBe(15)
-    expect(p.cost).toBe(4000)
-    expect(p.price).toBe(9000)
-    expect(await dbx.batches.get('bt1')).toBeTruthy()
-    expect(await dbx.priceLog.get('pl1')).toBeTruthy()
-    expect(await dbx.goodsReceipts.get('gr1')).toBeTruthy()
+    expect(await applyOps([remoteOp('gr.commit', payload)])).toBe(0)
+    expect((await dbx.products.get('p1'))!.stock).toBe(10)
+    expect(await dbx.goodsReceipts.get('gr1')).toBeUndefined()
+    const poisoned = await getPoisonedOps()
+    expect(poisoned.some((p) => /dòng hàng/i.test(p.message))).toBe(true)
   })
 
   it('gr.commit bỏ qua purchasedDelta giả — dùng Σ(qty×cost) từ rows', async () => {
@@ -439,7 +475,7 @@ describe('applyOps — idempotent + delta + LWW', () => {
     const sale = mkSale('p-missing', 1)
     const op = remoteOp('sale.commit', sale)
 
-    await expect(applyOps([op])).rejects.toBeInstanceOf(SyncDependencyError)
+    expect(await applyOps([op])).toBe(0)
     expect(await dbx.appliedOps.get(op.id)).toBeUndefined()
     expect(await dbx.sales.get(sale.id)).toBeUndefined()
     expect((await getPoisonedOps()).find((p) => p.id === op.id)).toBeUndefined()

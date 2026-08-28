@@ -54,6 +54,14 @@ export function vnDay(d: Date | string | number = Date.now()): string {
 }
 export function vnToday(): string { return vnDay(Date.now()) }
 export function vnDaysAgo(n: number): string { return vnDay(Date.now() - n * 86_400_000) }
+
+/** Lùi một ngày lịch trên chuỗi YYYY-MM-DD (UTC date-only, không phụ thuộc TZ máy). */
+export function prevCalendarDay(ymd: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim())
+  if (!m) return ymd
+  const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) - 1)
+  return new Date(t).toISOString().slice(0, 10)
+}
 export function yesterday(): string {
   const d = new Date()
   d.setDate(d.getDate() - 1)

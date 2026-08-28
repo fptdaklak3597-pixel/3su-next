@@ -13,7 +13,7 @@ import { seed500, seedCategories } from '@/core/domain/seed'
 import { exportCatalogXlsx } from '@/web/lib/catalogXlsx'
 import { logError } from '@/core/errorLogger'
 import { Sheet } from '@/shared/components'
-import { Search, Plus, PackagePlus, ClipboardCheck, Sparkles } from 'lucide-react'
+import { Search, Plus, PackagePlus, ClipboardCheck, Sparkles, Tag } from 'lucide-react'
 import type { Product } from '@/core/types'
 
 type StockFilter = 'all' | 'low' | 'out'
@@ -82,6 +82,9 @@ export function InventoryPage() {
           <button className="btn-ghost text-sm" onClick={() => { try { void exportCatalogXlsx(products) } catch (e) { logError(e, 'kho.xlsx') } }}>Excel</button>
           <button className="btn-back" onClick={() => navigate('/kiem-ke')} aria-label="Kiểm kê">
             <ClipboardCheck size={17} />
+          </button>
+          <button className="btn-back" onClick={() => navigate('/bang-gia-si')} aria-label="Bảng giá sỉ">
+            <Tag size={17} />
           </button>
           <button className="btn-back" onClick={() => navigate('/nhap-hang')} aria-label="Nhập hàng">
             <PackagePlus size={17} />

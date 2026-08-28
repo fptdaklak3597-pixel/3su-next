@@ -533,12 +533,13 @@ function processSaleVoid(draft: ShopState, cmd: CommandEnvelope, committedAt: st
   if (sale.debtAmount > 0 && sale.customerId) {
     const c = draft.customers[sale.customerId]
     if (c) {
-      c.balance -= sale.debtAmount
+      const remaining = Math.min(sale.debtAmount, Math.max(0, c.balance))
+      c.balance -= remaining
       draft.customerLedger.push({
         id: `cust_void_${cmd.id}`,
         party: 'customer',
         partyId: sale.customerId,
-        delta: -sale.debtAmount,
+        delta: -remaining,
         reason: 'SALE_VOID',
         commandId: cmd.id,
         at: committedAt,

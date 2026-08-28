@@ -8,6 +8,8 @@ import { dbx } from '../db'
 import type { Product } from '../types'
 import { uid } from '../format'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
+import { requireOwnerAdmin } from './auth'
+import { assertCloudShopWritable } from '../sync/license'
 import type { SeedItem } from './seed-data'
 
 export type { SeedItem }
@@ -44,6 +46,8 @@ export async function seedCategories(): Promise<{ cat: string; count: number }[]
  * @param stock Tồn kho ban đầu cho mỗi sản phẩm (mặc định 0).
  */
 export async function seedCatalog(items: SeedItem[], stock = 0): Promise<SeedResult> {
+  await requireOwnerAdmin()
+  await assertCloudShopWritable()
   const existing = new Set(
     (await dbx.products.toArray()).map((p) => p.name.trim().toLowerCase()),
   )

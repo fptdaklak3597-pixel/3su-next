@@ -12,7 +12,7 @@ import { totalDebt } from '@/core/domain/sales'
 import {
   ChevronLeft, ChevronRight, Truck, Users,
   UserCog, ClipboardList, BarChart3, Settings,
-  Smartphone, FileText, Tags,
+  Smartphone, FileText, Tags, Scale,
 } from 'lucide-react'
 import type { UserPerms } from '@/core/types'
 
@@ -46,6 +46,7 @@ export function MorePage() {
     { path: '/cong-cu', label: 'Quy tắc giá', desc: 'Gợi ý giá bán theo biên lợi nhuận', icon: <Tags size={18} />, color: 'var(--gold)', perm: 'inventory' },
     { path: '/khach-hang', label: 'Khách hàng', desc: custDebt > 0 ? `${customers.length} khách · nợ ${fmtShort(custDebt)}đ` : `${customers.length} khách hàng`, icon: <Users size={18} />, color: 'var(--ink-3)', perm: 'sell' },
     { path: '/bao-cao', label: 'Báo cáo', desc: 'Doanh thu, lời, xu hướng', icon: <BarChart3 size={18} />, color: 'var(--up)', perm: 'reports' },
+    { path: '/doi-soat', label: 'Đối soát', desc: 'So sổ tiền mặt, CK, nợ', icon: <Scale size={18} />, color: 'var(--ink-3)', perm: 'reports' },
     { path: '/nguoi-dung', label: 'Người dùng', desc: `${users.length} tài khoản`, icon: <UserCog size={18} />, color: 'var(--ink-2)', perm: 'users' },
     { path: '/thiet-bi', label: 'Thiết bị', desc: 'Kéo / đẩy bản sao cửa hàng', icon: <Smartphone size={18} />, color: 'var(--ink-2)', perm: 'settings' },
     { path: '/cai-dat', label: 'Cài đặt', desc: 'Shop, in, sao lưu', icon: <Settings size={18} />, color: 'var(--mute)', perm: 'settings' },

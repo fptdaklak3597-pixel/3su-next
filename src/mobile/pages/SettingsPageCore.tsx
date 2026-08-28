@@ -7,7 +7,14 @@ import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '@/core/store'
 import { exportBackup, restoreLocalBackup, wipeAll, setCurrentUser, type BackupData } from '@/core/db'
-import { getAutoBackups, parseRestoreFile } from '@/core/domain/trial'
+import {
+  getAutoBackups,
+  parseRestoreFile,
+  getLastFileBackupAt,
+  markFileBackupExported,
+  shouldRemindExport,
+  exportRemindDays,
+} from '@/core/domain/trial'
 import { payQrSrc } from '@/core/domain/vietqr'
 import { saveSettingsSynced, saveShopSynced } from '@/core/domain/settings'
 import { exportErrorLogText, logError } from '@/core/errorLogger'
@@ -43,8 +50,12 @@ export function SettingsPage() {
   const [confirmWipe, setConfirmWipe] = useState(false)
   const [confirmRestore, setConfirmRestore] = useState<BackupData | null>(null)
   const [autoBackups, setAutoBackups] = useState<Awaited<ReturnType<typeof getAutoBackups>>>([])
+  const [lastFileBackupAt, setLastFileBackupAt] = useState<number | null>(null)
 
-  useEffect(() => { void getAutoBackups().then(setAutoBackups) }, [])
+  useEffect(() => {
+    void getAutoBackups().then(setAutoBackups)
+    void getLastFileBackupAt().then(setLastFileBackupAt)
+  }, [])
 
   async function patchSettings(patch: Partial<Settings>) {
     const prev = settings
@@ -79,6 +90,8 @@ export function SettingsPage() {
       a.download = `3su-backup-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
+      await markFileBackupExported()
+      setLastFileBackupAt(Date.now())
       showToast('✓ Đã xuất sao lưu', 'ok')
     } catch (e) {
       logError(e, 'backup.export')
@@ -285,6 +298,11 @@ export function SettingsPage() {
         {/* Dữ liệu */}
         <Section icon={<Download size={15} />} title="Dữ liệu">
           <div className="flex flex-col gap-2">
+            {shouldRemindExport(lastFileBackupAt ?? (autoBackups[0] ? Date.parse(autoBackups[0].date) : null)) && (
+              <p className="text-sm" style={{ color: 'var(--bad)' }}>
+                Đã {exportRemindDays(lastFileBackupAt ?? Date.parse(autoBackups[0]!.date))} ngày chưa xuất backup ra file.
+              </p>
+            )}
             <button className="btn-ghost flex items-center justify-center gap-2" onClick={handleExport}>
               <Download size={15} /> Xuất sao lưu (JSON)
             </button>

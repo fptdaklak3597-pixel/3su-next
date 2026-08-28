@@ -87,6 +87,8 @@ export interface Sale {
   change: number
   debtAmount: number
   customerId: string | null
+  /** Cờ máy gửi — máy nhận không tin; giá sỉ chỉ giữ khi dòng khớp catalog.wholesalePrice. */
+  wholesale?: boolean
   date: string // ISO
   voided?: boolean
   voidedAt?: string
@@ -214,6 +216,8 @@ export interface Settings {
   bankBin: string
   bankAccount: string
   bankAccountName: string
+  /** Công thức giá sỉ (tự động cập nhật wholesalePrice trên SP) */
+  wholesaleFormula?: WholesaleFormula
   printer: PrinterSettings
 }
 
@@ -333,6 +337,12 @@ export interface ArchiveRecord {
   data: unknown
   archivedAt: number
   archivedBy: string
+}
+
+/* ─── Giá sỉ (Wholesale Formula) ─── */
+export interface WholesaleFormula {
+  mode: 'fixed' | 'percent'
+  value: number
 }
 
 /* ─── Quy tắc giá (Pricing rules) ─── */

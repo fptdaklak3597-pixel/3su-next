@@ -7,7 +7,7 @@ import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { logError } from '@/core/errorLogger'
 import {
-  changePassword, createUser, deleteUser, hasPerm, PERM_LIST, ROLE_LABEL, updateUser,
+  changePassword, createUser, deleteUser, hasPerm, minimumPasswordLength, PERM_LIST, ROLE_LABEL, updateUser,
 } from '@/core/domain/auth'
 import { ConfirmDialog, Sheet } from '@/shared/components'
 import { WebEmpty } from '@/web/components/WebEmpty'
@@ -28,10 +28,12 @@ export function WebUsersPage() {
   const users = useLiveQuery(() => dbx.users.filter((u) => !u.deleted).toArray(), [], [] as User[])
   const first = users.length === 0
   const canManage = first || !me || hasPerm(me, 'users')
+  const canAssignAdmin = first || me?.role === 'owner'
+  const assignableRoles = (canAssignAdmin ? (['staff', 'admin'] as const) : (['staff'] as const))
 
   async function handleAdd() {
     try {
-      await createUser({ ...form, role: first ? 'owner' : form.role })
+      await createUser({ ...form, role: first ? 'owner' : (canAssignAdmin ? form.role : 'staff') })
       showToast('✓ Đã tạo tài khoản', 'ok')
       setForm({ username: '', name: '', password: '', role: 'staff' })
       setShowAdd(false)
@@ -114,10 +116,10 @@ export function WebUsersPage() {
         <div className="flex flex-col gap-2">
           <input className="web-input" placeholder="Tên đăng nhập *" autoCapitalize="none" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
           <input className="web-input" placeholder="Tên hiển thị" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <input className="web-input" type="password" placeholder="Mật khẩu * (tối thiểu 4 ký tự)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          <input className="web-input" type="password" placeholder={"Mật khẩu * (tối thiểu " + minimumPasswordLength(first ? 'owner' : form.role) + " ký tự)"} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
           {!first && (
             <div className="web-chips">
-              {(['staff', 'admin'] as const).map((r) => (
+              {assignableRoles.map((r) => (
                 <button key={r} className={`web-chip ${form.role === r ? 'on' : ''}`} onClick={() => setForm({ ...form, role: r })}>{ROLE_LABEL[r]}</button>
               ))}
             </div>
@@ -131,10 +133,12 @@ export function WebUsersPage() {
           <p className="text-sm" style={{ color: 'var(--kv-muted)' }}>{ROLE_LABEL[permTarget.role]} có toàn quyền.</p>
         ) : (
           <div className="flex flex-col gap-2">
-            <label className="flex items-center justify-between">
-              <span>Toàn quyền</span>
-              <input type="checkbox" checked={!!perms.all} onChange={() => setPerms((p) => ({ ...p, all: !p.all }))} />
-            </label>
+            {canAssignAdmin && (
+              <label className="flex items-center justify-between">
+                <span>Toàn quyền</span>
+                <input type="checkbox" checked={!!perms.all} onChange={() => setPerms((p) => ({ ...p, all: !p.all }))} />
+              </label>
+            )}
             {PERM_LIST.map(({ k, l }) => (
               <label key={k} className="flex items-center justify-between" style={{ opacity: perms.all ? 0.5 : 1 }}>
                 <span>{l}</span>
@@ -167,7 +171,7 @@ export function WebUsersPage() {
             autoComplete="current-password"
           />
         )}
-        <input className="web-input mb-2" type="password" placeholder="Mật khẩu mới" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
+        <input className="web-input mb-2" type="password" placeholder={pwTarget ? "Mật khẩu mới (tối thiểu " + minimumPasswordLength(pwTarget.role) + " ký tự)" : "Mật khẩu mới"} value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
         <button className="web-btn pri w-full" onClick={async () => {
           if (!pwTarget) return
           try {

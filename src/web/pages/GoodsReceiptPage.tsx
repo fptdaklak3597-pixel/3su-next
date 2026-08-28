@@ -1,7 +1,7 @@
 /**
  * Nhập hàng web — bảng dòng + chọn NCC + lưu phiếu.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
@@ -11,7 +11,12 @@ import { detectPriceSpike, lastPurchaseCost, saveGoodsReceipt, suggestSellPrice 
 import { attachHidBarcode } from '@/core/browser/hidBarcode'
 import { createSupplier } from '@/core/domain/suppliers'
 import { logError } from '@/core/errorLogger'
+import { createConfirmGate } from '@/core/confirmGate'
 import { ConfirmDialog, Sheet } from '@/shared/components'
+import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
+import {
+  DRAFT_RECEIPT, clearDraft, loadFreshDraft, persistReceiptDraft, type ReceiptDraft,
+} from '@/core/domain/drafts'
 import { WebDateRange } from '@/web/components/WebDateRange'
 import type { GoodsReceiptRow, PriceLogEntry, Product, Supplier } from '@/core/types'
 
@@ -33,11 +38,39 @@ export function WebGoodsReceiptPage() {
   const [query, setQuery] = useState('')
   const [confirmSave, setConfirmSave] = useState(false)
   const [saving, setSaving] = useState(false)
+  const confirmGate = useRef(createConfirmGate())
   const [newSupOpen, setNewSupOpen] = useState(false)
   const [nsName, setNsName] = useState('')
   const [nsPhone, setNsPhone] = useState('')
   const [paid, setPaid] = useState(0)
   const [payMethod, setPayMethod] = useState<'cash' | 'transfer' | 'debt'>('cash')
+  const draftReady = useRef(false)
+  const leave = useUnsavedDraftGuard(rows.length > 0 || !!note.trim() || !!supplierName.trim())
+
+  useEffect(() => {
+    void loadFreshDraft<ReceiptDraft>(DRAFT_RECEIPT).then((d) => {
+      draftReady.current = true
+      if (!d) return
+      setSupplierId(d.supplierId)
+      setSupplierName(d.supplierName)
+      setDate(d.date)
+      setExpiry(d.expiry)
+      setNote(d.note)
+      setRows(d.rows as DraftRow[])
+      setPaid(d.paid)
+      setPayMethod(d.payMethod)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!draftReady.current) return
+    const t = window.setTimeout(() => {
+      void persistReceiptDraft({
+        supplierId, supplierName, date, expiry, note, rows, paid, payMethod,
+      })
+    }, 400)
+    return () => window.clearTimeout(t)
+  }, [supplierId, supplierName, date, expiry, note, rows, paid, payMethod])
 
   const products = useLiveQuery(() => dbx.products.filter((p) => !p.deleted).toArray(), [], [] as Product[])
   const suppliers = useLiveQuery(() => dbx.suppliers.filter((s) => !s.deleted).toArray(), [], [] as Supplier[])
@@ -99,6 +132,7 @@ export function WebGoodsReceiptPage() {
   async function handleSave() {
     if (rows.length === 0) { showToast('Thêm ít nhất 1 sản phẩm', 'bad'); return }
     if (rows.some((r) => r.qty <= 0)) { showToast('Số lượng phải > 0', 'bad'); return }
+    if (!confirmGate.current.tryEnter()) return
     setSaving(true)
     try {
       const prices: Record<string, number> = {}
@@ -115,6 +149,8 @@ export function WebGoodsReceiptPage() {
         prices,
       })
       showToast(`✓ Đã nhập kho ${fmt(gr.total)}`, 'ok')
+      leave.allowLeave()
+      await clearDraft(DRAFT_RECEIPT)
       navigate('/kho')
     } catch (e) {
       logError(e, 'goodsReceipt.save')
@@ -122,6 +158,7 @@ export function WebGoodsReceiptPage() {
     } finally {
       setSaving(false)
       setConfirmSave(false)
+      confirmGate.current.leave()
     }
   }
 
@@ -319,10 +356,11 @@ export function WebGoodsReceiptPage() {
         </div>
       </Sheet>
 
+      {leave.dialog}
       <ConfirmDialog
         open={confirmSave}
         title="Lưu phiếu nhập?"
-        message={`Nhập ${rows.length} sản phẩm, tổng ${fmt(total)}${supplierName ? ' từ ' + supplierName : ''}.`}
+        message={`Nhập ${rows.length} sản phẩm, tổng ${fmt(total)}${supplierName ? ' từ ' + supplierName : ''}. Giá vốn cập nhật theo bình quân gia quyền. Phiếu không sửa/hủy được — sai thì vào Kiểm kê hoặc sửa tồn trên sản phẩm.`}
         confirmLabel="Lưu"
         onConfirm={handleSave}
         onCancel={() => setConfirmSave(false)}

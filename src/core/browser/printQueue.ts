@@ -6,7 +6,7 @@ import { apiGet, apiPost } from '../sync/http'
 import { getCloudIdToken } from '../sync/firebase'
 import type { ReceiptContext } from './print'
 import { printReceiptLocal } from './print'
-import { parsePrintTicket, saleTicketFromContext, testTicket, type PrintTicket } from './printTicket'
+import { parsePrintTicket, receiptContextFromTicket, saleTicketFromContext, testTicket, type PrintTicket } from './printTicket'
 import { canUseBluetoothPrint, printTicketBluetooth } from './printBluetooth'
 import { isPrintAgentOnline, setPrintAgentOnline } from './printPresence'
 import {
@@ -15,6 +15,7 @@ import {
   normalizeLanAgentUrl,
   signedLanPrintHeaders,
 } from './printAgentAuth'
+import { recordPrintResult } from './printLog'
 
 export type PrintVia = 'lan' | 'cloud' | 'bluetooth' | 'local' | 'none'
 
@@ -131,6 +132,19 @@ export async function dispatchPrint(
   ctx: ReceiptContext,
   mode: 'auto' | 'this-device' = 'auto',
 ): Promise<PrintDispatchResult> {
+  const result = await dispatchPrintOnce(ctx, mode)
+  try {
+    await recordPrintResult(ctx.sale?.id, result)
+  } catch {
+    /* log local không chặn in */
+  }
+  return result
+}
+
+async function dispatchPrintOnce(
+  ctx: ReceiptContext,
+  mode: 'auto' | 'this-device',
+): Promise<PrintDispatchResult> {
   if (mode === 'this-device') {
     return printReceiptLocal(ctx) ? { via: 'local' } : { via: 'none', error: 'Không in được trên thiết bị này' }
   }
@@ -191,8 +205,23 @@ export async function dispatchTestPrint(shopName: string, printer: ReceiptContex
   return { via: 'none', error: 'Mở trang Máy in trên máy tính rồi bấm lại' }
 }
 
-export function printResultToast(r: PrintDispatchResult): { text: string; kind: 'ok' | 'bad' } {
-  if (r.via === 'lan' || r.via === 'cloud') return { text: 'Đang in ở máy tính…', kind: 'ok' }
+export async function retryPrintTicket(
+  ticket: PrintTicket,
+  printer: ReceiptContext['printer'],
+  shop: ReceiptContext['shop'],
+): Promise<PrintDispatchResult> {
+  const fromTicket = receiptContextFromTicket(ticket)
+  if (fromTicket?.sale) {
+    return dispatchPrint({ ...fromTicket, printer, shop })
+  }
+  await enqueueCloudPrintJob(ticket)
+  return { via: 'cloud' }
+}
+
+export function printResultToast(r: PrintDispatchResult): { text: string; kind: 'ok' | 'bad' | '' } {
+  if (r.via === 'lan' || r.via === 'cloud') {
+    return { text: 'Đã gửi lệnh in — kiểm tra máy tính', kind: '' }
+  }
   if (r.via === 'bluetooth') return { text: 'Đang in máy nhiệt…', kind: 'ok' }
   if (r.via === 'local') return { text: r.error ? `In máy này (${r.error})` : 'Đang in trên máy này…', kind: 'ok' }
   return { text: r.error || 'Chưa gửi được lệnh in', kind: 'bad' }

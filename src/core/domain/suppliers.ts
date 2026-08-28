@@ -9,6 +9,7 @@ import { dbx } from '../db'
 import { uid, today } from '../format'
 import type { Supplier, SupplierPayment, GoodsReceipt } from '../types'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
+import { assertCloudShopWritable } from '../sync/license'
 
 /* ─── Tính toán công nợ (pure, test được) ─── */
 
@@ -168,6 +169,7 @@ export interface SupplierInput {
 }
 
 export async function createSupplier(input: SupplierInput): Promise<Supplier> {
+  await assertCloudShopWritable()
   const name = input.name.trim()
   if (!name) throw new Error('Cần tên nhà cung cấp')
   const leadDays = input.leadDays ?? 2
@@ -199,6 +201,7 @@ export async function createSupplier(input: SupplierInput): Promise<Supplier> {
 }
 
 export async function updateSupplier(id: string, patch: Partial<SupplierInput>): Promise<void> {
+  await assertCloudShopWritable()
   const s = await dbx.suppliers.get(id)
   if (!s) return
   const prev = { ...s }
@@ -238,8 +241,17 @@ export async function updateSupplier(id: string, patch: Partial<SupplierInput>):
 
 /** Xóa mềm NCC (không có supplier.delete — dùng upsert + deletedHlc). */
 export async function deleteSupplier(id: string): Promise<void> {
+  await assertCloudShopWritable()
   const s = await dbx.suppliers.get(id)
   if (!s) return
+  const [receipts, payments] = await Promise.all([
+    dbx.goodsReceipts.filter((receipt) => receipt.supplierId === id).toArray(),
+    dbx.supplierPayments.where('supplierId').equals(id).toArray(),
+  ])
+  const outstanding = supplierDebt(id, receipts, payments)
+  if (outstanding > 0) {
+    throw new Error('Nhà cung cấp còn nợ ' + outstanding.toLocaleString('vi-VN') + 'đ')
+  }
   await dbx.transaction('rw', [dbx.suppliers, dbx.syncQueue, dbx.appliedOps], async () => {
     const op = makeOp('supplier.upsert', null)
     s.deleted = true
@@ -278,6 +290,7 @@ function validIsoDay(value: string): boolean {
  * kiểm tra và ghi payment/outbox diễn ra trong cùng transaction để chống trả đúp.
  */
 export async function recordSupplierPayment(input: SupplierPaymentInput): Promise<SupplierPayment> {
+  await assertCloudShopWritable()
   if (!input.supplierId) throw new Error('Thiếu nhà cung cấp')
   if (!Number.isFinite(input.amount) || input.amount <= 0) throw new Error('Cần số tiền hợp lệ')
   const amount = Math.round(input.amount)

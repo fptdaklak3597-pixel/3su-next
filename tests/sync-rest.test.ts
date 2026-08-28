@@ -50,7 +50,7 @@ describe('S3 — dependency lỗi không chặn op tốt phía sau', () => {
     const bad = remoteOp('sale.commit', badSale)
     const good = remoteOp('stock.adjust', { productId: 'p1', delta: -3, reason: 'sau dependency' })
 
-    await expect(applyOps([bad, good])).rejects.toBeInstanceOf(SyncDependencyError)
+    expect(await applyOps([bad, good])).toBe(1)
     expect(await dbx.sales.count()).toBe(0)
     expect((await dbx.products.get('p1'))!.stock).toBe(7)
     expect(await dbx.appliedOps.get(bad.id)).toBeUndefined()

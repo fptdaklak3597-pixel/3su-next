@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { dbx } from '@/core/db'
+import { dbx, getSettings, DEFAULT_SETTINGS } from '@/core/db'
 import { initSyncEngine } from '@/core/sync/engine'
 import { confirmSale } from '@/core/domain/sales'
 import { exportSnapshot, importSnapshot } from '@/core/sync/snapshot'
@@ -50,6 +50,12 @@ describe('snapshot', () => {
     expect((await dbx.priceLog.get('pl1'))!.cost).toBe(1000)
     expect((await dbx.notes.get('n1'))!.text).toBe('ghi chú')
     expect(await dbx.meta.get('ui:web-light-v2')).toBeUndefined()
+  })
+
+  it('getSettings giữ theme dark đã lưu', async () => {
+    await dbx.meta.put({ key: 'settings', value: { ...DEFAULT_SETTINGS, theme: 'dark' } })
+    const s = await getSettings()
+    expect(s.theme).toBe('dark')
   })
 
   it('importSnapshot KHÔNG nuốt op local chưa đẩy: op pending được áp lại lên snapshot', async () => {

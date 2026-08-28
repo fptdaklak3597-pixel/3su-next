@@ -7,12 +7,31 @@ import { dbx } from '../db'
 import { uid, localDay, daysToExpiry } from '../format'
 import type {
   Product, GoodsReceipt, GoodsReceiptRow, StocktakeRecord, StockForecast, Sale,
-  ProductBatch, PriceLogEntry, GrPatch, GrCommitPayload, PayMethod,
+  ProductBatch, PriceLogEntry, GrPatch, GrCommitPayload, PayMethod, Supplier,
 } from '../types'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
-import { requireOwnerAdmin } from './auth'
+import { requireOwnerAdmin, requirePermission } from './auth'
+import { assertCloudShopWritable } from '../sync/license'
+
+export function isCatalogUnitRatio(p: Product, ratio: number): boolean {
+  if (!Number.isFinite(ratio) || ratio <= 0) return false
+  if (ratio === 1) return true
+  return (p.units ?? []).some((unit) => unit.r === ratio)
+}
 
 /* ─── Sản phẩm ─── */
+/** Trần lệch tồn một lần (sửa SP / kiểm kê / apply). Trên mức này là dữ liệu hỏng, không phải nghiệp vụ shop. */
+export const MAX_STOCK_QTY_DELTA = 10_000_000
+
+export function stocktakeHasLargeDiff(rows: { system: number; actual: number }[]): boolean {
+  return rows.some((r) => {
+    const diff = r.actual - r.system
+    if (!Number.isFinite(diff)) return true
+    const abs = Math.abs(diff)
+    return abs >= 1000 || abs > 10 * Math.max(1, Math.abs(r.system))
+  })
+}
+
 export async function addProduct(input: {
   name: string
   cat: string
@@ -25,6 +44,11 @@ export async function addProduct(input: {
   wholesalePrice?: number
   units?: Product['units']
 }): Promise<Product> {
+  await requirePermission('inventory')
+  await assertCloudShopWritable()
+  if (!Number.isFinite(input.stock) || Math.abs(input.stock) > MAX_STOCK_QTY_DELTA) {
+    throw new Error('Số tồn không hợp lệ')
+  }
   const now = Date.now()
   const p: Product = {
     id: uid('p'),
@@ -70,6 +94,8 @@ export async function addProduct(input: {
 }
 
 export async function updateProduct(id: string, patch: Partial<Product>): Promise<void> {
+  await requirePermission('inventory')
+  await assertCloudShopWritable()
   const p = await dbx.products.get(id)
   if (!p) return
   const normalized = { ...patch }
@@ -77,6 +103,12 @@ export async function updateProduct(id: string, patch: Partial<Product>): Promis
   if (normalized.unit != null) normalized.unit = String(normalized.unit).trim() || p.unit || 'cái'
   const { stock: newStock, ...restPatch } = normalized
   const stockChanged = typeof newStock === 'number' && newStock !== p.stock
+  if (stockChanged) {
+    const delta = (newStock as number) - p.stock
+    if (!Number.isFinite(newStock as number) || Math.abs(delta) > MAX_STOCK_QTY_DELTA) {
+      throw new Error('Số tồn không hợp lệ')
+    }
+  }
   await dbx.transaction('rw', [dbx.products, dbx.stockMoves, dbx.batches, dbx.syncQueue, dbx.appliedOps], async () => {
     const upsertOp = makeOp('product.upsert', null)
     const updated: Product = {
@@ -117,8 +149,10 @@ export async function updateProduct(id: string, patch: Partial<Product>): Promis
 
 export async function deleteProduct(id: string): Promise<void> {
   await requireOwnerAdmin()
+  await assertCloudShopWritable()
   const p = await dbx.products.get(id)
   if (!p) return
+  if (p.stock > 0) throw new Error('Còn tồn ' + p.stock + '. Xuất hết hoặc kiểm kê về 0 rồi mới xóa.')
   await dbx.transaction('rw', [dbx.products, dbx.syncQueue, dbx.appliedOps], async () => {
     const op = makeOp('product.delete', { productId: id })
     await dbx.products.put({ ...p, deleted: true, deletedHlc: op.hlc, hlc: op.hlc, updatedAt: Date.now() })
@@ -323,22 +357,20 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
       priceLogRows: [],
     }
 
-    if (rowExp) {
-      const batch: ProductBatch = {
-        id: uid('bt'),
-        qty: addQty,
-        remain: addQty,
-        cost: Math.round(costBase || r.cost),
-        expiry: rowExp,
-        date: input.date,
-        supId: input.supplierId || '',
-        supName: gr.supplier,
-      }
-      await dbx.batches.add(batch)
-      p.batches = [...(p.batches || []), batch]
-      await dbx.products.put(p)
-      patch.batches.push(batch)
+    const batch: ProductBatch = {
+      id: uid('bt'),
+      qty: addQty,
+      remain: addQty,
+      cost: Math.round(costBase || r.cost),
+      expiry: rowExp || '',
+      date: input.date,
+      supId: input.supplierId || '',
+      supName: gr.supplier,
     }
+    await dbx.batches.add(batch)
+    p.batches = [...(p.batches || []), batch]
+    await dbx.products.put(p)
+    patch.batches.push(batch)
 
     const plRow: PriceLogEntry = {
       id: uid('pl'),
@@ -391,12 +423,133 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
 }
 
 export async function saveGoodsReceipt(input: GoodsReceiptInput): Promise<GoodsReceipt> {
+  await requirePermission('inventory')
+  await assertCloudShopWritable()
   let gr!: GoodsReceipt
   await dbx.transaction('rw', [dbx.products, dbx.goodsReceipts, dbx.stockMoves, dbx.suppliers, dbx.supplierPayments, dbx.batches, dbx.priceLog, dbx.syncQueue, dbx.appliedOps], async () => {
     gr = await applyGoodsReceiptInTx(input)
   })
   requestFlush()
   return gr
+}
+
+export interface InvoiceImportRow {
+  productId: string
+  name: string
+  unit: string
+  unitRatio: number
+  qty: number
+  cost: number
+  expiry: string
+  newProductIndex?: number
+}
+
+export interface InvoiceImportInput {
+  supplierName: string
+  supplierId?: string
+  createSupplier?: { name: string; phone?: string; address?: string; note?: string }
+  date: string
+  expiry: string
+  note: string
+  payMethod?: PayMethod
+  paid?: number
+  newProducts: Array<{ name: string; cat: string; price: number; cost: number; stock: number; unit: string; barcode?: string }>
+  rows: InvoiceImportRow[]
+  prices?: Record<string, number>
+}
+
+export async function commitInvoiceImport(
+  input: InvoiceImportInput,
+): Promise<{ gr: GoodsReceipt; productIds: string[] }> {
+  await requirePermission('inventory')
+  await assertCloudShopWritable()
+  let gr!: GoodsReceipt
+  const productIds: string[] = []
+  await dbx.transaction(
+    'rw',
+    [dbx.products, dbx.goodsReceipts, dbx.stockMoves, dbx.suppliers, dbx.supplierPayments, dbx.batches, dbx.priceLog, dbx.syncQueue, dbx.appliedOps],
+    async () => {
+      let supplierId = input.supplierId
+      if (!supplierId && input.createSupplier) {
+        const name = input.createSupplier.name.trim()
+        if (!name) throw new Error('Cần tên nhà cung cấp')
+        const now = Date.now()
+        const s: Supplier = {
+          id: uid('sup'),
+          name,
+          phone: (input.createSupplier.phone ?? '').trim(),
+          address: (input.createSupplier.address ?? '').trim(),
+          note: (input.createSupplier.note ?? '').trim(),
+          leadDays: 2,
+          debt: 0,
+          totalPurchased: 0,
+          orderCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        }
+        const op = makeOp('supplier.upsert', null)
+        s.hlc = op.hlc
+        await dbx.suppliers.put(s)
+        const { debt: _d, totalPurchased: _tp, orderCount: _oc, ...rest } = s
+        op.payload = { supplier: rest }
+        await persistOp(op)
+        supplierId = s.id
+      }
+
+      const created: Product[] = []
+      const now = Date.now()
+      for (const np of input.newProducts) {
+        const p: Product = {
+          id: uid('p'),
+          name: np.name.trim(),
+          cat: (np.cat || '').trim() || 'Khác',
+          price: np.price,
+          cost: np.cost,
+          stock: 0,
+          unit: (np.unit || 'cái').trim() || 'cái',
+          barcode: np.barcode?.trim() || '',
+          expiry: '',
+          units: [],
+          wholesalePrice: 0,
+          batches: [],
+          createdAt: now,
+          updatedAt: now,
+        }
+        const upsertOp = makeOp('product.upsert', null)
+        p.hlc = upsertOp.hlc
+        await dbx.products.add(p)
+        const { stock: _s, batches: _b, ...rest } = p
+        upsertOp.payload = { product: rest }
+        await persistOp(upsertOp)
+        created.push(p)
+        productIds.push(p.id)
+      }
+
+      const rows = input.rows.map((row) => {
+        if (typeof row.newProductIndex === 'number') {
+          const createdProduct = created[row.newProductIndex]
+          if (!createdProduct) throw new Error('Dòng nhập thiếu sản phẩm')
+          return { ...row, productId: createdProduct.id }
+        }
+        if (!row.productId) throw new Error('Dòng nhập thiếu sản phẩm')
+        return row
+      })
+
+      gr = await applyGoodsReceiptInTx({
+        supplier: input.supplierName,
+        supplierId,
+        date: input.date,
+        expiry: input.expiry,
+        note: input.note,
+        payMethod: input.payMethod,
+        paid: input.paid,
+        rows,
+        prices: input.prices,
+      })
+    },
+  )
+  requestFlush()
+  return { gr, productIds }
 }
 
 /** HSD sớm nhất trong các lô còn hàng (port liveBatchExpiry). */
@@ -422,6 +575,26 @@ export function consumeBatchesFefo(batches: ProductBatch[], qty: number): { batc
     left -= take
   }
   return { batches: next, leftover: left }
+}
+
+/** Trừ FEFO và cho phép leftover thành remain âm khi cửa hàng bật âm kho. */
+export function consumeBatchesFefoAllowNegative(batches: ProductBatch[], qty: number): ProductBatch[] {
+  const { batches: next, leftover } = consumeBatchesFefo(batches, qty)
+  if (leftover <= 0) return next
+  const open = next.find((b) => !b.expiry) ?? next[0]
+  if (open) {
+    open.remain -= leftover
+    return next
+  }
+  return [...next, {
+    id: uid('bt'),
+    qty: leftover,
+    remain: -leftover,
+    cost: 0,
+    expiry: '',
+    date: localDay(new Date()),
+    supName: '',
+  }]
 }
 
 /**
@@ -503,6 +676,8 @@ export function selectStocktakeRows<T extends { productId: string; system: numbe
 }
 
 export async function saveStocktake(rows: { productId: string; name: string; system: number; actual: number }[], note: string): Promise<StocktakeRecord> {
+  await requirePermission('inventory')
+  await assertCloudShopWritable()
   const record: StocktakeRecord = {
     id: uid('st'),
     date: new Date().toISOString(),
@@ -519,6 +694,9 @@ export async function saveStocktake(rows: { productId: string; name: string; sys
       // Live Dexie stock — ignore stale UI `system` so stock/batches/outbox stay aligned.
       const systemNow = p.stock
       const diff = r.actual - systemNow
+      if (!Number.isFinite(r.actual) || Math.abs(diff) > MAX_STOCK_QTY_DELTA) {
+        throw new Error('Số kiểm kê không hợp lệ: ' + r.name)
+      }
       record.rows.push({ productId: r.productId, name: r.name, system: systemNow, actual: r.actual, diff })
       if (diff === 0) continue
       p.stock = r.actual

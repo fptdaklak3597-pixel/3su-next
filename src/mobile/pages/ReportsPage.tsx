@@ -5,6 +5,7 @@
  * biểu đồ, top sản phẩm / danh mục, phân bổ thanh toán.
  */
 import { useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -29,6 +30,7 @@ const PRESETS: { key: ReportPreset; label: string }[] = [
 ]
 
 export function ReportsPage() {
+  const navigate = useNavigate()
   const settings = useApp((s) => s.settings)
   const [preset, setPreset] = useState<ReportPreset>('7')
   const [metric, setMetric] = useState<ReportMetric>('profit')
@@ -83,12 +85,17 @@ export function ReportsPage() {
             {formatDate(report.from)} → {formatDate(report.to)}
           </div>
         </div>
-        <button
-          className="btn-ghost text-sm"
-          onClick={() => { try { void exportReportXlsx(report) } catch (e) { logError(e, 'report.xlsx') } }}
-        >
-          Xuất Excel
-        </button>
+        <div className="flex items-center gap-1">
+          <button type="button" className="btn-ghost text-sm" onClick={() => navigate('/doi-soat')}>
+            Đối soát
+          </button>
+          <button
+            className="btn-ghost text-sm"
+            onClick={() => { try { void exportReportXlsx(report) } catch (e) { logError(e, 'report.xlsx') } }}
+          >
+            Xuất Excel
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 pb-8">

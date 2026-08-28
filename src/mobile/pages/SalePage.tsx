@@ -10,7 +10,7 @@ import { useApp } from '@/core/store'
 import { matchesSearch, fmt, fmtShort, vnDaysAgo, vnToday } from '@/core/format'
 import {
   bestSellerIds, suggestUnits, cartUnitPrice, salesInDateRange,
-  mergeCartLine, setCartLineQty, stockAddWarning,
+  mergeCartLine, setCartLineQty, stockAddWarning, saleUsesWholesale,
 } from '@/core/domain/sales'
 import { playPosSound } from '@/core/browser/posSound'
 import { productCategories } from '@/core/domain/inventory'
@@ -18,8 +18,9 @@ import { parseCommand, findProductByName, startListening, voiceSupported, resolv
 import { createBarcodeScan, findProductByBarcode, type ScanHandle } from '@/core/browser/barcode'
 import { attachHidBarcode, isBarcodeLike } from '@/core/browser/hidBarcode'
 import { Sheet, Modal, ConfirmDialog } from '@/shared/components'
+import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
 import { Search, Minus, Plus, Trash2, Tag, Mic, ScanLine, Zap, X, ChevronLeft } from 'lucide-react'
-import type { Product } from '@/core/types'
+import type { Customer, Product } from '@/core/types'
 
 export function SalePage() {
   const navigate = useNavigate()
@@ -27,6 +28,7 @@ export function SalePage() {
   const setCart = useApp((s) => s.setCart)
   const wholesaleMode = useApp((s) => s.wholesaleMode)
   const toggleWholesale = useApp((s) => s.toggleWholesale)
+  const customerId = useApp((s) => s.customerId)
   const clearCart = useApp((s) => s.clearCart)
   const settings = useApp((s) => s.settings)
   const showToast = useApp((s) => s.showToast)
@@ -49,6 +51,12 @@ export function SalePage() {
     [] as Product[],
   )
   const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(29), vnToday()), [], [])
+  const customer = useLiveQuery(
+    () => (customerId ? dbx.customers.get(customerId) : undefined),
+    [customerId],
+  ) as Customer | undefined
+  const useWs = saleUsesWholesale(wholesaleMode, customer)
+  const leave = useUnsavedDraftGuard(cart.length > 0, ['/thanh-toan'])
 
   // Xếp sản phẩm: bán chạy trước
   const ranked = useMemo(() => {
@@ -180,9 +188,9 @@ export function SalePage() {
     return cart.reduce((sum, ci) => {
       const p = products.find((x) => x.id === ci.productId)
       if (!p) return sum
-      return sum + cartUnitPrice(ci, p, wholesaleMode) * ci.qty
+      return sum + cartUnitPrice(ci, p, useWs) * ci.qty
     }, 0)
-  }, [cart, products, wholesaleMode])
+  }, [cart, products, useWs])
 
   const cartCount = cart.reduce((a, c) => a + c.qty, 0)
 
@@ -313,26 +321,32 @@ export function SalePage() {
         <div className="flex flex-col gap-1.5">
           {filtered.map((p) => {
             const extra = suggestUnits(p).filter((u) => u.r > 1)
+            const price = useWs && p.wholesalePrice > 0 ? p.wholesalePrice : p.price
             return (
-              <div key={p.id} className="list-row">
-                <button type="button" className="flex flex-1 min-w-0 items-center gap-2 text-left" onClick={() => addToCart(p)}>
-                  <div className="w-9 h-9 rounded-[10px] flex items-center justify-center text-sm"
-                    style={{ background: 'var(--paper)' }}>
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: p.stock <= 0 ? 'var(--down)' : p.stock <= settings.lowStock ? 'var(--warn)' : 'var(--up)' }} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[15px] font-medium truncate" style={{ color: 'var(--ink)' }}>{p.name}</div>
-                    <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--mute)' }}>
+              <div key={p.id} className="sale-item">
+                <button type="button" className="sale-item-hit" onClick={() => addToCart(p)}>
+                  <span
+                    className="sale-item-dot"
+                    style={{ background: p.stock <= 0 ? 'var(--down)' : p.stock <= settings.lowStock ? 'var(--warn)' : 'var(--up)' }}
+                  />
+                  <div className="sale-item-text">
+                    <div className="sale-item-name">{p.name}</div>
+                    <div className="sale-item-meta">
                       {p.cat || '—'} · còn {p.stock} {p.unit}{p.stock <= 0 ? ' · HẾT' : ''}
                     </div>
                   </div>
-                  <div className="text-sm font-medium stat-num" style={{ color: 'var(--ink)' }}>
-                    {fmtShort(wholesaleMode && p.wholesalePrice > 0 ? p.wholesalePrice : p.price)}đ
-                  </div>
                 </button>
-                {extra.map((u) => (
-                  <button key={u.n} type="button" className="chip shrink-0" onClick={() => addToCart(p, 1, u)}>{u.n}</button>
-                ))}
+                <div className="sale-item-units" data-empty={extra.length === 0 ? '' : undefined}>
+                  {extra.map((u) => (
+                    <button key={u.n} type="button" className="sale-unit-chip" onClick={() => addToCart(p, 1, u)}>
+                      <span className="sale-unit-n">{u.n}</span>
+                      <span className="sale-unit-x">×{u.r}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="sale-item-foot">
+                  <span className="sale-item-price stat-num">{fmtShort(price)}đ</span>
+                </div>
               </div>
             )
           })}
@@ -352,7 +366,7 @@ export function SalePage() {
             {cart.map((ci, idx) => {
               const p = products.find((x) => x.id === ci.productId)
               if (!p) return null
-              const unitPrice = cartUnitPrice(ci, p, wholesaleMode)
+              const unitPrice = cartUnitPrice(ci, p, useWs)
               return (
                 <div key={idx} className="flex items-center gap-2">
                   <div className="flex-1 min-w-0">
@@ -391,7 +405,7 @@ export function SalePage() {
           {/* Total + checkout */}
           <div className="flex gap-2">
             <button className="btn-ghost flex-1" onClick={() => clearCart()}>Xóa giỏ</button>
-            <button className="btn-cta flex-[2]" onClick={() => navigate('/thanh-toan')}>
+            <button className="btn-cta flex-[2]" onClick={() => navigate({ pathname: '/thanh-toan', search: window.location.search })}>
               <span>Thanh toán · {fmt(cartTotal)}</span>
             </button>
           </div>
@@ -410,6 +424,7 @@ export function SalePage() {
         }}
         onCancel={() => setOutPending(null)}
       />
+      {leave.dialog}
     </div>
   )
 }

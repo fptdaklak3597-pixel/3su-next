@@ -1,15 +1,17 @@
 /**
  * Chi tiết đơn web — in + hủy hoàn kho.
  */
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { voidSale } from '@/core/domain/sales'
 import { dispatchPrint, printResultToast } from '@/core/browser/printQueue'
+import { printStatusLabel, type PrintLogEntry } from '@/core/browser/printLog'
 import { fmt, formatDateTime } from '@/core/format'
 import { logError } from '@/core/errorLogger'
+import { createConfirmGate } from '@/core/confirmGate'
 import { payLabel } from '@/web/lib/listFilters'
 
 export function WebOrderDetailPage() {
@@ -21,25 +23,36 @@ export function WebOrderDetailPage() {
   const user = useApp((s) => s.user)
   const [confirmVoid, setConfirmVoid] = useState(false)
   const [voidReason, setVoidReason] = useState('')
+  const [processing, setProcessing] = useState(false)
+  const confirmGate = useRef(createConfirmGate())
 
   const sale = useLiveQuery(() => (id ? dbx.sales.get(id) : undefined), [id])
   const customer = useLiveQuery(
     () => (sale?.customerId ? dbx.customers.get(sale.customerId) : undefined),
     [sale?.customerId],
   )
+  const printLogs = useLiveQuery(() => dbx.meta.get('print:bySaleId'), [id])
+  const printLog = id
+    ? ((printLogs?.value as Record<string, PrintLogEntry> | undefined)?.[id] ?? null)
+    : null
 
   if (!sale) {
     return <div className="web-page" style={{ color: 'var(--kv-subtle)' }}>Không tìm thấy đơn hàng</div>
   }
 
   async function handleVoid() {
+    if (!confirmGate.current.tryEnter()) return
+    setProcessing(true)
     try {
-      await voidSale(sale!.id, voidReason.trim())
-      showToast('Đã hủy đơn', 'ok')
+      const { refund } = await voidSale(sale!.id, voidReason.trim())
+      showToast(refund > 0 ? 'Đã hủy đơn · hoàn khách ' + refund.toLocaleString('vi-VN') : 'Đã hủy đơn', 'ok')
       navigate('/don-hang')
     } catch (e) {
       logError(e, 'order.void')
       showToast('Lỗi khi hủy đơn', 'bad')
+    } finally {
+      setProcessing(false)
+      confirmGate.current.leave()
     }
   }
 
@@ -60,11 +73,11 @@ export function WebOrderDetailPage() {
       <div className="web-ph">
         <div>
           <h2>Chi tiết đơn</h2>
-          <p>{formatDateTime(sale.date)} · {payLabel(sale.payMethod)}{customer ? ` · ${customer.name}` : ''}</p>
+          <p>{formatDateTime(sale.date)} · {payLabel(sale.payMethod)}{customer ? ` · ${customer.name}` : ''} · In: {printStatusLabel(printLog)}</p>
         </div>
         <div className="web-ph-actions">
           <button className="web-btn" onClick={() => navigate('/don-hang')}>Danh sách</button>
-          <button className="web-btn" onClick={handlePrint}>In hóa đơn</button>
+          <button className="web-btn" onClick={handlePrint}>{printLog ? 'In lại' : 'In hóa đơn'}</button>
           {!sale.voided && <button className="web-btn danger" onClick={() => setConfirmVoid(true)}>Hủy đơn</button>}
         </div>
       </div>
@@ -115,7 +128,7 @@ export function WebOrderDetailPage() {
           <input className="web-input mb-2" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="VD: khách đổi ý" />
           <div className="web-ph-actions">
             <button className="web-btn" onClick={() => setConfirmVoid(false)}>Không</button>
-            <button className="web-btn danger" disabled={!voidReason.trim()} onClick={() => void handleVoid()}>Hủy đơn</button>
+            <button className="web-btn danger" disabled={!voidReason.trim() || processing} onClick={() => void handleVoid()}>Hủy đơn</button>
           </div>
         </div>
       )}

@@ -10,7 +10,7 @@ import { useApp } from '@/core/store'
 import { logError } from '@/core/errorLogger'
 import {
   createUser, updateUser, deleteUser, changePassword,
-  PERM_LIST, ROLE_LABEL, hasPerm,
+  PERM_LIST, ROLE_LABEL, hasPerm, minimumPasswordLength,
 } from '@/core/domain/auth'
 import { Sheet, ConfirmDialog, EmptyState } from '@/shared/components'
 import { ChevronLeft, Plus, Trash2, KeyRound, ShieldCheck } from 'lucide-react'
@@ -27,7 +27,8 @@ export function UsersPage() {
 
   const users = useLiveQuery(() => dbx.users.filter((u) => !u.deleted).toArray(), [], [] as User[])
 
-  const canManage = hasPerm(me, 'users')
+  const first = users.length === 0
+  const canManage = first || !me || hasPerm(me, 'users')
 
   async function handleDelete() {
     if (!delTarget) return
@@ -49,7 +50,9 @@ export function UsersPage() {
         </button>
         <div className="flex-1 text-center">
           <div className="font-brand text-[17px] font-medium" style={{ color: 'var(--ink)' }}>Người dùng</div>
-          <div className="text-[11px]" style={{ color: 'var(--mute)' }}>{users.length} tài khoản · PIN đồng bộ khi đã vào cửa hàng</div>
+          <div className="text-[11px]" style={{ color: 'var(--mute)' }}>
+            {users.length} tài khoản{first ? ' · tạo chủ cửa hàng đầu tiên' : ' · PIN đồng bộ khi đã vào cửa hàng'}
+          </div>
         </div>
         {canManage && (
           <button className="btn-back" onClick={() => setShowAdd(true)} aria-label="Thêm người dùng">
@@ -96,10 +99,21 @@ export function UsersPage() {
             )}
           </div>
         ))}
-        {users.length === 0 && <EmptyState icon="👤" title="Chưa có tài khoản" sub="Bấm + để tạo tài khoản nhân viên" />}
+        {users.length === 0 && (
+          <>
+            <EmptyState
+              icon="👤"
+              title="Chưa có tài khoản"
+              sub="Tài khoản đầu tiên là chủ cửa hàng. Sau khi tạo, app sẽ yêu cầu đăng nhập."
+            />
+            <div className="px-2">
+              <button className="btn-cta" onClick={() => setShowAdd(true)}>Tạo chủ cửa hàng</button>
+            </div>
+          </>
+        )}
       </div>
 
-      <AddUserSheet open={showAdd} onClose={() => setShowAdd(false)} />
+      <AddUserSheet open={showAdd} onClose={() => setShowAdd(false)} first={first} />
       {permTarget && <PermSheet user={permTarget} onClose={() => setPermTarget(null)} />}
       {pwTarget && <PasswordSheet user={pwTarget} onClose={() => setPwTarget(null)} />}
 
@@ -117,13 +131,17 @@ export function UsersPage() {
 }
 
 /* ─── Thêm người dùng ─── */
-function AddUserSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+function AddUserSheet({ open, onClose, first }: { open: boolean; onClose: () => void; first: boolean }) {
   const showToast = useApp((s) => s.showToast)
+  const me = useApp((s) => s.user)
+  const canAssignAdmin = first || me?.role === 'owner'
+  const assignableRoles = (canAssignAdmin ? (['staff', 'admin'] as const) : (['staff'] as const))
   const [form, setForm] = useState({ username: '', name: '', password: '', role: 'staff' as UserRole })
+  const pinMin = minimumPasswordLength(first ? 'owner' : form.role)
 
   async function handleAdd() {
     try {
-      await createUser(form)
+      await createUser({ ...form, role: first ? 'owner' : (canAssignAdmin ? form.role : 'staff') })
       showToast('✓ Đã tạo tài khoản', 'ok')
       setForm({ username: '', name: '', password: '', role: 'staff' })
       onClose()
@@ -134,22 +152,24 @@ function AddUserSheet({ open, onClose }: { open: boolean; onClose: () => void })
   }
 
   return (
-    <Sheet open={open} onClose={onClose} title="Thêm người dùng">
+    <Sheet open={open} onClose={onClose} title={first ? 'Tạo chủ cửa hàng' : 'Thêm người dùng'}>
       <div className="flex flex-col gap-3">
         <input className="field-input" placeholder="Tên đăng nhập *" autoCapitalize="none" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
         <input className="field-input" placeholder="Tên hiển thị" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        <input className="field-input" placeholder="Mật khẩu * (tối thiểu 4 ký tự)" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-        <div className="flex gap-2">
-          {(['staff', 'admin'] as const).map((r) => (
-            <button key={r} className="chip flex-1 justify-center" style={form.role === r ? { background: 'var(--ink)', color: 'var(--paper)', borderColor: 'var(--ink)' } : {}} onClick={() => setForm({ ...form, role: r })}>
-              {ROLE_LABEL[r]}
-            </button>
-          ))}
-        </div>
+        <input className="field-input" placeholder={"Mật khẩu * (tối thiểu " + pinMin + " ký tự)"} type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+        {!first && (
+          <div className="flex gap-2">
+            {assignableRoles.map((r) => (
+              <button key={r} className="chip flex-1 justify-center" style={form.role === r ? { background: 'var(--ink)', color: 'var(--paper)', borderColor: 'var(--ink)' } : {}} onClick={() => setForm({ ...form, role: r })}>
+                {ROLE_LABEL[r]}
+              </button>
+            ))}
+          </div>
+        )}
         <p className="text-[11px]" style={{ color: 'var(--mute)' }}>
-          {form.role === 'admin' ? 'Quản trị có toàn quyền.' : 'Nhân viên cần được phân quyền chi tiết sau khi tạo.'}
+          {first ? 'Tài khoản đầu là chủ cửa hàng, có toàn quyền.' : form.role === 'admin' ? 'Quản trị có toàn quyền.' : 'Nhân viên cần được phân quyền chi tiết sau khi tạo.'}
         </p>
-        <button className="btn-cta" onClick={handleAdd}>Tạo tài khoản</button>
+        <button className="btn-cta" onClick={handleAdd}>{first ? 'Tạo chủ cửa hàng' : 'Tạo tài khoản'}</button>
       </div>
     </Sheet>
   )
@@ -158,6 +178,8 @@ function AddUserSheet({ open, onClose }: { open: boolean; onClose: () => void })
 /* ─── Phân quyền ─── */
 function PermSheet({ user, onClose }: { user: User; onClose: () => void }) {
   const showToast = useApp((s) => s.showToast)
+  const me = useApp((s) => s.user)
+  const canGrantAll = me?.role === 'owner'
   const [perms, setPerms] = useState<UserPerms>(user.perms ?? {})
   const isPrivileged = user.role === 'owner' || user.role === 'admin'
 
@@ -184,10 +206,12 @@ function PermSheet({ user, onClose }: { user: User; onClose: () => void }) {
         </p>
       ) : (
         <div className="flex flex-col">
-          <label className="flex items-center justify-between py-2.5 cursor-pointer" style={{ borderBottom: '0.5px solid var(--hair-2)' }} onClick={() => setPerms((p) => ({ ...p, all: !p.all }))}>
-            <span className="text-sm font-medium" style={{ color: 'var(--ink)' }}>Toàn quyền</span>
-            <Toggle on={!!perms.all} />
-          </label>
+          {canGrantAll && (
+            <label className="flex items-center justify-between py-2.5 cursor-pointer" style={{ borderBottom: '0.5px solid var(--hair-2)' }} onClick={() => setPerms((p) => ({ ...p, all: !p.all }))}>
+              <span className="text-sm font-medium" style={{ color: 'var(--ink)' }}>Toàn quyền</span>
+              <Toggle on={!!perms.all} />
+            </label>
+          )}
           {PERM_LIST.map(({ k, l }) => (
             <label key={k} className="flex items-center justify-between py-2.5 cursor-pointer" style={{ borderBottom: '0.5px solid var(--hair-2)', opacity: perms.all ? 0.5 : 1 }} onClick={() => !perms.all && toggle(k)}>
               <span className="text-sm" style={{ color: 'var(--ink-2)' }}>{l}</span>
@@ -238,7 +262,7 @@ function PasswordSheet({ user, onClose }: { user: User; onClose: () => void }) {
         )}
         <input
           className="field-input"
-          placeholder="Mật khẩu mới (tối thiểu 4 ký tự)"
+          placeholder={"Mật khẩu mới (tối thiểu " + minimumPasswordLength(user.role) + " ký tự)"}
           type="password"
           value={pw}
           onChange={(e) => setPw(e.target.value)}

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { dbx } from '@/core/db'
 import { initSyncEngine, makeOp } from '@/core/sync/engine'
 import { applyOps } from '@/core/sync/apply'
-import { saveStocktake } from '@/core/domain/inventory'
+import { saveStocktake, stocktakeHasLargeDiff } from '@/core/domain/inventory'
 import type { Product, ProductBatch, SyncOp } from '@/core/types'
 
 function mkProduct(over: Partial<Product> = {}): Product {
@@ -78,5 +78,13 @@ describe('N2 — saveStocktake bỏ qua system UI cũ', () => {
     const op = (await dbx.syncQueue.toArray()).find((o) => o.type === 'stocktake.commit')!
     const payload = op.payload as typeof record
     expect(payload.rows[0]).toMatchObject({ system: 8, diff: 4, actual: 12 })
+  })
+})
+
+describe('cảnh lệch lớn trên UI kiểm kê', () => {
+  it('lệch nhỏ thì im, lệch ≥1000 hoặc gấp nhiều lần sổ thì cảnh', () => {
+    expect(stocktakeHasLargeDiff([{ system: 10, actual: 12 }])).toBe(false)
+    expect(stocktakeHasLargeDiff([{ system: 10, actual: 1010 }])).toBe(true)
+    expect(stocktakeHasLargeDiff([{ system: 10, actual: 200 }])).toBe(true)
   })
 })

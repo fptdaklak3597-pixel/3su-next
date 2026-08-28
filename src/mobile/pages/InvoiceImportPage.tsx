@@ -10,13 +10,11 @@ import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, today, normalizeVi, uid, matchesSearch } from '@/core/format'
 import { parseInvoiceFile, type ParsedInvoice, type ParsedItem } from '@/core/domain/invoiceImport'
-import { fileToBase64, scanInvoiceImages } from '@/core/ai/client'
+import { fileToScanPart, scanInvoiceImages } from '@/core/ai/client'
 import { parseGeminiInvoiceJson } from '@/core/ai/invoiceScan'
 import { apiBase } from '@/core/sync/cloud'
 import { invoiceLoaders } from '@/core/browser/invoiceLoaders'
-import { saveGoodsReceipt } from '@/core/domain/inventory'
-import { addProduct } from '@/core/domain/inventory'
-import { createSupplier } from '@/core/domain/suppliers'
+import { commitInvoiceImport } from '@/core/domain/inventory'
 import { logError } from '@/core/errorLogger'
 import {
   candidates,
@@ -29,6 +27,10 @@ import {
 } from '@/core/domain/productMatcher'
 import { learnProductAlias, loadProductAliases } from '@/core/domain/productAliases'
 import { ConfirmDialog, Sheet } from '@/shared/components'
+import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
+import {
+  DRAFT_INVOICE, clearDraft, loadFreshDraft, persistInvoiceDraft, type InvoiceDraft,
+} from '@/core/domain/drafts'
 import { ChevronLeft, Upload, FileText, Trash2 } from 'lucide-react'
 import type { Product, Supplier } from '@/core/types'
 
@@ -72,12 +74,18 @@ export function InvoiceImportPage() {
   const [supName, setSupName] = useState('')
   const [supId, setSupId] = useState('')
   const [date, setDate] = useState(today())
+  const [expiry, setExpiry] = useState('')
+  const [paid, setPaid] = useState(0)
+  const [payMethod, setPayMethod] = useState<'cash' | 'transfer' | 'debt'>('debt')
   const [confirmSave, setConfirmSave] = useState(false)
   const [saving, setSaving] = useState(false)
   const [aliases, setAliases] = useState<ProductAlias[]>([])
   const [pickKey, setPickKey] = useState<string | null>(null)
   const [pickQ, setPickQ] = useState('')
   const lastCatalogKey = useRef('')
+  const draftReady = useRef(false)
+  const leave = useUnsavedDraftGuard(inv != null)
+  const gdtBlocked = typeof location !== 'undefined' && (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
 
   const products = useLiveQuery(
     () => dbx.products.filter((p) => !p.deleted).toArray(),
@@ -94,6 +102,31 @@ export function InvoiceImportPage() {
   useEffect(() => {
     void loadProductAliases().then(setAliases)
   }, [])
+
+  useEffect(() => {
+    void loadFreshDraft<InvoiceDraft>(DRAFT_INVOICE).then((d) => {
+      if (!d) { draftReady.current = true; return }
+      setInv(d.inv as ParsedInvoice | null)
+      setRows((d.rows || []) as EditRow[])
+      setSupName(d.supName)
+      setSupId(d.supId)
+      setDate(d.date)
+      setExpiry(d.expiry)
+      setPaid(d.paid)
+      setPayMethod(d.payMethod)
+      draftReady.current = true
+    }).catch(() => { draftReady.current = true })
+  }, [])
+
+  useEffect(() => {
+    if (!draftReady.current) return
+    const tmr = window.setTimeout(() => {
+      void persistInvoiceDraft({
+        inv, rows, supName, supId, date, expiry, paid, payMethod,
+      })
+    }, 400)
+    return () => window.clearTimeout(tmr)
+  }, [inv, rows, supName, supId, date, expiry, paid, payMethod])
 
   function applyMatch(name: string, sku: string, nextSupId = supId): ProductMatch {
     return matchLine(name, sku, nextSupId, products, aliases)
@@ -123,7 +156,7 @@ export function InvoiceImportPage() {
       let parsed: ParsedInvoice | null = null
       if (file.type.startsWith('image/') && apiBase()) {
         try {
-          const part = await fileToBase64(file)
+          const part = await fileToScanPart(file)
           const text = await scanInvoiceImages([part])
           parsed = parseGeminiInvoiceJson(text)
         } catch (scanErr) {
@@ -192,56 +225,75 @@ export function InvoiceImportPage() {
 
   async function handleSave() {
     if (rows.length === 0) { showToast('Không có dòng nào để nhập', 'bad'); return }
+    if (rows.some((r) => matchTone(r) === 'sug')) {
+      showToast('Xác nhận gợi ý khớp hoặc chọn Tạo mới trên từng dòng', 'bad')
+      setConfirmSave(false)
+      return
+    }
     setSaving(true)
     try {
-      let supplierId = supId
-      let supplierName = supName.trim() || 'NCC lẻ'
-      if (!supplierId && supName.trim()) {
-        const s = await createSupplier({
-          name: supName.trim(),
-          phone: inv?.supplier.mst || '',
-          address: inv?.supplier.addr || '',
-        })
-        supplierId = s.id
-        supplierName = s.name
-      }
-
       const prices: Record<string, number> = {}
-      const grRows = []
-      const toLearn: { name: string; sku: string; pid: string }[] = []
+      const newProducts: Array<{ name: string; cat: string; price: number; cost: number; stock: number; unit: string }> = []
+      const grRows: Array<{
+        productId: string; name: string; unit: string; unitRatio: number; qty: number; cost: number; expiry: string; newProductIndex?: number
+      }> = []
+      const toLearn: { name: string; sku: string; pid?: string; newProductIndex?: number }[] = []
       for (const r of rows) {
         const resolved = resolveMatchForCommit(r.match, r.confirmed)
-        let productId = resolved.productId
-        if (!productId) {
-          const p = await addProduct({
+        if (!resolved.productId) {
+          const idx = newProducts.length
+          newProducts.push({
             name: r.name, cat: '', price: r.price || 0, cost: r.cost || 0,
             stock: 0, unit: r.unit || 'cái',
           })
-          productId = p.id
-        } else if (r.price > 0) {
-          prices[productId] = r.price
+          grRows.push({
+            productId: '', name: r.name, unit: r.unit || 'cái',
+            unitRatio: r.unitRatio && r.unitRatio > 0 ? r.unitRatio : 1,
+            qty: r.qty, cost: r.cost, expiry: '', newProductIndex: idx,
+          })
+        } else {
+          if (r.price > 0) prices[resolved.productId] = r.price
+          if (resolved.learn) toLearn.push({ name: r.name, sku: r.sku || '', pid: resolved.productId })
+          grRows.push({
+            productId: resolved.productId, name: r.name, unit: r.unit || 'cái',
+            unitRatio: r.unitRatio && r.unitRatio > 0 ? r.unitRatio : 1,
+            qty: r.qty, cost: r.cost, expiry: '',
+          })
         }
-        if (resolved.learn && productId) {
-          toLearn.push({ name: r.name, sku: r.sku || '', pid: productId })
-        }
-        grRows.push({
-          productId, name: r.name, unit: r.unit || 'cái',
-          unitRatio: r.unitRatio && r.unitRatio > 0 ? r.unitRatio : 1,
-          qty: r.qty, cost: r.cost, expiry: '',
-        })
       }
 
-      const gr = await saveGoodsReceipt({
-        supplier: supplierName, supplierId: supplierId || undefined,
-        date, expiry: '', note: inv?.note || ('Nhập từ hoá đơn' + (inv?.shdon ? ' ' + inv.shdon : '')),
-        rows: grRows, prices,
+      const { gr, productIds } = await commitInvoiceImport({
+        supplierName: supName.trim() || 'NCC lẻ',
+        supplierId: supId || undefined,
+        createSupplier: !supId && supName.trim() ? {
+          name: supName.trim(),
+          phone: inv?.supplier.mst || '',
+          address: inv?.supplier.addr || '',
+        } : undefined,
+        date,
+        expiry,
+        note: inv?.note || ('Nhập từ hoá đơn' + (inv?.shdon ? ' ' + inv.shdon : '')),
+        payMethod,
+        paid: payMethod === 'debt' ? 0 : paid,
+        newProducts,
+        rows: grRows,
+        prices,
       })
-      await Promise.all(toLearn.map((x) => learnProductAlias(x.name, x.sku, supplierId, x.pid)))
+      const sid = gr.supplierId || ''
+      await Promise.all(toLearn.map((x) => learnProductAlias(x.name, x.sku, sid, x.pid!)))
+      for (const r of grRows) {
+        if (r.newProductIndex != null) {
+          const pid = productIds[r.newProductIndex]
+          if (pid) await learnProductAlias(r.name, '', sid, pid)
+        }
+      }
       showToast(`✓ Đã nhập kho ${fmt(gr.total)}${newCount ? ` (+${newCount} SP mới)` : ''}`, 'ok')
+      leave.allowLeave()
+      await clearDraft(DRAFT_INVOICE)
       navigate('/kho')
     } catch (e) {
       logError(e, 'invoiceImport.save')
-      showToast('Lỗi khi lưu phiếu nhập', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi lưu phiếu nhập', 'bad')
     } finally {
       setSaving(false)
       setConfirmSave(false)
@@ -250,6 +302,11 @@ export function InvoiceImportPage() {
 
   return (
     <div className="flex flex-col h-full">
+      {gdtBlocked && (
+        <div className="px-4 py-2 text-xs" style={{ background: 'var(--warn-bg)', color: 'var(--warn)' }}>
+          Kéo hóa đơn trực tiếp từ GDT chỉ trên 3su.shop. Máy này chọn file XML/HTML/Excel.
+        </div>
+      )}
       <header className="app-hdr bordered">
         <button className="btn-back" onClick={() => navigate('/nhap-hang')}>
           <ChevronLeft size={20} />
@@ -386,6 +443,23 @@ export function InvoiceImportPage() {
               <span className="text-sm" style={{ color: 'var(--mute)' }}>Tổng tiền nhập</span>
               <span className="stat-num text-xl font-medium" style={{ color: 'var(--ink)' }}>{fmt(total)}</span>
             </div>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px]" style={{ color: 'var(--mute)' }}>HSD phiếu</span>
+                <input className="field-input !py-2 text-sm" type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
+              </label>
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px]" style={{ color: 'var(--mute)' }}>Thanh toán</span>
+                <div className="flex gap-1">
+                  {([['cash', 'TM'], ['transfer', 'CK'], ['debt', 'Nợ']] as const).map(([v, label]) => (
+                    <button key={v} type="button" className={'chip ' + (payMethod === v ? 'chip-on' : '')} onClick={() => setPayMethod(v)}>{label}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {payMethod !== 'debt' && (
+              <input className="field-input mb-3" type="number" inputMode="numeric" placeholder="Số tiền đã trả" value={paid || ''} onChange={(e) => setPaid(Number(e.target.value) || 0)} />
+            )}
             <button className="btn-cta" disabled={rows.length === 0 || saving} onClick={() => setConfirmSave(true)}>
               Lưu phiếu nhập
             </button>
@@ -477,6 +551,7 @@ export function InvoiceImportPage() {
         onConfirm={handleSave}
         onCancel={() => setConfirmSave(false)}
       />
+      {leave.dialog}
     </div>
   )
 }

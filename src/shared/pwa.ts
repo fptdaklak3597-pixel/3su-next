@@ -64,6 +64,31 @@ export function useInstallPrompt() {
   return { canInstall: !!deferred, installed, promptInstall }
 }
 
+export type InstallSurface = 'native' | 'ios-safari' | 'ios-other' | 'manual'
+
+const IOS_NON_SAFARI = /CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|YaBrowser|FBAN|FBAV|Instagram|Line\/|Zalo|GSA\//i
+
+export function isApplePhoneOrTablet(
+  ua: string,
+  env: { platform?: string; maxTouchPoints?: number } = {},
+): boolean {
+  if (/iPad|iPhone|iPod/.test(ua)) return true
+  const platform = env.platform ?? (typeof navigator !== 'undefined' ? navigator.platform : '')
+  const maxTouchPoints = env.maxTouchPoints ?? (typeof navigator !== 'undefined' ? navigator.maxTouchPoints : 0)
+  return platform === 'MacIntel' && maxTouchPoints > 1
+}
+
+export function installSurface(
+  canInstall: boolean,
+  ua = typeof navigator !== 'undefined' ? navigator.userAgent : '',
+  env?: { platform?: string; maxTouchPoints?: number },
+): InstallSurface {
+  if (canInstall) return 'native'
+  if (!isApplePhoneOrTablet(ua, env)) return 'manual'
+  const safari = /Safari/i.test(ua) && !IOS_NON_SAFARI.test(ua)
+  return safari ? 'ios-safari' : 'ios-other'
+}
+
 /* ─── Service Worker updates ─── */
 const SW_CHECK_MS = 60 * 60 * 1000
 

@@ -32,8 +32,23 @@ describe('Cloudflare Pages security headers', () => {
   it('cho phép iframe Firebase cùng origin + popup Google', async () => {
     const text = await headersFile()
     expect(text).toContain("frame-src 'self'")
+    expect(text).toContain('https://www.gstatic.com')
+    expect(text).toContain('https://recaptcha.google.com')
     expect(text).toContain('Cross-Origin-Opener-Policy: same-origin-allow-popups')
     expect(text).toMatch(/\/__\/auth\/\*[\s\S]*X-Frame-Options: SAMEORIGIN/)
+  })
+
+  it('meta CSP trong HTML không chặn reCAPTCHA/Firebase (giao với header)', async () => {
+    const web = await readFile(resolve(process.cwd(), 'index.html'), 'utf8')
+    const mobile = await readFile(resolve(process.cwd(), 'mobile.html'), 'utf8')
+    for (const html of [web, mobile]) {
+      const meta = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1] ?? ''
+      expect(meta).toContain("frame-src 'self'")
+      expect(meta).toContain('https://www.gstatic.com')
+      expect(meta).toContain('https://www.google.com')
+      expect(meta).toContain('https://apis.google.com')
+      expect(meta).toContain('https://recaptcha.google.com')
+    }
   })
 
   it('không cache callback đăng nhập và trang admin', async () => {

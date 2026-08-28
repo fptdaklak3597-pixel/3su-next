@@ -2,10 +2,13 @@
  * 3SU Next — Nghiệp vụ bán hàng
  * Checkout, giỏ hàng, thanh toán, hủy đơn — port từ 14-sale/14b-checkout/15-orders.
  */
-import { dbx, getSettings } from '../db'
+import { dbx, getMeta, getSettings, setMeta } from '../db'
+import { DRAFT_CART } from './drafts'
 import type { Product, ProductBatch, Sale, SaleItem, PayMethod, Customer, DebtPayment } from '../types'
-import { consumeBatchesFefo, liveBatchExpiry, restoreBatchesFefo } from './inventory'
-import { uid, localDay } from '../format'
+import { consumeBatchesFefo, consumeBatchesFefoAllowNegative, isCatalogUnitRatio, liveBatchExpiry, restoreBatchesFefo } from './inventory'
+import { requirePermission } from './auth'
+import { assertCloudShopWritable } from '../sync/license'
+import { uid, localDay, prevCalendarDay, vnDay } from '../format'
 import { enqueueOp, requestFlush } from '../sync/engine'
 import { notifyDbChanged, withExclusiveLock } from '../offline'
 import { allocateCustomerDebt, allocationForSale } from './debt-allocation'
@@ -21,6 +24,10 @@ export interface CartItem {
 export function cartUnitPrice(item: CartItem, p: Product, wholesale: boolean): number {
   const base = wholesale && p.wholesalePrice > 0 ? p.wholesalePrice : p.price
   return base * item.unitRatio
+}
+
+export function saleUsesWholesale(wholesaleMode: boolean, customer?: { wholesale?: boolean } | null): boolean {
+  return wholesaleMode || !!customer?.wholesale
 }
 
 export function cartUnitCost(item: CartItem, p: Product): number {
@@ -55,6 +62,32 @@ export function discountToAmount(subtotal: number, value: number, kind: Discount
   return Math.max(0, Math.min(subtotal, Math.round(raw)))
 }
 
+/** Tiền mặt: ô trống / chưa bấm Đủ không được coi là đủ tiền. */
+export function effectiveCashTendered(input: {
+  payMethod: PayMethod
+  total: number
+  tendered: number
+  cashEntered: boolean
+}): { tendered: number; needsCashEntry: boolean; debtAmount: number; change: number } {
+  const total = Math.max(0, Math.round(Number.isFinite(input.total) ? input.total : 0))
+  if (input.payMethod === 'debt') {
+    return { tendered: 0, needsCashEntry: false, debtAmount: total, change: 0 }
+  }
+  if (input.payMethod !== 'cash') {
+    return { tendered: total, needsCashEntry: false, debtAmount: 0, change: 0 }
+  }
+  if (!input.cashEntered) {
+    return { tendered: 0, needsCashEntry: true, debtAmount: 0, change: 0 }
+  }
+  const tendered = Math.max(0, Math.round(Number.isFinite(input.tendered) ? input.tendered : 0))
+  return {
+    tendered,
+    needsCashEntry: false,
+    debtAmount: Math.max(0, total - tendered),
+    change: Math.max(0, tendered - total),
+  }
+}
+
 /** Cảnh lúc thêm món: hết hàng nếu tồn sau trừ < 0. */
 export function stockAddWarning(stock: number, addBaseQty: number): 'out' | null {
   return stock - addBaseQty < 0 ? 'out' : null
@@ -78,6 +111,43 @@ export interface CheckoutInput {
   tendered: number
   customerId: string | null
   wholesale: boolean
+  idempotencyKey?: string
+}
+
+export const IDEMPOTENCY_META_PREFIX = 'sale:idemp:'
+
+function fnv1a32Hex(input: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+/** Hash ổn định của giỏ + PTTT — cùng nội dung → cùng key. */
+export function checkoutFingerprint(input: Pick<CheckoutInput, 'items' | 'discount' | 'payMethod' | 'tendered' | 'customerId' | 'wholesale'>): string {
+  const items = input.items
+    .map((it) => ({
+      productId: it.productId,
+      qty: it.qty,
+      unitName: it.unitName,
+      unitRatio: it.unitRatio,
+    }))
+    .sort((a, b) =>
+      a.productId.localeCompare(b.productId)
+      || a.unitName.localeCompare(b.unitName)
+      || a.unitRatio - b.unitRatio
+      || a.qty - b.qty,
+    )
+  return fnv1a32Hex(JSON.stringify({
+    items,
+    discount: input.discount,
+    payMethod: input.payMethod,
+    tendered: input.tendered,
+    customerId: input.customerId,
+    wholesale: input.wholesale,
+  }))
 }
 
 export interface CheckoutResult {
@@ -89,6 +159,17 @@ function assertFiniteNonNegative(value: number, label: string): void {
   if (!Number.isFinite(value) || value < 0) throw new Error(label + ' không hợp lệ')
 }
 
+/** Tiền mặt / CK đã thu trên đơn — cộng vào số phải hoàn khi hủy. */
+export function cashCollectedOnSale(sale: Pick<Sale, 'payMethod' | 'tendered' | 'total'>): number {
+  const total = Math.max(0, Math.round(Number.isFinite(sale.total) ? sale.total : 0))
+  if (sale.payMethod === 'transfer') return total
+  if (sale.payMethod === 'cash') {
+    const tendered = Math.max(0, Math.round(Number.isFinite(sale.tendered) ? sale.tendered : 0))
+    return Math.min(tendered, total)
+  }
+  return 0
+}
+
 /**
  * Chốt đơn — atomic transaction:
  * 1. Tính lại giá từ product (không tin tổng client)
@@ -97,6 +178,8 @@ function assertFiniteNonNegative(value: number, label: string): void {
  * 4. Cập nhật công nợ khách nếu ghi nợ/thiếu tiền
  */
 export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult> {
+  await requirePermission('sell')
+  await assertCloudShopWritable()
   if (!input.items.length) throw new Error('Giỏ hàng trống')
   if (input.payMethod !== 'cash' && input.payMethod !== 'transfer' && input.payMethod !== 'debt') {
     throw new Error('Hình thức thanh toán không hợp lệ')
@@ -105,6 +188,17 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
   let sale!: Sale
 
   await withExclusiveLock('sale-commit', () => dbx.transaction('rw', [dbx.products, dbx.sales, dbx.stockMoves, dbx.customers, dbx.batches, dbx.syncQueue, dbx.appliedOps, dbx.meta], async () => {
+    if (input.idempotencyKey) {
+      const existingId = await getMeta<string | null>(IDEMPOTENCY_META_PREFIX + input.idempotencyKey, null)
+      if (existingId) {
+        const existing = await dbx.sales.get(existingId)
+        if (existing) {
+          sale = existing
+          await setMeta(DRAFT_CART, null)
+          return
+        }
+      }
+    }
     const settings = await getSettings()
     const allowNeg = settings.allowNegativeStock !== false
     const saleItems: SaleItem[] = []
@@ -126,6 +220,9 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
       }
       const deducted = ci.qty * ci.unitRatio
       if (!Number.isFinite(deducted) || deducted <= 0) throw new Error('Số lượng quy đổi không hợp lệ')
+      if (!isCatalogUnitRatio(p, ci.unitRatio)) {
+        throw new Error('Đơn vị không hợp lệ: ' + p.name)
+      }
       requestedBaseQty.set(p.id, (requestedBaseQty.get(p.id) ?? 0) + deducted)
       saleItems.push({
         productId: p.id,
@@ -182,6 +279,7 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
       change,
       debtAmount,
       customerId: input.customerId,
+      wholesale: !!input.wholesale,
       date: now,
       synced: false,
     }
@@ -193,21 +291,13 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
       p.stock -= deducted
       p.updatedAt = Date.now()
       if (p.batches?.length) {
-        const { batches, leftover } = consumeBatchesFefo(p.batches, deducted)
-        if (leftover > 0) {
-          if (!allowNeg) {
-            throw new Error(`${p.name} không đủ lô (thiếu ${leftover})`)
-          }
-          // Cho phép âm kho: ghi phần thiếu lên lô FEFO cuối
-          const order = [...batches].sort((a, b) => {
-            const ea = a.expiry || '9999-12-31'
-            const eb = b.expiry || '9999-12-31'
-            return ea.localeCompare(eb) || String(a.date).localeCompare(String(b.date))
-          })
-          const last = order[order.length - 1]
-          if (last) last.remain -= leftover
+        const { leftover } = consumeBatchesFefo(p.batches, deducted)
+        if (leftover > 0 && !allowNeg) {
+          throw new Error(`${p.name} không đủ lô (thiếu ${leftover})`)
         }
-        await writeProductBatches(p, batches)
+        await writeProductBatches(p, leftover > 0
+          ? consumeBatchesFefoAllowNegative(p.batches, deducted)
+          : consumeBatchesFefo(p.batches, deducted).batches)
       } else {
         await dbx.products.put(p)
       }
@@ -236,6 +326,10 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
       await dbx.customers.put(c)
     }
     await enqueueOp('sale.commit', sale)
+    await setMeta(DRAFT_CART, null)
+    if (input.idempotencyKey) {
+      await setMeta(IDEMPOTENCY_META_PREFIX + input.idempotencyKey, sale.id)
+    }
   }))
   notifyDbChanged()
   requestFlush()
@@ -244,9 +338,11 @@ export async function confirmSale(input: CheckoutInput): Promise<CheckoutResult>
 
 /** Hủy đơn — hoàn kho, hoàn nợ (FIFO); trả về số tiền cần hoàn khách nếu đã thu. */
 export async function voidSale(saleId: string, reason: string): Promise<{ refund: number }> {
+  await requirePermission('sell')
+  await assertCloudShopWritable()
   if (!reason.trim()) throw new Error('Nhập lý do hủy đơn')
   let refund = 0
-  await dbx.transaction('rw', [dbx.sales, dbx.products, dbx.stockMoves, dbx.customers, dbx.debtPayments, dbx.batches, dbx.syncQueue, dbx.appliedOps], async () => {
+  await withExclusiveLock('sale-void-' + saleId, () => dbx.transaction('rw', [dbx.sales, dbx.products, dbx.stockMoves, dbx.customers, dbx.debtPayments, dbx.batches, dbx.syncQueue, dbx.appliedOps], async () => {
     const sale = await dbx.sales.get(saleId)
     if (!sale || sale.voided) return
 
@@ -280,7 +376,7 @@ export async function voidSale(saleId: string, reason: string): Promise<{ refund
       })
     }
 
-    // Hoàn nợ FIFO: chỉ trừ phần chưa thu; phần đã thu → phiếu hoàn tiền (amount âm)
+    // Hoàn nợ FIFO: chỉ trừ phần chưa thu; phần đã thu → phiếu hoàn tiền local (không đẩy debt.pay âm)
     if (sale.customerId) {
       const c = await dbx.customers.get(sale.customerId)
       if (c) {
@@ -297,14 +393,13 @@ export async function voidSale(saleId: string, reason: string): Promise<{ refund
           c.debt = Math.max(0, c.debt - unpaid)
           if (refund > 0) {
             const dp: DebtPayment = {
-              id: uid('dp'),
+              id: `dp_void_${sale.id}`,
               customerId: sale.customerId,
               amount: -refund,
               date: new Date().toISOString(),
               note: 'Hoàn tiền do hủy đơn ' + sale.id.slice(-6),
             }
-            await dbx.debtPayments.add(dp)
-            await enqueueOp('debt.pay', dp)
+            if (!(await dbx.debtPayments.get(dp.id))) await dbx.debtPayments.add(dp)
           }
         }
         c.totalSpent = Math.max(0, c.totalSpent - sale.total)
@@ -313,8 +408,9 @@ export async function voidSale(saleId: string, reason: string): Promise<{ refund
         await dbx.customers.put(c)
       }
     }
+    refund += cashCollectedOnSale(sale)
     await enqueueOp('sale.void', { saleId, reason })
-  })
+  }))
   notifyDbChanged()
   requestFlush()
   return { refund }
@@ -338,7 +434,7 @@ export function dayStats(sales: Sale[], date: string): DayStatResult {
     revenue: daySales.reduce((a, s) => a + s.total, 0),
     profit: daySales.reduce((a, s) => a + s.profit, 0),
     orders: daySales.length,
-    items: daySales.reduce((a, s) => a + s.items.reduce((x, i) => x + i.qty * i.unitRatio, 0), 0),
+    items: daySales.reduce((a, s) => a + s.items.reduce((x, i) => i.qty * i.unitRatio + x, 0), 0),
   }
 }
 
@@ -416,8 +512,12 @@ export const DENOMINATIONS = [10000, 20000, 50000, 100000, 200000, 500000]
 
 /** Đọc sale theo chỉ mục date (ISO) — fromDay/toDayInclusive dạng YYYY-MM-DD. */
 export async function salesInDateRange(fromDay: string, toDayInclusive: string) {
-  return dbx.sales
+  const rows = await dbx.sales
     .where('date')
-    .between(fromDay, toDayInclusive + '\uffff', true, true)
+    .between(prevCalendarDay(fromDay), toDayInclusive + '\uffff', true, true)
     .toArray()
+  return rows.filter((s) => {
+    const day = vnDay(s.date)
+    return day >= fromDay && day <= toDayInclusive
+  })
 }

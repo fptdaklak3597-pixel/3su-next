@@ -19,12 +19,13 @@ import { Sheet, ConfirmDialog, EmptyState } from '@/shared/components'
 import { ChevronLeft, Plus, Trash2, Ruler, Tags, StickyNote, ShieldCheck, Pin, Check, Pencil } from 'lucide-react'
 import type { Product, PricingRule, Note, NoteType } from '@/core/types'
 
-export function ToolsPage() {
+export function ToolsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const navigate = useNavigate()
   const [tab, setTab] = useState<'units' | 'pricing' | 'notes'>('units')
 
   return (
     <div className="flex flex-col h-full">
+      {!embedded && (
       <header className="app-hdr bordered">
         <button className="btn-back" onClick={() => navigate('/them')}>
           <ChevronLeft size={20} />
@@ -32,6 +33,7 @@ export function ToolsPage() {
         <div className="font-brand text-[17px] font-medium flex-1 text-center" style={{ color: 'var(--ink)' }}>Công cụ</div>
         <div className="w-9" />
       </header>
+      )}
 
       <div className="px-4 pt-3 pb-2 flex gap-2">
         <button className="chip flex-1 justify-center" style={tab === 'units' ? { background: 'var(--ink)', color: 'var(--paper)', borderColor: 'var(--ink)' } : {}} onClick={() => setTab('units')}>

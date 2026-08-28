@@ -145,7 +145,14 @@ export async function restoreBackup(
  * Khôi phục file local là nhánh dữ liệu mới nhưng không phải cơ chế chuyển tài
  * khoản. Mọi credential trong file legacy bị bỏ; user hiện có trên máy được giữ.
  */
-export async function restoreLocalBackup(data: BackupData): Promise<void> {
+export async function restoreLocalBackup(
+  data: BackupData,
+  opts?: { allowEmpty?: boolean },
+): Promise<void> {
+  const { isEmptyBusinessBackup } = await import('./domain/trial')
+  if (!opts?.allowEmpty && isEmptyBusinessBackup(data)) {
+    throw new Error('File sao lưu không có sản phẩm, đơn hay khách. Không khôi phục để tránh xóa sạch cửa hàng.')
+  }
   const previousShopId = await getMeta<string | null>('cloud:shopId', null)
   try {
     const { disconnectTransport } = await import('./sync/engine')

@@ -1,15 +1,17 @@
 /**
  * 3SU Next — Chi tiết đơn hàng + Hủy đơn
  */
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { voidSale } from '@/core/domain/sales'
 import { dispatchPrint, printResultToast } from '@/core/browser/printQueue'
+import { printStatusLabel, type PrintLogEntry } from '@/core/browser/printLog'
 import { fmt, formatDateTime } from '@/core/format'
 import { logError } from '@/core/errorLogger'
+import { createConfirmGate } from '@/core/confirmGate'
 import { ChevronLeft, Printer } from 'lucide-react'
 
 export function OrderDetailPage() {
@@ -21,12 +23,18 @@ export function OrderDetailPage() {
   const user = useApp((s) => s.user)
   const [confirmVoid, setConfirmVoid] = useState(false)
   const [voidReason, setVoidReason] = useState('')
+  const [processing, setProcessing] = useState(false)
+  const confirmGate = useRef(createConfirmGate())
 
   const sale = useLiveQuery(() => (id ? dbx.sales.get(id) : undefined), [id])
   const customer = useLiveQuery(
     () => (sale?.customerId ? dbx.customers.get(sale.customerId) : undefined),
     [sale?.customerId],
   )
+  const printLogs = useLiveQuery(() => dbx.meta.get('print:bySaleId'), [id])
+  const printLog = id
+    ? ((printLogs?.value as Record<string, PrintLogEntry> | undefined)?.[id] ?? null)
+    : null
 
   if (!sale) {
     return (
@@ -37,6 +45,8 @@ export function OrderDetailPage() {
   const payLabel = { cash: 'Tiền mặt', transfer: 'Chuyển khoản', debt: 'Ghi nợ' }[sale.payMethod] || sale.payMethod
 
   async function handleVoid() {
+    if (!confirmGate.current.tryEnter()) return
+    setProcessing(true)
     try {
       if (sale!.debtAmount > 0 && customer && customer.debt < sale!.debtAmount) {
         showToast('Khách đã trả một phần/toàn bộ đơn này — sẽ tạo phiếu hoàn nếu cần', 'ok')
@@ -47,6 +57,9 @@ export function OrderDetailPage() {
     } catch (e) {
       logError(e, 'order.void')
       showToast('Lỗi khi hủy đơn', 'bad')
+    } finally {
+      setProcessing(false)
+      confirmGate.current.leave()
     }
   }
 
@@ -142,6 +155,10 @@ export function OrderDetailPage() {
           )}
         </div>
 
+        <div className="text-[12px] mb-2" style={{ color: 'var(--mute)' }}>
+          In: {printStatusLabel(printLog)}
+        </div>
+
         {/* Print + Void buttons */}
         <div className="flex gap-2">
           <button
@@ -150,7 +167,7 @@ export function OrderDetailPage() {
             onClick={handlePrint}
           >
             <Printer size={17} />
-            In hóa đơn
+            {printLog ? 'In lại' : 'In hóa đơn'}
           </button>
           {!sale.voided && (
             <button className="btn-danger flex-1" onClick={() => setConfirmVoid(true)}>
@@ -167,7 +184,7 @@ export function OrderDetailPage() {
             <input className="field-input mb-3" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="VD: khách đổi ý" />
             <div className="flex gap-2">
               <button className="chip flex-1 justify-center" onClick={() => setConfirmVoid(false)}>Không</button>
-              <button className="btn-danger flex-1" disabled={!voidReason.trim()} onClick={() => void handleVoid()}>Hủy đơn</button>
+              <button className="btn-danger flex-1" disabled={!voidReason.trim() || processing} onClick={() => void handleVoid()}>Hủy đơn</button>
             </div>
           </div>
         </div>

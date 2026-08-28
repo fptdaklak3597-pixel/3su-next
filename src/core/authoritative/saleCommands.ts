@@ -97,5 +97,7 @@ export async function confirmSaleAuthoritative(
 }
 
 export async function getShopIdForCommands(): Promise<string> {
-  return getMeta<string>('cloudShopId', 'shop_local')
+  const shopId = await getMeta<string>('cloud:shopId', '')
+  if (!shopId) throw new Error('Chưa kết nối cửa hàng cloud')
+  return shopId
 }

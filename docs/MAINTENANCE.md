@@ -81,6 +81,8 @@ DevTools → **Application** → **IndexedDB** → `3su_next_v4`. Các table:
 `products`, `sales`, `customers`, `debtPayments`, `goodsReceipts`, `stockMoves`,
 `stocktakes`, `invoices`, `syncQueue`, `meta`.
 
+Khi nâng DB v4 → v5, `syncQueue` bị xóa (đổi format op-log). Trước khi clear, hàng đợi cũ được chép vào `meta['sync:preV5Queue']`. Shop đã ở v6 không chạy lại bước này.
+
 ### 3.2 Kiểm tra nhanh trong Console
 
 ```js

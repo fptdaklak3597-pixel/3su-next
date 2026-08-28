@@ -328,6 +328,13 @@ async function requireUserManagerInTransaction(): Promise<User> {
   return actor
 }
 
+function assertCanAssignPrivilege(actor: User, role: UserRole, perms?: UserPerms): void {
+  if (role === 'owner') throw new Error('Không thể cấp vai trò chủ cửa hàng')
+  if ((role === 'admin' || perms?.all) && actor.role !== 'owner') {
+    throw new Error('Chỉ chủ cửa hàng được tạo hoặc cấp quản trị')
+  }
+}
+
 /* ─── Quản lý tài khoản ─── */
 export interface NewUserInput {
   username: string
@@ -475,6 +482,12 @@ export async function updateUser(
     const cur = await dbx.users.get(userId)
     if (!cur || cur.deleted) throw new Error('Không tìm thấy tài khoản')
     if (patch.role === 'owner' && cur.role !== 'owner') throw new Error('Không thể cấp vai trò chủ cửa hàng')
+    if (cur.role === 'admin' && actor.role !== 'owner') {
+      throw new Error('Chỉ chủ cửa hàng được sửa tài khoản quản trị')
+    }
+    if (patch.role !== undefined || patch.perms !== undefined) {
+      assertCanAssignPrivilege(actor, patch.role ?? cur.role, patch.perms ?? cur.perms)
+    }
     if (cur.role === 'owner') {
       if (actor.role !== 'owner') throw new Error('Chỉ chủ cửa hàng được thay đổi tài khoản chủ cửa hàng')
       if (patch.role && patch.role !== 'owner') throw new Error('Không thể hạ vai trò chủ cửa hàng')
@@ -525,7 +538,8 @@ async function persistNewUser(u: User, ownerBootstrap: boolean): Promise<User> {
     if (ownerBootstrap) {
       if (await dbx.users.count() > 0) throw new Error('Chủ cửa hàng chỉ được tạo khi thiết bị chưa có tài khoản')
     } else {
-      await requireUserManagerInTransaction()
+      const actor = await requireUserManagerInTransaction()
+      assertCanAssignPrivilege(actor, u.role, u.perms)
     }
     const existing = await dbx.users.where('username').equals(u.username).first()
     if (existing) throw new Error('Tên đăng nhập đã tồn tại')

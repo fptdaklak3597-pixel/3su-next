@@ -1,12 +1,13 @@
 /**
  * Nhà cung cấp web — bảng + thêm + trả nợ.
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, matchesSearch } from '@/core/format'
 import { logError } from '@/core/errorLogger'
+import { createConfirmGate } from '@/core/confirmGate'
 import {
   createSupplier, deleteSupplier, recordSupplierPayment, updateSupplier,
   supplierDebt, supplierMonthlyStatement, supplierTotalPurchases, totalSupplierDebt,
@@ -26,6 +27,8 @@ export function WebSuppliersPage() {
   const [editForm, setEditForm] = useState({ name: '', phone: '' })
   const [form, setForm] = useState({ name: '', phone: '', address: '', note: '', leadDays: 2 })
   const [payAmount, setPayAmount] = useState(0)
+  const [processing, setProcessing] = useState(false)
+  const confirmGate = useRef(createConfirmGate())
   const [stmtFor, setStmtFor] = useState<Supplier | null>(null)
   const [stmtMonth, setStmtMonth] = useState(() => new Date().toISOString().slice(0, 7))
 
@@ -61,6 +64,8 @@ export function WebSuppliersPage() {
 
   async function handlePay() {
     if (!payFor) return
+    if (!confirmGate.current.tryEnter()) return
+    setProcessing(true)
     try {
       await recordSupplierPayment({ supplierId: payFor.id, amount: payAmount, note: 'Trả nợ NCC' })
       showToast(`✓ Đã trả ${fmt(payAmount)}`, 'ok')
@@ -69,6 +74,9 @@ export function WebSuppliersPage() {
     } catch (e) {
       logError(e, 'supplier.pay')
       showToast(e instanceof Error ? e.message : 'Lỗi khi trả nợ', 'bad')
+    } finally {
+      setProcessing(false)
+      confirmGate.current.leave()
     }
   }
 
@@ -92,7 +100,7 @@ export function WebSuppliersPage() {
       setDelTarget(null)
     } catch (e) {
       logError(e, 'supplier.delete')
-      showToast('Lỗi khi xóa', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi xóa', 'bad')
     }
   }
 
@@ -143,7 +151,7 @@ export function WebSuppliersPage() {
                     {' '}
                     <button className="web-btn" style={{ height: 28 }} onClick={() => { setEditTarget(s); setEditForm({ name: s.name, phone: s.phone || '' }) }}>Sửa</button>
                     {' '}
-                    <button className="web-btn" style={{ height: 28 }} onClick={() => setDelTarget(s)}>Xóa</button>
+                    <button className="web-btn" style={{ height: 28 }} disabled={debt > 0} onClick={() => { if (debt > 0) return; setDelTarget(s) }}>Xóa</button>
                   </td>
                 </tr>
               ))}
@@ -165,7 +173,7 @@ export function WebSuppliersPage() {
       <Sheet open={!!payFor} onClose={() => setPayFor(null)} title={payFor ? `Trả nợ · ${payFor.name}` : 'Trả nợ'}>
         <div className="text-sm mb-2" style={{ color: 'var(--kv-muted)' }}>Đang nợ {fmt(payDebt)}</div>
         <input className="web-input" type="number" value={payAmount || ''} onChange={(e) => setPayAmount(Number(e.target.value) || 0)} />
-        <button className="web-btn pri w-full mt-3" disabled={payAmount <= 0} onClick={handlePay}>Xác nhận trả {payAmount > 0 ? fmt(payAmount) : ''}</button>
+        <button className="web-btn pri w-full mt-3" disabled={processing || payAmount <= 0 || payAmount > payDebt} onClick={handlePay}>Xác nhận trả {payAmount > 0 ? fmt(payAmount) : ''}</button>
       </Sheet>
 
       <Sheet open={!!stmtFor} onClose={() => setStmtFor(null)} title={stmtFor ? `Sao kê · ${stmtFor.name}` : 'Sao kê'}>

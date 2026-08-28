@@ -4,6 +4,7 @@
  * Sau Google/email: xác minh membership server trước khi mở dữ liệu local.
  */
 import { useEffect, useState } from 'react'
+import { shopGateFromEnterResult } from '@/core/domain/health-banners'
 import {
   classifyCloudUser,
   completePendingSignIn,
@@ -22,7 +23,7 @@ const listeners = new Set<(s: CloudSession) => void>()
 
 function gateOfUser(): CloudSession {
   const raw = classifyCloudUser(getFirebaseAuth()?.currentUser ?? null)
-  return raw === 'verify' ? 'in' : raw
+  return raw
 }
 
 function emit(s: CloudSession): void {
@@ -39,11 +40,13 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 
 async function resolveShopGate(): Promise<CloudSession> {
   const { enterExistingCloudShop } = await import('@/core/sync/cloud')
+  const { getMeta } = await import('@/core/db')
+  const localShopId = await getMeta<string | null>('cloud:shopId', null)
   try {
     const id = await withTimeout(enterExistingCloudShop(), 8000)
-    return id ? 'in' : 'need-shop'
+    return shopGateFromEnterResult({ enteredId: id, localShopId, enterFailed: false })
   } catch {
-    return 'need-shop'
+    return shopGateFromEnterResult({ enteredId: null, localShopId, enterFailed: true })
   }
 }
 
@@ -68,7 +71,7 @@ function startCloudSession(): void {
       return
     }
     if (s === 'verify') {
-      if (run === generation) emit('in')
+      if (run === generation) emit('verify')
       return
     }
     emit('loading')
@@ -94,6 +97,10 @@ function startCloudSession(): void {
 /** Gọi sau khi chọn, tạo cửa hàng hoặc nhập mã thành công. */
 export function markCloudShopEntered(): void {
   emit('in')
+}
+
+export function markCloudNeedShop(): void {
+  emit('need-shop')
 }
 
 if (import.meta.hot) {

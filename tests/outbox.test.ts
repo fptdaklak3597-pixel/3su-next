@@ -203,7 +203,7 @@ describe('outbox — op sinh atomic trong domain', () => {
   })
 
   it('deleteProduct phát op product.delete, không nhét stock vào upsert', async () => {
-    const p = mkProduct({ stock: 10 })
+    const p = mkProduct({ stock: 0 })
     await dbx.products.add(p)
     await dbx.syncQueue.clear()
     await dbx.appliedOps.clear()

@@ -50,6 +50,9 @@ export function MobileShell() {
       <main className="screen-scroll screen-enter">
         <Outlet />
       </main>
+      <div className="ai-dock-anchor">
+        <AiChatDock />
+      </div>
       {!hideBar && (
         <nav className="tab-bar" aria-label="Điều hướng chính">
           {visibleTabs.map((tab) => {
@@ -77,7 +80,6 @@ export function MobileShell() {
         </nav>
       )}
       <ToolsSheet open={toolsOpen} onClose={() => setToolsOpen(false)} />
-      <AiChatDock />
     </>
   )
 }

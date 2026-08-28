@@ -5,7 +5,7 @@
 import { create } from 'zustand'
 import type { Settings, ShopInfo, User, SyncState, TrialInfo } from '../core/types'
 import { DEFAULT_SETTINGS, DEFAULT_SHOP } from '../core/db'
-import type { CartItem } from '../core/domain/sales'
+import type { CartItem, DiscountKind } from '../core/domain/sales'
 import type { PayMethod } from '../core/types'
 
 export interface AppState {
@@ -45,18 +45,25 @@ export interface AppState {
   discount: number
   setDiscount: (d: number) => void
 
+  discountKind: DiscountKind
+  setDiscountKind: (k: DiscountKind) => void
+
   payMethod: PayMethod
   setPayMethod: (m: PayMethod) => void
 
   tendered: number
   setTendered: (t: number) => void
 
+  cashEntered: boolean
+  setCashEntered: (v: boolean) => void
+
   wholesaleMode: boolean
+  setWholesaleMode: (v: boolean) => void
   toggleWholesale: () => void
 
   /* ─── Toast ─── */
-  toast: { msg: string; kind: 'ok' | 'bad' | '' } | null
-  showToast: (msg: string, kind?: 'ok' | 'bad' | '') => void
+  toast: { msg: string; kind: 'ok' | 'bad' | 'warn' | '' } | null
+  showToast: (msg: string, kind?: 'ok' | 'bad' | 'warn' | '') => void
   hideToast: () => void
 
   /* ─── Celebration ─── */
@@ -93,7 +100,18 @@ export const useApp = create<AppState>((set, get) => ({
 
   cart: [],
   setCart: (c) => set({ cart: c }),
-  clearCart: () => set({ cart: [], customerId: null, discount: 0, payMethod: 'cash', tendered: 0 }),
+  clearCart: () => {
+    set({
+      cart: [],
+      customerId: null,
+      discount: 0,
+      discountKind: 'amount',
+      payMethod: 'cash',
+      tendered: 0,
+      cashEntered: false,
+    })
+    void import('./domain/drafts').then((m) => m.clearDraft(m.DRAFT_CART))
+  },
 
   customerId: null,
   setCustomerId: (id) => set({ customerId: id }),
@@ -101,13 +119,20 @@ export const useApp = create<AppState>((set, get) => ({
   discount: 0,
   setDiscount: (d) => set({ discount: d }),
 
+  discountKind: 'amount',
+  setDiscountKind: (k) => set({ discountKind: k }),
+
   payMethod: 'cash',
   setPayMethod: (m) => set({ payMethod: m }),
 
   tendered: 0,
   setTendered: (t) => set({ tendered: t }),
 
+  cashEntered: false,
+  setCashEntered: (v) => set({ cashEntered: v }),
+
   wholesaleMode: false,
+  setWholesaleMode: (v) => set({ wholesaleMode: v }),
   toggleWholesale: () => set((s) => ({ wholesaleMode: !s.wholesaleMode })),
 
   toast: null,

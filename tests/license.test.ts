@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { isLicenseBlocked, licenseFromApiError } from '@/core/sync/license'
 
 describe('shop license', () => {
+  // useShopLicense reset fetched đồng bộ khi enabled đổi — không test hook ở đây.
   it('blocks locked and expired', () => {
     expect(isLicenseBlocked({ status: 'locked', expiresAt: null })).toBe(true)
     expect(isLicenseBlocked({ status: 'expired', expiresAt: Date.now() + 99_000 })).toBe(true)

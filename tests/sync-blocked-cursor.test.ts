@@ -65,7 +65,7 @@ describe('blocked remote dependency', () => {
 
     await flushQueue()
 
-    expect(getSyncState().status).toBe('error')
+    expect(getSyncState().status).toBe('ok')
     expect(await getMeta<number>('sync:lastSeq', 0)).toBe(10)
     expect(await dbx.appliedOps.get(remote.id)).toBeUndefined()
     expect((await getBlockedOps()).some((op) => op.id === remote.id)).toBe(true)

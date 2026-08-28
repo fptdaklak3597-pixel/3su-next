@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { dbx } from '@/core/db'
 import { initSyncEngine } from '@/core/sync/engine'
 import { consumeBatchesFefo, restoreBatchesFefo, confirmSale } from '@/core/domain/sales'
-import { liveBatchExpiry } from '@/core/domain/inventory'
+import { liveBatchExpiry, saveGoodsReceipt } from '@/core/domain/inventory'
 import type { Product, ProductBatch } from '@/core/types'
 
 function bt(over: Partial<ProductBatch> & Pick<ProductBatch, 'id' | 'remain' | 'expiry'>): ProductBatch {
@@ -78,5 +78,39 @@ describe('confirmSale trừ FEFO', () => {
     expect(after?.batches.find((b) => b.id === 'b2')?.remain).toBe(5)
     expect(after?.expiry).toBe(liveBatchExpiry(after?.batches || []))
     expect(after?.expiry).toBe('2026-12-01')
+  })
+})
+
+
+describe('GR không HSD', () => {
+  beforeEach(async () => {
+    await dbx.transaction('rw', [dbx.products, dbx.goodsReceipts, dbx.stockMoves, dbx.batches, dbx.suppliers, dbx.supplierPayments, dbx.priceLog, dbx.syncQueue, dbx.appliedOps, dbx.meta], async () => {
+      await Promise.all([
+        dbx.products.clear(), dbx.goodsReceipts.clear(), dbx.stockMoves.clear(),
+        dbx.batches.clear(), dbx.suppliers.clear(), dbx.supplierPayments.clear(),
+        dbx.priceLog.clear(), dbx.syncQueue.clear(), dbx.appliedOps.clear(), dbx.meta.clear(),
+      ])
+    })
+    await initSyncEngine()
+  })
+
+  it('tồn khớp tổng lô remain', async () => {
+    const p: Product = {
+      id: 'p-noexp', name: 'Gạo', cat: 'Khác', price: 20000, cost: 15000, stock: 0,
+      unit: 'kg', barcode: '', expiry: '', units: [], wholesalePrice: 0,
+      batches: [], createdAt: 1, updatedAt: 1,
+    }
+    await dbx.products.add(p)
+    await saveGoodsReceipt({
+      supplier: 'NCC lẻ',
+      date: '2026-08-26',
+      expiry: '',
+      note: '',
+      rows: [{ productId: p.id, name: p.name, unit: 'kg', unitRatio: 1, qty: 8, cost: 15000, expiry: '' }],
+    })
+    const after = await dbx.products.get(p.id)
+    const remain = (after?.batches || []).reduce((a, b) => a + b.remain, 0)
+    expect(after?.stock).toBe(8)
+    expect(remain).toBe(8)
   })
 })

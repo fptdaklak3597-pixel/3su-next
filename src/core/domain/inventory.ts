@@ -3,6 +3,7 @@ export * from './inventory-core'
 import type { Product, ProductBatch } from '../types'
 import {
   applyGoodsReceiptInTx as applyGoodsReceiptInTxCore,
+  commitInvoiceImport as commitInvoiceImportCore,
   saveGoodsReceipt as saveGoodsReceiptCore,
   saveStocktake as saveStocktakeCore,
   updateProduct as updateProductCore,
@@ -50,6 +51,14 @@ export async function saveGoodsReceipt(
   const receipt = await saveGoodsReceiptCore(input)
   await reconcileProductBatchProjections(receipt.rows.map((row) => row.productId))
   return receipt
+}
+
+export async function commitInvoiceImport(
+  input: Parameters<typeof commitInvoiceImportCore>[0],
+): ReturnType<typeof commitInvoiceImportCore> {
+  const result = await commitInvoiceImportCore(input)
+  await reconcileProductBatchProjections(result.gr.rows.map((row) => row.productId))
+  return result
 }
 
 export async function saveStocktake(

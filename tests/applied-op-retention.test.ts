@@ -112,7 +112,7 @@ describe('applied-op retention watermark', () => {
   it('local restore xóa watermark của tenant cũ', async () => {
     const watermark = Date.now() - 10_000
     await setAppliedOpsGcWatermark(watermark)
-    await restoreLocalBackup(emptyBackup())
+    await restoreLocalBackup(emptyBackup(), { allowEmpty: true })
 
     expect(await getMeta('sync:appliedGcBeforeMs', 0)).toBe(0)
     expect(await getAppliedOpsGcWatermark()).toBe(0)

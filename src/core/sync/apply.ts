@@ -12,12 +12,17 @@ import {
   reconcileProductBatchProjections,
   syncProductBatchProjectionInTx,
 } from '../domain/batchProjection'
+import { MAX_STOCK_QTY_DELTA } from '../domain/inventory'
 import { compareHlc } from './hlc'
 import { observeRemoteHlc } from './engine'
 import {
   applyOps as applyCoreOps,
+  BLOCKED_TTL_MS,
+  getBlockedOps,
+  MAX_BLOCKED_ATTEMPTS,
   recordBlockedOp,
   recordPoisonedOp,
+  skipBlockedOp,
   SyncDependencyError,
   SyncPayloadError,
 } from './apply-core'
@@ -124,6 +129,9 @@ async function applyCanonicalStockAdjust(op: SyncOp): Promise<number> {
           throw new SyncPayloadError('stock.adjust thiếu productId hoặc delta')
         }
         const delta = payload.delta as number
+        if (Math.abs(delta) > MAX_STOCK_QTY_DELTA) {
+          throw new SyncPayloadError('stock.adjust lệch tồn quá lớn')
+        }
         const product = await dbx.products.get(payload.productId)
         if (!product) throw new SyncDependencyError('stock.adjust thiếu SP ' + payload.productId)
 
@@ -190,6 +198,10 @@ function payloadProductIds(op: SyncOp): string[] {
   }
   if (op.type === 'gr.commit') {
     const commit = op.payload as Partial<GrCommitPayload> | null
+    const fromRows = Array.isArray(commit?.gr?.rows)
+      ? commit.gr.rows.map((row) => row?.productId).filter((id): id is string => typeof id === 'string' && !!id)
+      : []
+    if (fromRows.length) return fromRows
     return Array.isArray(commit?.patches)
       ? commit.patches.map((patch) => patch?.productId).filter((id): id is string => typeof id === 'string' && !!id)
       : []
@@ -235,7 +247,12 @@ export async function applyOps(ops: SyncOp[]): Promise<number> {
         if (isClearVerifierOp(op)) applied += await applyClearVerifier(op)
         else if (isCanonicalStockAdjustOp(op)) applied += await applyCanonicalStockAdjust(op)
         else {
-          applied += await applyCoreOps([op])
+          const n = await applyCoreOps([op])
+          if (n === 0 && !(await dbx.appliedOps.get(op.id))) {
+            deferred.push({ op, error: new SyncDependencyError('dependency') })
+            continue
+          }
+          applied += n
           await reconcileAffectedProjection(op)
         }
         progressed = true
@@ -249,14 +266,34 @@ export async function applyOps(ops: SyncOp[]): Promise<number> {
     }
 
     if (deferred.length === 0) break
-    if (!progressed) {
-      const first = deferred[0]!
-      throw new SyncDependencyError(
-        `Đồng bộ đang chờ dependency cho ${first.op.type} (${first.op.id}): ${first.error.message}`,
-      )
-    }
+    if (!progressed) break
     pending = deferred.map((entry) => entry.op)
   }
 
   return applied
+}
+
+/** Replay ops that were blocked for a missing dependency. Payload is stored on the diagnostic. */
+export async function replayBlockedOps(): Promise<number> {
+  const blocked = await getBlockedOps()
+  const ops = blocked
+    .map((row) => row.op)
+    .filter((op): op is SyncOp => !!op && typeof op.id === 'string' && typeof op.type === 'string')
+  if (ops.length === 0) return 0
+  return applyOps(ops)
+}
+
+/** Poison blocked ops that will never get a dependency, so they stop occupying diagnostics. */
+export async function expireStaleBlockedOps(): Promise<number> {
+  const blocked = await getBlockedOps()
+  const now = Date.now()
+  let n = 0
+  for (const row of blocked) {
+    const stale = (now - row.at) > BLOCKED_TTL_MS || (row.attempts ?? 0) >= MAX_BLOCKED_ATTEMPTS
+    if (stale) {
+      await skipBlockedOp(row.id)
+      n += 1
+    }
+  }
+  return n
 }

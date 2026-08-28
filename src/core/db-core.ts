@@ -17,6 +17,26 @@ import { getThisDeviceId } from './domain/devices'
 import type { QueuedCommand, SyncConflictRow } from './authoritative/commandQueue'
 import type { CanonicalEvent, CommandResult } from './authoritative/contracts'
 
+export const PRE_V5_QUEUE_META = 'sync:preV5Queue'
+
+/** v4→v5 đổi format op-log: chép hàng đợi cũ rồi mới xóa. */
+export async function archiveThenClearSyncQueue(
+  queue: { toArray(): Promise<unknown[]>; clear(): Promise<unknown> },
+  meta: { put(row: { key: string; value: unknown }): Promise<unknown> },
+  now = Date.now(),
+): Promise<number> {
+  const queued = await queue.toArray()
+  const count = queued.length
+  if (count) {
+    await meta.put({
+      key: PRE_V5_QUEUE_META,
+      value: { at: now, count, ops: queued.slice() },
+    })
+  }
+  await queue.clear()
+  return count
+}
+
 /* ─── Schema ─── */
 class SuNextDB extends Dexie {
   products!: Table<Product, string>
@@ -158,7 +178,7 @@ class SuNextDB extends Dexie {
       notes: 'id, type, done, date',
       appliedOps: 'id',
     }).upgrade(async (tx) => {
-      await tx.table('syncQueue').clear()
+      await archiveThenClearSyncQueue(tx.table('syncQueue'), tx.table('meta'))
     })
     /* v6: authoritative command queue + conflicts */
     this.version(6).stores({
@@ -220,6 +240,7 @@ export const DEFAULT_SETTINGS: Settings = {
     templateFooter: 'Cảm ơn quý khách!',
     showLogo: true,
   },
+  wholesaleFormula: undefined,
 }
 
 export const DEFAULT_SHOP: ShopInfo = {
@@ -245,23 +266,12 @@ export async function readSettings(): Promise<Settings> {
     ...DEFAULT_SETTINGS,
     ...s,
     printer: { ...DEFAULT_SETTINGS.printer, ...(s.printer ?? {}) },
+    wholesaleFormula: s.wholesaleFormula,
   }
 }
 
 export async function getSettings(): Promise<Settings> {
-  const merged = await readSettings()
-  // Web luôn ưu tiên light — dark theme chỉ dùng khi user chủ động chọn trong Cài đặt sau mốc này.
-  // Máy cũ bị ép dark (ui:claude-dark) sẽ được kéo về light một lần.
-  const lightMigrated = await getMeta('ui:web-light-v2', false)
-  if (!lightMigrated) {
-    if (merged.theme !== 'light') {
-      merged.theme = 'light'
-      await setMeta('settings', merged)
-    }
-    try { localStorage.setItem('3su_theme', 'light') } catch { /* */ }
-    await setMeta('ui:web-light-v2', true)
-  }
-  return merged
+  return readSettings()
 }
 
 export async function saveSettings(s: Settings): Promise<void> {
@@ -427,7 +437,14 @@ const LOCAL_RESTORE_RESET_KEYS = [
  * - tạm dừng và tháo liên kết shop cloud để không đẩy nhầm backup;
  * - xóa session local, buộc đăng nhập lại bằng users trong backup.
  */
-export async function restoreLocalBackup(data: BackupData): Promise<void> {
+export async function restoreLocalBackup(
+  data: BackupData,
+  opts?: { allowEmpty?: boolean },
+): Promise<void> {
+  const empty = (data.products?.length ?? 0) + (data.sales?.length ?? 0) + (data.customers?.length ?? 0) === 0
+  if (!opts?.allowEmpty && empty) {
+    throw new Error('File sao lưu không có sản phẩm, đơn hay khách. Không khôi phục để tránh xóa sạch cửa hàng.')
+  }
   const previousShopId = await getMeta<string | null>('cloud:shopId', null)
   try {
     const { disconnectTransport } = await import('./sync/engine')

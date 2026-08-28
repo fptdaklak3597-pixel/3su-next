@@ -1,13 +1,14 @@
 /**
  * Khách hàng web — bảng + phân khúc + thu nợ.
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, matchesSearch, vnDaysAgo, vnToday } from '@/core/format'
 import { logError } from '@/core/errorLogger'
-import { addCustomer, deleteCustomer, payDebt, customerSegments, debtReceiptSale } from '@/core/domain/customers'
+import { createConfirmGate } from '@/core/confirmGate'
+import { addCustomer, deleteCustomer, payDebt, updateCustomer, customerSegments, debtReceiptSale } from '@/core/domain/customers'
 import { salesInDateRange } from '@/core/domain/sales'
 import { exportCustomerDebtXlsx } from '@/core/domain/reports'
 import { dispatchPrint, printResultToast } from '@/core/browser/printQueue'
@@ -25,9 +26,13 @@ export function WebCustomersPage() {
   const [query, setQuery] = useState('')
   const [seg, setSeg] = useState<Seg>('all')
   const [showAdd, setShowAdd] = useState(false)
+  const [editFor, setEditFor] = useState<Customer | null>(null)
   const [payFor, setPayFor] = useState<Customer | null>(null)
   const [delTarget, setDelTarget] = useState<Customer | null>(null)
   const [form, setForm] = useState({ name: '', phone: '', note: '', wholesale: false })
+  const [editForm, setEditForm] = useState({ name: '', phone: '', note: '', wholesale: false })
+  const [processing, setProcessing] = useState(false)
+  const confirmGate = useRef(createConfirmGate())
   const [payAmount, setPayAmount] = useState(0)
 
   const customers = useLiveQuery(
@@ -69,6 +74,23 @@ export function WebCustomersPage() {
     }
   }
 
+  async function handleEdit() {
+    if (!editFor || !editForm.name.trim()) { showToast('Nhập tên khách', 'bad'); return }
+    try {
+      await updateCustomer(editFor.id, {
+        name: editForm.name.trim(),
+        phone: editForm.phone.trim(),
+        note: editForm.note.trim(),
+        wholesale: editForm.wholesale,
+      })
+      showToast('✓ Đã lưu khách', 'ok')
+      setEditFor(null)
+    } catch (e) {
+      logError(e, 'customer.edit')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi sửa', 'bad')
+    }
+  }
+
   async function handleDelete() {
     if (!delTarget) return
     try {
@@ -77,12 +99,14 @@ export function WebCustomersPage() {
       setDelTarget(null)
     } catch (e) {
       logError(e, 'customer.delete')
-      showToast('Lỗi khi xóa', 'bad')
+      showToast(e instanceof Error ? e.message : 'Lỗi khi xóa', 'bad')
     }
   }
 
   async function handlePay() {
     if (!payFor || payAmount <= 0) return
+    if (!confirmGate.current.tryEnter()) return
+    setProcessing(true)
     try {
       const applied = await payDebt(payFor.id, payAmount)
       const r = await dispatchPrint({
@@ -99,6 +123,9 @@ export function WebCustomersPage() {
     } catch (e) {
       logError(e, 'customer.pay')
       showToast(e instanceof Error ? e.message : 'Lỗi khi thu tiền', 'bad')
+    } finally {
+      setProcessing(false)
+      confirmGate.current.leave()
     }
   }
 
@@ -157,6 +184,16 @@ export function WebCustomersPage() {
                 <td style={{ color: c.debt > 0 ? 'var(--bad)' : undefined }}>{c.debt > 0 ? fmt(c.debt) : '—'}</td>
                 <td>{c.wholesale ? 'Sỉ' : ''}</td>
                 <td>
+                  <button
+                    className="web-btn"
+                    style={{ height: 28 }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setEditFor(c)
+                      setEditForm({ name: c.name, phone: c.phone || '', note: c.note || '', wholesale: !!c.wholesale })
+                    }}
+                  >Sửa</button>
+                  {' '}
                   {c.debt > 0 && (
                     <button
                       className="web-btn pri"
@@ -170,7 +207,9 @@ export function WebCustomersPage() {
                   <button
                     className="web-btn"
                     style={{ height: 28 }}
-                    onClick={(e) => { e.stopPropagation(); setDelTarget(c) }}
+                    disabled={c.debt > 0}
+                    title={c.debt > 0 ? 'Thu hết nợ rồi mới xóa được' : 'Xóa khách'}
+                    onClick={(e) => { e.stopPropagation(); if (c.debt <= 0) setDelTarget(c) }}
                   >
                     Xóa
                   </button>
@@ -201,6 +240,19 @@ export function WebCustomersPage() {
         </div>
       </Sheet>
 
+      <Sheet open={!!editFor} onClose={() => setEditFor(null)} title="Sửa khách">
+        <div className="flex flex-col gap-2">
+          <input className="web-input" placeholder="Tên" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+          <input className="web-input" placeholder="SĐT" value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
+          <input className="web-input" placeholder="Ghi chú" value={editForm.note} onChange={(e) => setEditForm({ ...editForm, note: e.target.value })} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={editForm.wholesale} onChange={(e) => setEditForm({ ...editForm, wholesale: e.target.checked })} />
+            Khách mua giá sỉ
+          </label>
+          <button className="web-btn pri" onClick={() => void handleEdit()}>Lưu</button>
+        </div>
+      </Sheet>
+
       <Sheet open={!!payFor} onClose={() => setPayFor(null)} title={payFor ? `Thu nợ · ${payFor.name}` : 'Thu nợ'}>
         <div className="text-sm mb-2" style={{ color: 'var(--kv-muted)' }}>Còn nợ {payFor ? fmt(payFor.debt) : ''}</div>
         <input
@@ -214,7 +266,7 @@ export function WebCustomersPage() {
         {payAmount > 0 && payQrSrc(settings, payAmount, '3SU thu no') && (
           <img src={payQrSrc(settings, payAmount, '3SU thu no')!} alt="VietQR thu nợ" className="mx-auto max-w-[160px] rounded-lg my-3" />
         )}
-        <button className="web-btn pri w-full mt-3" onClick={handlePay} disabled={!payFor || payAmount <= 0 || payAmount > payFor.debt}>Thu {payAmount > 0 ? fmt(payAmount) : ''}</button>
+        <button className="web-btn pri w-full mt-3" onClick={handlePay} disabled={!payFor || processing || payAmount <= 0 || payAmount > payFor.debt}>Thu {payAmount > 0 ? fmt(payAmount) : ''}</button>
       </Sheet>
 
       <ConfirmDialog

@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { dbx, setCurrentUser } from '@/core/db'
 import { initSyncEngine } from '@/core/sync/engine'
-import { changePassword, createUser, login } from '@/core/domain/auth'
+import { changePassword, createUser, login, passwordMeetsPolicy } from '@/core/domain/auth'
 
 beforeEach(async () => {
   await dbx.transaction('rw', [dbx.users, dbx.meta, dbx.syncQueue, dbx.appliedOps], async () => {
@@ -34,5 +34,17 @@ describe('passwordNeedsReset', () => {
     await changePassword(u.id, 'staff2')
     const after = await login('nv1', 'staff2')
     expect(after.passwordNeedsReset).toBe(false)
+  })
+})
+
+
+describe('passwordMeetsPolicy', () => {
+  it('owner tối thiểu 8', () => {
+    expect(passwordMeetsPolicy('1234', 'owner')).toBe(false)
+    expect(passwordMeetsPolicy('12345678', 'owner')).toBe(true)
+  })
+  it('staff tối thiểu 6', () => {
+    expect(passwordMeetsPolicy('12345', 'staff')).toBe(false)
+    expect(passwordMeetsPolicy('123456', 'staff')).toBe(true)
   })
 })

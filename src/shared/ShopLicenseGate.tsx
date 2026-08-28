@@ -7,32 +7,31 @@ import {
 } from '@/core/sync/license'
 
 export function useShopLicense(enabled: boolean): { ready: boolean; value: ShopLicense | null } {
-  const [value, setValue] = useState<ShopLicense | null>(null)
-  const [fetched, setFetched] = useState(false)
+  const [gate, setGate] = useState({ enabled: false, fetched: false, value: null as ShopLicense | null })
+  if (enabled !== gate.enabled) {
+    setGate({ enabled, fetched: false, value: null })
+  }
 
   useEffect(() => {
-    if (!enabled) {
-      setFetched(false)
-      return
-    }
+    if (!enabled) return
     let cancelled = false
-    setFetched(false)
     void (async () => {
       const cached = await loadCachedLicense()
-      if (!cancelled) {
-        setValue(cached)
-        setFetched(true)
+      if (!cancelled && cached) {
+        setGate((g) => (g.enabled === enabled ? { ...g, fetched: true, value: cached } : g))
       }
       try {
         const { refreshShopLicense } = await import('@/core/sync/cloud')
         const fresh = await refreshShopLicense()
-        if (!cancelled) setValue(fresh)
+        if (!cancelled) setGate((g) => (g.enabled === enabled ? { ...g, fetched: true, value: fresh } : g))
       } catch {
-        /* offline: giữ cache */
+        if (!cancelled) {
+          setGate((g) => (g.enabled === enabled ? { ...g, fetched: true, value: g.value ?? cached } : g))
+        }
       }
     })()
     const unsub = watchLicense((lic) => {
-      if (!cancelled) setValue(lic)
+      if (!cancelled) setGate((g) => (g.enabled === enabled ? { ...g, value: lic } : g))
     })
     return () => {
       cancelled = true
@@ -40,24 +39,31 @@ export function useShopLicense(enabled: boolean): { ready: boolean; value: ShopL
     }
   }, [enabled])
 
-  return { ready: !enabled || fetched, value }
+  return { ready: !enabled || gate.fetched, value: gate.value }
 }
 
-export function ShopLicenseScreen({ license }: { license: ShopLicense }) {
-  const locked = license.status === 'locked'
+export function ShopLicenseScreen({ license }: { license: ShopLicense | null }) {
+  const title = !license
+    ? 'Chưa xác nhận giấy phép'
+    : license.status === 'locked'
+      ? 'Cửa hàng đã tạm khoá'
+      : 'Cửa hàng đã hết hạn'
+  const lead = !license
+    ? 'Kết nối mạng để kiểm tra giấy phép, hoặc đăng xuất.'
+    : license.status === 'locked'
+      ? (license.reason || 'Vui lòng liên hệ để gia hạn hoặc mở khoá.')
+      : 'Vui lòng liên hệ để gia hạn.'
   return (
     <div className="auth-screen">
       <div className="auth-logo">3SU</div>
       <div className="auth-layout">
         <div className="auth-col">
           <h1 className="auth-display">
-            {locked ? 'Cửa hàng đã tạm khoá' : 'Cửa hàng đã hết hạn'}
+            {title}
           </h1>
           <div className="auth-well">
             <p className="auth-lead">
-              {locked
-                ? (license.reason || 'Vui lòng liên hệ để gia hạn hoặc mở khoá.')
-                : 'Vui lòng liên hệ để gia hạn.'}
+              {lead}
             </p>
             <button
               type="button"

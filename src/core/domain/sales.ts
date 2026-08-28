@@ -1,11 +1,19 @@
 export * from './sales-core'
 
 import { dbx } from '../db'
+import { confirmCheckout, maybeQueueEinvoiceForSale } from '../einvoice/checkoutFacade'
 import {
   confirmSale as confirmSaleCore,
   voidSale as voidSaleCore,
 } from './sales-core'
 import { reconcileProductBatchProjections } from './batchProjection'
+
+/** Checkout: authoritative khi bật flag, else local confirmSale. */
+export async function confirmCheckoutSale(
+  input: Parameters<typeof confirmCheckout>[0],
+): ReturnType<typeof confirmCheckout> {
+  return confirmCheckout(input)
+}
 
 /** Public sale facade: preserve business behavior, then repair the batch mirror. */
 export async function confirmSale(
@@ -27,3 +35,5 @@ export async function voidSale(
 }
 
 export { salesInDateRange } from './sales-core'
+
+export { maybeQueueEinvoiceForSale }

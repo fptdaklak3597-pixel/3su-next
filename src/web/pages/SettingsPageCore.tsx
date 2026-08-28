@@ -10,7 +10,14 @@ import {
 } from 'lucide-react'
 import { useApp } from '@/core/store'
 import { exportBackup, restoreLocalBackup, setCurrentUser, wipeAll, type BackupData } from '@/core/db'
-import { getAutoBackups, parseRestoreFile } from '@/core/domain/trial'
+import {
+  exportRemindDays,
+  getAutoBackups,
+  getLastFileBackupAt,
+  markFileBackupExported,
+  parseRestoreFile,
+  shouldRemindExport,
+} from '@/core/domain/trial'
 import { payQrSrc } from '@/core/domain/vietqr'
 import { textQrSrc } from '@/core/browser/textQr'
 import { saveSettingsSynced, saveShopSynced } from '@/core/domain/settings'
@@ -20,6 +27,7 @@ import { apiBase, saveApiBaseOverride } from '@/core/sync/cloud'
 import { isFirebaseConfigured } from '@/core/sync/firebase'
 import { ConfirmDialog } from '@/shared/components'
 import { SyncDiagnosticsPanel } from '@/shared/SyncDiagnosticsPanel'
+import { AiSettingsPanel } from '@/shared/AiSettingsPanel'
 import { dispatchTestPrint, printResultToast } from '@/core/browser/printQueue'
 import { PrintStatusLine } from '@/shared/PrintStatus'
 import { useDisplayMode, useInstallPrompt } from '@/shared/pwa'
@@ -57,12 +65,16 @@ export function WebSettingsPage() {
   const [address, setAddress] = useState(shop.address)
   const [apiUrl, setApiUrl] = useState(apiBase())
   const [autoBackups, setAutoBackups] = useState<Awaited<ReturnType<typeof getAutoBackups>>>([])
+  const [lastFileBackupAt, setLastFileBackupAt] = useState<number | null>(null)
   const { canInstall, installed, promptInstall } = useInstallPrompt()
   const displayMode = useDisplayMode()
   const qrFileRef = useRef<HTMLInputElement>(null)
   const isStandalone = displayMode === 'standalone' || installed
 
-  useEffect(() => { void getAutoBackups().then(setAutoBackups) }, [])
+  useEffect(() => {
+    void getAutoBackups().then(setAutoBackups)
+    void getLastFileBackupAt().then(setLastFileBackupAt)
+  }, [])
   useEffect(() => {
     setName(shop.name)
     setPhone(shop.phone)
@@ -102,6 +114,8 @@ export function WebSettingsPage() {
       a.download = `3su-backup-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
+      await markFileBackupExported()
+      setLastFileBackupAt(Date.now())
       showToast('✓ Đã xuất sao lưu', 'ok')
     } catch (e) {
       logError(e, 'backup.export')
@@ -399,6 +413,9 @@ export function WebSettingsPage() {
                 <div className="web-settings-block-t">Op đồng bộ bị kẹt</div>
                 <SyncDiagnosticsPanel variant="web" />
               </div>
+              <div style={{ marginTop: 12 }}>
+                <AiSettingsPanel variant="web" />
+              </div>
               <div className="web-settings-actions">
                 <button type="button" className="web-btn pri" onClick={() => navigate('/tai-khoan')}>Tài khoản cloud</button>
               </div>
@@ -476,6 +493,11 @@ export function WebSettingsPage() {
               )}
               <div className="web-settings-block">
                 <div className="web-settings-block-t">Sao lưu & khôi phục</div>
+                {shouldRemindExport(lastFileBackupAt ?? (autoBackups[0] ? Date.parse(autoBackups[0].date) : null)) && (
+                  <p className="web-sub" style={{ color: 'var(--bad)' }}>
+                    Đã {exportRemindDays(lastFileBackupAt ?? Date.parse(autoBackups[0]!.date))} ngày chưa xuất backup ra file.
+                  </p>
+                )}
                 <div className="web-settings-actions">
                   <button type="button" className="web-btn pri" onClick={handleExport}>Xuất sao lưu JSON</button>
                   <button type="button" className="web-btn" onClick={() => fileRef.current?.click()}>Khôi phục từ file</button>

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { dbx } from '@/core/db'
 import { initSyncEngine } from '@/core/sync/engine'
-import { recordSupplierPayment, supplierDebt } from '@/core/domain/suppliers'
+import { deleteSupplier, recordSupplierPayment, supplierDebt } from '@/core/domain/suppliers'
 import type { GoodsReceipt, Supplier } from '@/core/types'
 
 const supplier: Supplier = {
@@ -66,5 +66,11 @@ describe('supplier payment integrity', () => {
       amount: 1_000,
       note: 'Thanh toán phiếu nhập NK-1',
     })).rejects.toThrow(/định dạng/)
+  })
+
+  it('không xóa NCC còn nợ', async () => {
+    await expect(deleteSupplier(supplier.id)).rejects.toThrow(/còn nợ/)
+    const row = await dbx.suppliers.get(supplier.id)
+    expect(row?.deleted).not.toBe(true)
   })
 })

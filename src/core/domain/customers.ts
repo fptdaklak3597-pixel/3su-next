@@ -5,7 +5,9 @@ import { dbx } from '../db'
 import { uid, localDay, daysAgo } from '../format'
 import { makeOp, persistOp, enqueueOp, requestFlush } from '../sync/engine'
 import type { Customer, Sale, DebtPayment } from '../types'
-import { requireOwnerAdmin } from './auth'
+import { requireOwnerAdmin, requirePermission } from './auth'
+import { assertCloudShopWritable } from '../sync/license'
+import { withExclusiveLock } from '../offline'
 
 export interface CustomerSegments {
   totals: Record<string, number>
@@ -52,6 +54,7 @@ export function customerSegments(customers: Customer[], sales: Sale[]): Customer
 
 /* ─── CRUD khách hàng + thu nợ (có outbox) ─── */
 export async function addCustomer(input: { name: string; phone: string; note: string; wholesale: boolean }): Promise<Customer> {
+  await assertCloudShopWritable()
   const now = Date.now()
   const c: Customer = {
     id: uid('c'),
@@ -78,6 +81,7 @@ export async function addCustomer(input: { name: string; phone: string; note: st
 }
 
 export async function updateCustomer(id: string, patch: Partial<Customer>): Promise<void> {
+  await assertCloudShopWritable()
   const c = await dbx.customers.get(id)
   if (!c) return
   // Không cho UI ghi đè field suy ra từ đơn hàng
@@ -105,8 +109,12 @@ export async function updateCustomer(id: string, patch: Partial<Customer>): Prom
 
 export async function deleteCustomer(id: string): Promise<void> {
   await requireOwnerAdmin()
+  await assertCloudShopWritable()
   const c = await dbx.customers.get(id)
   if (!c) return
+  if ((c.debt || 0) > 0) {
+    throw new Error('Khách còn nợ ' + c.debt.toLocaleString('vi-VN') + 'đ. Thu hết nợ rồi mới xóa được.')
+  }
   await dbx.transaction('rw', [dbx.customers, dbx.syncQueue, dbx.appliedOps], async () => {
     const op = makeOp('customer.delete', { customerId: id })
     await dbx.customers.put({ ...c, deleted: true, deletedHlc: op.hlc, hlc: op.hlc, updatedAt: Date.now() })
@@ -147,6 +155,8 @@ export async function clampNegativeCustomerDebts(): Promise<number> {
 }
 
 export async function payDebt(customerId: string, amount: number, note?: string): Promise<number> {
+  await requirePermission('sell')
+  await assertCloudShopWritable()
   const c0 = await dbx.customers.get(customerId)
   if (!c0) throw new Error('Không tìm thấy khách hàng')
   const asked = Math.round(amount)
@@ -161,7 +171,7 @@ export async function payDebt(customerId: string, amount: number, note?: string)
     date: new Date().toISOString(),
     note: note ?? 'Thu nợ',
   }
-  await dbx.transaction('rw', [dbx.customers, dbx.debtPayments, dbx.syncQueue, dbx.appliedOps], async () => {
+  await withExclusiveLock('debt-pay-' + customerId, () => dbx.transaction('rw', [dbx.customers, dbx.debtPayments, dbx.syncQueue, dbx.appliedOps], async () => {
     const c = await dbx.customers.get(customerId)
     if (!c) throw new Error('Không tìm thấy khách hàng')
     const next = Math.min(clamped, Math.max(0, c.debt))
@@ -172,7 +182,7 @@ export async function payDebt(customerId: string, amount: number, note?: string)
     await dbx.customers.put(c)
     await dbx.debtPayments.add(dp)
     await enqueueOp('debt.pay', dp)
-  })
+  }))
   requestFlush()
   return dp.amount
 }

@@ -3,12 +3,13 @@
  * Port từ 14b-checkout.js: payment methods, tendered/change, denominations,
  * discount, transfer QR, debt, celebration.
  */
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { confirmSale, cartUnitPrice, customerHabits, DENOMINATIONS, discountToAmount, type DiscountKind } from '@/core/domain/sales'
+import { confirmCheckoutSale, maybeQueueEinvoiceForSale, cartUnitPrice, checkoutFingerprint, customerHabits, DENOMINATIONS, discountToAmount, effectiveCashTendered, saleUsesWholesale } from '@/core/domain/sales'
 import { playPosSound } from '@/core/browser/posSound'
 import { printReceiptLocal } from '@/core/browser/print'
 import { dispatchPrint, printResultToast } from '@/core/browser/printQueue'
@@ -30,19 +31,25 @@ export function CheckoutPage() {
   const setCustomerId = useApp((s) => s.setCustomerId)
   const discount = useApp((s) => s.discount)
   const setDiscount = useApp((s) => s.setDiscount)
+  const discountKind = useApp((s) => s.discountKind)
+  const setDiscountKind = useApp((s) => s.setDiscountKind)
   const payMethod = useApp((s) => s.payMethod)
   const setPayMethod = useApp((s) => s.setPayMethod)
   const settings = useApp((s) => s.settings)
   const showToast = useApp((s) => s.showToast)
   const celebrate = useApp((s) => s.celebrate)
   const shop = useApp((s) => s.shop)
+  const user = useApp((s) => s.user)
+  const tendered = useApp((s) => s.tendered)
+  const setTendered = useApp((s) => s.setTendered)
+  const cashEntered = useApp((s) => s.cashEntered)
+  const setCashEntered = useApp((s) => s.setCashEntered)
 
-  const [tendered, setTendered] = useState(0)
-  const [discountKind, setDiscountKind] = useState<DiscountKind>('amount')
   const [processing, setProcessing] = useState(false)
   const [showCustomerPick, setShowCustomerPick] = useState(false)
-  const [doneSale, setDoneSale] = useState<Sale | null>(null)
+  const [doneSale, setDoneSale] = useState<{ sale: Sale; customerName: string | null } | null>(null)
   const confirmGate = useRef(createConfirmGate())
+  const idempKeyRef = useRef<string | null>(null)
 
   const products = useLiveQuery(() => dbx.products.toArray(), [], [] as Product[])
   const sales = useLiveQuery(
@@ -58,13 +65,16 @@ export function CheckoutPage() {
     [],
   )
 
+  const customer = customerId ? customers.find((c) => c.id === customerId) : null
+  const useWs = saleUsesWholesale(wholesaleMode, customer)
+
   const subtotal = useMemo(() => {
     return cart.reduce((sum, ci) => {
       const p = products.find((x) => x.id === ci.productId)
       if (!p) return sum
-      return sum + cartUnitPrice(ci, p, wholesaleMode) * ci.qty
+      return sum + cartUnitPrice(ci, p, useWs) * ci.qty
     }, 0)
-  }, [cart, products, wholesaleMode])
+  }, [cart, products, useWs])
 
   const discountAmt = discountToAmount(subtotal, discount, discountKind)
   const final = Math.max(0, subtotal - discountAmt)
@@ -72,58 +82,73 @@ export function CheckoutPage() {
     return cart.reduce((sum, ci) => {
       const p = products.find((x) => x.id === ci.productId)
       if (!p) return sum
-      return sum + (cartUnitPrice(ci, p, wholesaleMode) - p.cost * ci.unitRatio) * ci.qty
+      return sum + (cartUnitPrice(ci, p, useWs) - p.cost * ci.unitRatio) * ci.qty
     }, 0) - discountAmt
-  }, [cart, products, wholesaleMode, discountAmt])
-
+  }, [cart, products, useWs, discountAmt])
   const isDebt = payMethod === 'debt'
-  const effectiveTendered = isDebt ? 0 : (payMethod === 'cash' ? (tendered || final) : final)
-  const change = isDebt ? 0 : Math.max(0, effectiveTendered - final)
-  const debtAmount = isDebt ? final : (payMethod === 'cash' ? Math.max(0, final - effectiveTendered) : 0)
-  const underpaid = !isDebt && payMethod === 'cash' && effectiveTendered < final
-  const canConfirm = cart.length > 0 && (debtAmount === 0 || !!customerId)
+  const cash = effectiveCashTendered({ payMethod, total: final, tendered, cashEntered })
+  const effectiveTendered = cash.tendered
+  const change = cash.change
+  const debtAmount = cash.debtAmount
+  const underpaid = !isDebt && payMethod === 'cash' && cashEntered && effectiveTendered < final
+  const canConfirm = cart.length > 0
+    && !cash.needsCashEntry
+    && (debtAmount === 0 || !!customerId)
 
-  const customer = customerId ? customers.find((c) => c.id === customerId) : null
+  const cartFingerprint = checkoutFingerprint({
+    items: cart,
+    discount: discountAmt,
+    payMethod,
+    tendered: effectiveTendered,
+    customerId,
+    wholesale: useWs,
+  })
+  useEffect(() => { idempKeyRef.current = null }, [cartFingerprint])
 
   async function handleConfirm() {
     if (!canConfirm) return
     if (!confirmGate.current.tryEnter()) return
     setProcessing(true)
     try {
-      const { sale, warnings } = await confirmSale({
+      if (!idempKeyRef.current) idempKeyRef.current = cartFingerprint
+      const result = await confirmCheckoutSale({
         items: cart,
         products,
         discount: discountAmt,
         payMethod,
         tendered: effectiveTendered,
         customerId,
-        wholesale: wholesaleMode,
+        wholesale: useWs,
+        idempotencyKey: idempKeyRef.current,
       })
+      if (result.status === 'pending') {
+        showToast(result.banner, 'bad')
+        return
+      }
+      const { sale, warnings } = result
+      void maybeQueueEinvoiceForSale(sale)
 
       playPosSound('sale', settings.soundOn)
       celebrate(sale.total, `Hay lắm${shop.name ? ' ' + shop.name.split(' ').slice(-1)[0] : ''}!`)
 
-      if (warnings.length > 0) {
-        showToast(warnings[0], 'bad')
-      } else {
-        showToast('✓ Đã chốt đơn ' + fmt(sale.total), 'ok')
-      }
+      showToast(
+        '✓ Đã chốt đơn ' + fmt(sale.total) + (warnings[0] ? ' · ' + warnings[0] : ''),
+        warnings.length ? 'warn' : 'ok',
+      )
 
+      const customerName = customer?.name ?? null
+      setDoneSale({ sale, customerName })
       clearCart()
       const printed = await dispatchPrint({
         sale,
         shop,
         printer: settings.printer,
-        customerName: customer?.name ?? null,
+        customerName,
+        cashier: user?.name || user?.username || '',
       })
       if (printed.via !== 'none') {
         const t = printResultToast(printed)
         showToast(t.text, t.kind)
-      }
-      if (settings.printer.autoPrintAfterSale && printed.via === 'none' && !settings.printer.cloudRelay && !settings.printer.lanAgentUrl) {
-        setDoneSale(sale)
-      } else {
-        navigate('/ban-hang')
       }
     } catch (e) {
       logError(e, 'checkout.confirm')
@@ -134,39 +159,48 @@ export function CheckoutPage() {
     }
   }
 
-  function handlePrintDone() {
-    if (!doneSale) return
-    const ok = printReceiptLocal({
-      sale: doneSale,
+  function printCtx() {
+    return {
+      sale: doneSale!.sale,
       shop,
       printer: settings.printer,
-      customerName: customer?.name ?? null,
-    })
+      customerName: doneSale!.customerName,
+      cashier: user?.name || user?.username || '',
+    }
+  }
+
+  async function handleSendPrint() {
+    if (!doneSale) return
+    const r = await dispatchPrint(printCtx())
+    const t = printResultToast(r)
+    showToast(t.text, t.kind)
+  }
+
+  function handlePrintDone() {
+    if (!doneSale) return
+    const ok = printReceiptLocal(printCtx())
     if (!ok) showToast('Không in được trên thiết bị này', 'bad')
-    setDoneSale(null)
-    navigate('/ban-hang')
   }
 
   async function handleBluetoothPrint() {
     if (!doneSale) return
     try {
-      await printTicketBluetooth(saleTicketFromContext({
-        sale: doneSale,
-        shop,
-        printer: settings.printer,
-        customerName: customer?.name ?? null,
-      }), { requestIfNeeded: true })
+      await printTicketBluetooth(saleTicketFromContext(printCtx()), { requestIfNeeded: true })
       showToast('Đang in máy nhiệt…', 'ok')
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Không in được Bluetooth', 'bad')
     }
   }
 
+  function keepSearch(pathname: string) {
+    navigate({ pathname, search: window.location.search })
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <header className="app-hdr bordered">
-        <button className="btn-back" onClick={() => navigate('/ban-hang')}>
+        <button className="btn-back" onClick={() => keepSearch('/ban-hang')}>
           <ChevronLeft size={20} />
         </button>
         <div className="text-center flex-1">
@@ -222,17 +256,22 @@ export function CheckoutPage() {
                 type="number"
                 inputMode="numeric"
                 value={tendered || ''}
-                placeholder={String(final)}
-                onChange={(e) => setTendered(Number(e.target.value) || 0)}
+                placeholder="Nhập số"
+                onChange={(e) => {
+                  const raw = e.target.value
+                  if (raw === '') { setTendered(0); setCashEntered(false); return }
+                  setTendered(Number(raw) || 0)
+                  setCashEntered(true)
+                }}
               />
             </div>
             <div className="flex flex-wrap gap-2">
               {DENOMINATIONS.map((d) => (
-                <button key={d} className="chip" onClick={() => setTendered(d)}>
+                <button key={d} className="chip" onClick={() => { setTendered(d); setCashEntered(true) }}>
                   {fmtShort(d)}
                 </button>
               ))}
-              <button className="chip !bg-gold !text-white !border-gold" onClick={() => setTendered(final)}>
+              <button className="chip !bg-gold !text-white !border-gold" onClick={() => { setTendered(final); setCashEntered(true) }}>
                 Đủ
               </button>
             </div>
@@ -246,6 +285,11 @@ export function CheckoutPage() {
                 {underpaid ? fmt(final - effectiveTendered) : fmt(change)}
               </span>
             </div>
+            {cash.needsCashEntry && (
+              <div className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
+                Nhập số khách đưa hoặc bấm Đủ. Để trống không tính là đã trả.
+              </div>
+            )}
             {underpaid && (
               <div className="text-xs mt-1" style={{ color: 'var(--mute)' }}>
                 Nhập nhỏ hơn tổng để ghi nợ phần còn lại
@@ -349,31 +393,35 @@ export function CheckoutPage() {
           </div>
         </div>
       )}
-      {/* After-sale print prompt */}
-      {doneSale && (
-        <div className="sheet-overlay" onClick={() => { setDoneSale(null); navigate('/ban-hang') }}>
+      {/* Tờ in gắn body: “Hay lắm” (z 200, ngoài main) không đè được. Không đóng khi chạm nền. */}
+      {doneSale && createPortal(
+        <div className="sheet-overlay sheet-overlay--print">
           <div className="sheet-panel" onClick={(e) => e.stopPropagation()}>
             <div className="sheet-grab" />
             <h3 className="font-brand text-base font-medium text-center mb-1">Thanh toán thành công</h3>
             <p className="text-center text-sm mb-4" style={{ color: 'var(--mute)' }}>In hóa đơn cho khách?</p>
             <div className="flex flex-col gap-2">
-              <button className="btn-cta" onClick={() => { setDoneSale(null); navigate('/ban-hang') }}>
+              <button className="btn-cta flex items-center justify-center gap-2" onClick={() => void handleSendPrint()}>
+                <Printer size={18} /> In hóa đơn
+              </button>
+              <button className="btn-ghost" onClick={() => { setDoneSale(null); keepSearch('/ban-hang') }}>
                 Bán tiếp
               </button>
               {canUseBluetoothPrint() && (
-                <button className="btn-cta flex items-center justify-center gap-2" onClick={() => void handleBluetoothPrint()}>
+                <button className="btn-ghost flex items-center justify-center gap-2" onClick={() => void handleBluetoothPrint()}>
                   <Printer size={18} /> In Bluetooth K80
                 </button>
               )}
-              <button className="btn-cta flex items-center justify-center gap-2" onClick={handlePrintDone}>
+              <button className="btn-ghost flex items-center justify-center gap-2" onClick={handlePrintDone}>
                 <Printer size={18} /> In trên máy này
               </button>
-              <button className="btn-ghost" onClick={() => { setDoneSale(null); navigate('/') }}>
+              <button className="btn-ghost" onClick={() => { setDoneSale(null); keepSearch('/') }}>
                 Về trang chủ
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

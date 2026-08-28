@@ -1,18 +1,22 @@
 /**
  * Kiểm kê / dự báo web — ?tab=forecast mở tab dự báo.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmtNum, vnDaysAgo, vnToday } from '@/core/format'
 import { salesInDateRange } from '@/core/domain/sales'
-import { forecastStock, saveStocktake, selectStocktakeRows } from '@/core/domain/inventory'
+import { forecastStock, saveStocktake, selectStocktakeRows, stocktakeHasLargeDiff } from '@/core/domain/inventory'
 import { createPurchaseOrder, forecastToPoRows } from '@/core/domain/purchase'
 import { attachHidBarcode } from '@/core/browser/hidBarcode'
 import { logError } from '@/core/errorLogger'
 import { ConfirmDialog } from '@/shared/components'
+import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
+import {
+  DRAFT_STOCKTAKE, clearDraft, loadFreshDraft, persistStocktakeDraft, type StocktakeDraft,
+} from '@/core/domain/drafts'
 import { WebEmpty } from '@/web/components/WebEmpty'
 import type { Product, Sale, Supplier } from '@/core/types'
 
@@ -28,8 +32,35 @@ export function WebStocktakePage() {
   const [saving, setSaving] = useState(false)
   const [scanQ, setScanQ] = useState('')
   const [poBusy, setPoBusy] = useState(false)
+  const [poSupplierId, setPoSupplierId] = useState('')
+  const draftReady = useRef(false)
+  const leave = useUnsavedDraftGuard(Object.keys(touched).length > 0 || !!note.trim())
+
+  useEffect(() => {
+    void loadFreshDraft<StocktakeDraft>(DRAFT_STOCKTAKE).then((d) => {
+      draftReady.current = true
+      if (!d) return
+      setActual(d.actual)
+      setTouched(d.touched)
+      setNote(d.note)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!draftReady.current) return
+    const t = window.setTimeout(() => {
+      void persistStocktakeDraft({ actual, touched, note })
+    }, 400)
+    return () => window.clearTimeout(t)
+  }, [actual, touched, note])
 
   const suppliers = useLiveQuery(() => dbx.suppliers.filter((s) => !s.deleted).toArray(), [], [] as Supplier[])
+
+  useEffect(() => {
+    if (poSupplierId) return
+    const first = suppliers.find((s) => !s.deleted) ?? suppliers[0]
+    if (first) setPoSupplierId(first.id)
+  }, [suppliers, poSupplierId])
 
   const products = useLiveQuery(() => dbx.products.filter((p) => !p.deleted).toArray(), [], [] as Product[])
   const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(29), vnToday()), [], [] as Sale[])
@@ -85,6 +116,8 @@ export function WebStocktakePage() {
         note.trim(),
       )
       showToast(`✓ Đã kiểm kê ${picked.length} sản phẩm`, 'ok')
+      leave.allowLeave()
+      await clearDraft(DRAFT_STOCKTAKE)
       setActual({})
       setTouched({})
       setNote('')
@@ -111,8 +144,21 @@ export function WebStocktakePage() {
           </button>
         )}
         {tab === 'forecast' && (
-          <button className="web-btn pri" disabled={poBusy || forecast.every((f) => f.suggestedQty <= 0)} onClick={async () => {
-            const sup = suppliers[0]
+          <div className="web-ph-actions" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select
+              className="web-input"
+              style={{ minWidth: 180, height: 36 }}
+              value={poSupplierId}
+              onChange={(e) => setPoSupplierId(e.target.value)}
+              aria-label="Nhà cung cấp"
+            >
+              {suppliers.length === 0 && <option value="">Chưa có nhà cung cấp</option>}
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <button className="web-btn pri" disabled={poBusy || !poSupplierId || forecast.every((f) => f.suggestedQty <= 0)} onClick={async () => {
+            const sup = suppliers.find((s) => s.id === poSupplierId)
             if (!sup) { showToast('Thêm nhà cung cấp trước', 'bad'); return }
             const poRows = forecastToPoRows(forecast, products)
             if (!poRows.length) { showToast('Không có món cần nhập', 'bad'); return }
@@ -125,14 +171,15 @@ export function WebStocktakePage() {
                 note: 'Từ dự báo tồn',
               })
               showToast(`✓ Đã tạo ${po.code} cho ${sup.name}`, 'ok')
-              navigate('/nhap-hang')
+              navigate('/don-mua')
             } catch (e) {
               logError(e, 'po.forecast')
               showToast(e instanceof Error ? e.message : 'Lỗi tạo đơn', 'bad')
             } finally {
               setPoBusy(false)
             }
-          }}>Tạo phiếu nhập từ dự báo</button>
+          }}>Tạo đơn mua từ dự báo</button>
+          </div>
         )}
       </div>
 
@@ -223,10 +270,11 @@ export function WebStocktakePage() {
         </div>
       )}
 
+      {leave.dialog}
       <ConfirmDialog
         open={confirmSave}
         title="Lưu kiểm kê?"
-        message={`${saveRows.length} dòng đã đếm sẽ được ghi. ${diffCount} dòng lệch sổ sẽ chỉnh tồn.`}
+        message={`${saveRows.length} dòng đã đếm sẽ được ghi. ${diffCount} dòng lệch sổ sẽ chỉnh tồn.${stocktakeHasLargeDiff(saveRows) ? ' Có dòng lệch rất lớn so với sổ — kiểm tra lại trước khi lưu.' : ''}`}
         confirmLabel="Lưu"
         onConfirm={handleSave}
         onCancel={() => setConfirmSave(false)}

@@ -60,6 +60,72 @@ export function validateBackupSchema(data: unknown): void {
   if (sampleSale && typeof sampleSale.total !== 'number') throw new Error('sales[].total phải là number')
 }
 
+export function isEmptyBusinessBackup(data: { products?: unknown[]; sales?: unknown[]; customers?: unknown[] }): boolean {
+  return (data.products?.length ?? 0) + (data.sales?.length ?? 0) + (data.customers?.length ?? 0) === 0
+}
+
+export function backupSchemaWarnings(data: unknown): string[] {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return []
+  const version = Number((data as { version?: unknown }).version)
+  if (Number.isFinite(version) && version < 6) {
+    return ['File sao lưu bản cũ (version ' + version + '). Kiểm tra kỹ trước khi khôi phục.']
+  }
+  return []
+}
+
+export function canConfirmWipe(opts: { exportedThisSession: boolean; hasExternalBackup: boolean }): boolean {
+  return opts.exportedThisSession || opts.hasExternalBackup
+}
+
+export function emptyRestoreConfirmToken(shopName: string): string {
+  return shopName.trim() || 'XÓA'
+}
+
+export function emptyRestoreAck(typed: string, shopName: string): boolean {
+  return typed.trim() === emptyRestoreConfirmToken(shopName)
+}
+
+export function restoreDialogMessage(data: {
+  products: unknown[]
+  sales: unknown[]
+  customers?: unknown[]
+  version?: number
+}): string {
+  const counts = `File có ${data.products.length} sản phẩm, ${data.sales.length} đơn, ${data.customers?.length ?? 0} khách.`
+  const warns = backupSchemaWarnings(data)
+  const empty = isEmptyBusinessBackup(data)
+    ? ' File không có dữ liệu nghiệp vụ — gõ đúng tên cửa hàng nếu vẫn muốn thay bằng cửa hàng trống.'
+    : ' Dữ liệu hiện tại sẽ bị thay.'
+  return [counts, ...warns, empty].join(' ')
+}
+
+export function restorePausedCopy(paused: boolean, last: unknown): string | null {
+  if (!paused || last == null) return null
+  return 'Cloud đã ngắt sau khôi phục. Vào Thiết bị để bật lại.'
+}
+
+const FILE_BACKUP_META = 'backup:lastFileExportAt'
+export const FILE_BACKUP_REMIND_MS = 7 * 24 * 60 * 60 * 1000
+
+/** Nhắc xuất file khi lần xuất gần nhất đã quá 7 ngày. Chưa từng xuất → false. */
+export function shouldRemindExport(lastBackupAt: number | null | undefined, now = Date.now()): boolean {
+  if (lastBackupAt == null || !Number.isFinite(lastBackupAt) || lastBackupAt <= 0) return false
+  return now - lastBackupAt >= FILE_BACKUP_REMIND_MS
+}
+
+export function exportRemindDays(lastBackupAt: number, now = Date.now()): number {
+  return Math.max(0, Math.floor((now - lastBackupAt) / (24 * 60 * 60 * 1000)))
+}
+
+export async function getLastFileBackupAt(): Promise<number | null> {
+  const value = await getMeta<number | null>(FILE_BACKUP_META, null)
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+export async function markFileBackupExported(at = Date.now()): Promise<void> {
+  await setMeta(FILE_BACKUP_META, at)
+}
+
 /**
  * File local không phải phương tiện chuyển tài khoản. Kể cả backup legacy có
  * users/hash/salt, parser chỉ trả dữ liệu nghiệp vụ đã loại credential.

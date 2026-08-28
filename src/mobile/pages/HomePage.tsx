@@ -9,18 +9,26 @@ import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { dayStats, weekProfitSeries, totalDebt, salesInDateRange } from '@/core/domain/sales'
 import { fmtShort, today, yesterday, greeting, vnDaysAgo, vnToday } from '@/core/format'
-import { Bell, ChevronRight, LayoutGrid, Smartphone } from 'lucide-react'
-import { useInstallPrompt, useDisplayMode } from '@/shared/pwa'
+import { Bell, ChevronRight, LayoutGrid } from 'lucide-react'
+import { InstallAppCard } from '@/shared/InstallAppCard'
+import { RestorePausedBanner } from '@/shared/RestorePausedBanner'
+import { ShopHealthBanners } from '@/shared/ShopHealthBanners'
+import { syncStatusBadge } from '@/core/domain/health-banners'
 
 export function HomePage() {
   const navigate = useNavigate()
   const shop = useApp((s) => s.shop)
   const online = useApp((s) => s.online)
+  const sync = useApp((s) => s.sync)
   const cart = useApp((s) => s.cart)
-  const { canInstall, installed, promptInstall } = useInstallPrompt()
-  const displayMode = useDisplayMode()
-  const showInstall = displayMode !== 'standalone' && !installed
-
+  const poisonedRow = useLiveQuery(() => dbx.meta.get('sync:poisoned'), [])
+  const poisoned = Array.isArray(poisonedRow?.value) ? poisonedRow.value.length : 0
+  const syncBadge = syncStatusBadge({
+    online,
+    pendingOps: sync.pendingOps,
+    status: sync.status,
+    poisoned,
+  })
   const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(13), vnToday()), [], [])
   const customers = useLiveQuery(() => dbx.customers.toArray(), [], [])
 
@@ -47,6 +55,16 @@ export function HomePage() {
               Mất mạng
             </span>
           )}
+          {syncBadge && (
+            <button
+              type="button"
+              className="text-[10px] font-sans font-medium px-2 py-0.5 rounded-full"
+              style={{ background: 'rgba(158,74,62,.12)', color: 'var(--down)' }}
+              onClick={() => syncBadge.to && navigate(syncBadge.to)}
+            >
+              {syncBadge.text}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <button className="btn-back" onClick={() => navigate('/them')} aria-label="Thêm">
@@ -59,21 +77,15 @@ export function HomePage() {
       </header>
 
       <div className="px-6 max-w-[520px] mx-auto w-full">
+        <div className="mt-3">
+          <RestorePausedBanner />
+          <ShopHealthBanners />
+        </div>
         {/* Greeting */}
         <div className="mt-4 font-brand italic text-base" style={{ color: 'var(--mute)' }}>
           {greeting()}, chúc bạn buôn may bán đắt.
         </div>
-        {showInstall && (
-          <button className="card w-full p-4 mt-3 flex items-center gap-3 text-left" onClick={() => void promptInstall()}>
-            <Smartphone size={20} style={{ color: 'var(--gold)' }} />
-            <div>
-              <div className="text-sm font-medium" style={{ color: 'var(--ink)' }}>Ghim ra màn hình</div>
-              <div className="text-[11.5px]" style={{ color: 'var(--mute)' }}>
-                {canInstall ? 'Chạm để cài app — lần sau mở như phần mềm' : 'Mở bằng Chrome rồi thêm ra màn hình chính'}
-              </div>
-            </div>
-          </button>
-        )}
+        <InstallAppCard />
 
         {/* Hero profit */}
         <section className="py-6">

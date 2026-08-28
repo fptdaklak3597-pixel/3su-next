@@ -20,7 +20,7 @@
 <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
 <link rel="apple-touch-icon" href="/icons/icon-180.png">
 
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https: wss:; frame-src 'self' https://accounts.google.com https://*.firebaseapp.com; base-uri 'self'; form-action 'self'; object-src 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com https://www.gstatic.com https://www.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://www.google.com https://www.gstatic.com https://recaptcha.google.com; base-uri 'self'; form-action 'self'; object-src 'none';">
 
 <style>
   /* Splash hiển thị tới khi React mount lần đầu */
@@ -43,14 +43,14 @@
   /* No-flash theme: đọc localStorage đồng bộ trước khi paint */
   (function(){
     try{
-      var pref = localStorage.getItem('3su_theme') || 'dark';
+      var pref = localStorage.getItem('3su_theme') || 'light';
       var theme = pref === 'system'
         ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
         : (pref === 'dark' ? 'dark' : 'light');
       document.documentElement.setAttribute('data-theme', theme);
       var meta = document.getElementById('meta-theme-color');
       if(meta) meta.setAttribute('content', theme === 'dark' ? '#151515' : '#1E40AF');
-    }catch(_){ document.documentElement.setAttribute('data-theme','dark'); }
+    }catch(_){ document.documentElement.setAttribute('data-theme','light'); }
   })();
 </script>
 </head>

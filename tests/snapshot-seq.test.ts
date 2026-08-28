@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { dbx } from '@/core/db'
-import { initSyncEngine, lastSeqAfterSnapshot, makeOp } from '@/core/sync/engine'
+import { enqueueOp, initSyncEngine, lastSeqAfterSnapshot, makeOp, pullCloudSnapshot } from '@/core/sync/engine'
 import { applyOps, getPoisonedOps } from '@/core/sync/apply'
 import { addProduct } from '@/core/domain/inventory'
 import type { Product, SyncOp } from '@/core/types'
@@ -65,5 +65,19 @@ describe('S5 — lastSeq sau snapshot', () => {
   it('từ chối watermark âm hoặc không nguyên', () => {
     expect(() => lastSeqAfterSnapshot(10, -1)).toThrow(/không hợp lệ/)
     expect(() => lastSeqAfterSnapshot(10, 1.5)).toThrow(/không hợp lệ/)
+  })
+})
+
+
+describe('S5 — force-pull không xóa op đã đẩy', () => {
+  it('còn outbox thì throw và không wipe sales', async () => {
+    await dbx.sales.put({
+      id: 's-keep', items: [], total: 0, profit: 0, discount: 0, payMethod: 'cash',
+      tendered: 0, change: 0, debtAmount: 0, customerId: null, date: '2026-08-26',
+    } as any)
+    await enqueueOp('note.delete', { noteId: 'n-outbox' })
+    expect(await dbx.syncQueue.count()).toBeGreaterThan(0)
+    await expect(pullCloudSnapshot(true)).rejects.toThrow(/Còn lệnh chờ đồng bộ/)
+    expect(await dbx.sales.get('s-keep')).toBeTruthy()
   })
 })

@@ -3,18 +3,23 @@
  * Port từ 16b-stocktake.js (kiểm kê, điều chỉnh tồn) và 28-stock-forecast.js
  * (dự báo ngày hết hàng dựa trên tốc độ bán).
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmtNum, vnDaysAgo, vnToday } from '@/core/format'
 import { salesInDateRange } from '@/core/domain/sales'
-import { saveStocktake, forecastStock, selectStocktakeRows } from '@/core/domain/inventory'
+import { saveStocktake, forecastStock, selectStocktakeRows, stocktakeHasLargeDiff } from '@/core/domain/inventory'
+import { createPurchaseOrder, forecastToPoRows } from '@/core/domain/purchase'
 import { logError } from '@/core/errorLogger'
 import { ConfirmDialog } from '@/shared/components'
+import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
+import {
+  DRAFT_STOCKTAKE, clearDraft, loadFreshDraft, persistStocktakeDraft, type StocktakeDraft,
+} from '@/core/domain/drafts'
 import { ChevronLeft, ClipboardCheck, TrendingDown } from 'lucide-react'
-import type { Product, Sale } from '@/core/types'
+import type { Product, Sale, Supplier } from '@/core/types'
 
 type Tab = 'stocktake' | 'forecast'
 
@@ -27,6 +32,28 @@ export function StocktakePage() {
   const [note, setNote] = useState('')
   const [confirmSave, setConfirmSave] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [poBusy, setPoBusy] = useState(false)
+  const [poSupplierId, setPoSupplierId] = useState('')
+  const draftReady = useRef(false)
+  const leave = useUnsavedDraftGuard(Object.keys(touched).length > 0 || !!note.trim())
+
+  useEffect(() => {
+    void loadFreshDraft<StocktakeDraft>(DRAFT_STOCKTAKE).then((d) => {
+      draftReady.current = true
+      if (!d) return
+      setActual(d.actual)
+      setTouched(d.touched)
+      setNote(d.note)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!draftReady.current) return
+    const t = window.setTimeout(() => {
+      void persistStocktakeDraft({ actual, touched, note })
+    }, 400)
+    return () => window.clearTimeout(t)
+  }, [actual, touched, note])
 
   const products = useLiveQuery(
     () => dbx.products.filter((p) => !p.deleted).toArray(),
@@ -34,6 +61,13 @@ export function StocktakePage() {
     [] as Product[],
   )
   const sales = useLiveQuery(() => salesInDateRange(vnDaysAgo(29), vnToday()), [], [] as Sale[])
+  const suppliers = useLiveQuery(() => dbx.suppliers.filter((s) => !s.deleted).toArray(), [], [] as Supplier[])
+
+  useEffect(() => {
+    if (poSupplierId) return
+    const first = suppliers.find((s) => !s.deleted) ?? suppliers[0]
+    if (first) setPoSupplierId(first.id)
+  }, [suppliers, poSupplierId])
 
   /* ─── Kiểm kê ─── */
   const rows = useMemo(
@@ -78,6 +112,8 @@ export function StocktakePage() {
         note.trim(),
       )
       showToast(`✓ Đã kiểm kê ${picked.length} sản phẩm`, 'ok')
+      leave.allowLeave()
+      await clearDraft(DRAFT_STOCKTAKE)
       setActual({})
       setTouched({})
       setNote('')
@@ -175,6 +211,47 @@ export function StocktakePage() {
           <div className="text-[12px] mb-3" style={{ color: 'var(--mute)' }}>
             Dựa trên tốc độ bán 30 ngày gần nhất. Sản phẩm sắp hết hàng được liệt kê trước.
           </div>
+          <div className="flex flex-col gap-2 mb-3">
+            <select
+              className="field-input text-sm"
+              value={poSupplierId}
+              onChange={(e) => setPoSupplierId(e.target.value)}
+              aria-label="Nhà cung cấp"
+            >
+              {suppliers.length === 0 && <option value="">Chưa có nhà cung cấp</option>}
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <button
+              className="btn-cta"
+              disabled={poBusy || !poSupplierId || forecast.every((f) => f.suggestedQty <= 0)}
+              onClick={async () => {
+                const sup = suppliers.find((s) => s.id === poSupplierId)
+                if (!sup) { showToast('Thêm nhà cung cấp trước', 'bad'); return }
+                const poRows = forecastToPoRows(forecast, products)
+                if (!poRows.length) { showToast('Không có món cần nhập', 'bad'); return }
+                setPoBusy(true)
+                try {
+                  const po = await createPurchaseOrder({
+                    supplierId: sup.id,
+                    supplierName: sup.name,
+                    rows: poRows,
+                    note: 'Từ dự báo tồn',
+                  })
+                  showToast(`✓ Đã tạo ${po.code} cho ${sup.name}`, 'ok')
+                  navigate('/don-mua')
+                } catch (e) {
+                  logError(e, 'po.forecast')
+                  showToast(e instanceof Error ? e.message : 'Lỗi tạo đơn', 'bad')
+                } finally {
+                  setPoBusy(false)
+                }
+              }}
+            >
+              Tạo đơn mua từ dự báo
+            </button>
+          </div>
           <div className="flex flex-col gap-2">
             {forecast.map((f) => {
               const urgent = f.daysLeft <= 7
@@ -201,10 +278,11 @@ export function StocktakePage() {
         </div>
       )}
 
+      {leave.dialog}
       <ConfirmDialog
         open={confirmSave}
         title="Lưu kiểm kê?"
-        message={`${saveRows.length} dòng đã đếm sẽ được ghi. ${diffCount} dòng lệch sổ sẽ chỉnh tồn.`}
+        message={`${saveRows.length} dòng đã đếm sẽ được ghi. ${diffCount} dòng lệch sổ sẽ chỉnh tồn.${stocktakeHasLargeDiff(saveRows) ? ' Có dòng lệch rất lớn so với sổ — kiểm tra lại trước khi lưu.' : ''}`}
         confirmLabel="Lưu"
         onConfirm={handleSaveStocktake}
         onCancel={() => setConfirmSave(false)}
