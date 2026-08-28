@@ -40,6 +40,7 @@ describe('3su-einvoice canonical contracts', () => {
       'receipt_only',
       'voluntary_einvoice',
       'mandatory_einvoice',
+      'legal_exempt',
       'manual_review',
     ]);
   });

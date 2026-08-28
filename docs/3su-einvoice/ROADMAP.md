@@ -19,6 +19,18 @@ Out of scope for V1: VAT invoices, USB token workflows at POS, legal authorizati
 6. A sale requiring an e-invoice must end the day as either an issued invoice or a documented legal exception.
 7. Credentials and provider tokens never reach browser state, IndexedDB, analytics, logs, or client backups.
 
+## Deployment topology
+
+| Location | Responsibility |
+|----------|----------------|
+| `packages/3su-einvoice/` | Domain, compliance, provider contracts, mock provider |
+| `3su-cloud/src/einvoice/` | HTTP API, D1, series Durable Object, R2 artifacts |
+| `3su-cloud/migrations/` | `einvoice_*` schema |
+| `3su-next/src/` (Phase 6/8) | SDK client, wizard, output-invoice UI |
+| `3su_invoice/` (reuse) | XML/PDF viewer only — input-invoice tooling, not MISA |
+
+`3su-cloud` must be versioned (GitHub or monorepo) before Phase 3 deploy. See `docs/3su-einvoice/COMPLIANCE-BASELINE.md` and `docs/superpowers/specs/2026-08-23-3su-einvoice-master-design.md`.
+
 ## Phase 0 — MISA and legal gate
 
 Goal: remove unknowns that must not be guessed.
@@ -60,6 +72,21 @@ Exit gate:
 - No imports from 3SU UI/runtime code.
 - No MISA implementation in core.
 
+## Phase 1b — Authoritative sale (3SU prerequisite)
+
+Goal: server-authoritative checkout before production e-invoice.
+
+Deliverables:
+- Wire POS UI to `sale.create` / `confirmSaleAuthoritative` when flag enabled.
+- Cloud `SaleCommitted` with server-calculated totals.
+- Document snapshot shape for invoice module input.
+
+Exit gate:
+- Cannot finalize sale UI on client-only totals in authoritative mode.
+- `SaleCommitted` event available for invoice outbox (Phase 3).
+
+Runs in parallel with Phases 2–4. **Production e-invoice blocked until this gate passes.**
+
 ## Phase 2 — Core domain and compliance engine
 
 Goal: implement fiscal domain and versioned compliance decisions.
@@ -68,7 +95,7 @@ Deliverables:
 - `OutputInvoice`, immutable seller/buyer/item/totals snapshots.
 - Invoice state machine.
 - `CompliancePolicy`, `ComplianceDecision`, `RevenueDeclaration`, `LegalBasis`, `PolicyVersion`.
-- Results such as `receipt_only`, `voluntary_einvoice`, `mandatory_einvoice`.
+- Results such as `receipt_only`, `voluntary_einvoice`, `mandatory_einvoice`, `legal_exempt` (Điều 7 NĐ 254).
 - Boundary tests around revenue threshold and mid-year transition.
 
 Exit gate:
@@ -80,6 +107,8 @@ Exit gate:
 ## Phase 3 — Persistence, idempotency and transactional outbox
 
 Goal: guarantee no lost invoice jobs and no duplicate fiscal issuance.
+
+**May run in parallel with Phase 4** after Phase 2 exit gate. Requires `3su-cloud` repo/deploy target.
 
 Deliverables:
 - D1 schema for profiles, connections, invoices, items, jobs, events, corrections, declarations and decisions.
@@ -136,9 +165,10 @@ Deliverables:
 - Household-business classification and declaration flow.
 - Legal/profile data collection.
 - MISA connection flow.
-- Readiness checks with human-readable errors.
+- Readiness checks with human-readable errors (`declaration_not_submitted`, `declaration_pending_cqt`, `no_active_mtt_template`, `series_invalid`, `package_expired`, `ready`).
 - Template/series selection.
 - Preview and activation confirmation.
+- eTax/sinh trắc học: checklist + deep-link only (not automated).
 
 Exit gate:
 - A normal shop owner can reach ready state without technical intervention.
