@@ -122,11 +122,14 @@ export function assertTenantBinding(existingShopId: string | null, requestedShop
 }
 
 /**
- * Chọn shop an toàn:
- * - dữ liệu đã gắn shop nào thì chỉ chọn shop đó;
- * - nếu chưa gắn, ưu tiên shop đã nhớ còn hợp lệ;
- * - chỉ tự chọn khi tài khoản có đúng một shop.
+ * Chọn shop an toàn — một Google = một cửa hàng:
+ * - dữ liệu đã gắn shop nào thì chỉ chọn shop đó nếu tài khoản còn quyền;
+ * - nếu chưa gắn, vào shop chủ (hoặc membership cũ nhất).
  */
+export function googleHomeShop(shops: CloudShopRow[]): CloudShopRow | null {
+  return shops.find((shop) => shop.role === 'owner') ?? shops[0] ?? null
+}
+
 export function selectShopForSession(
   shops: CloudShopRow[],
   rememberedShopId: string | null,
@@ -137,7 +140,7 @@ export function selectShopForSession(
     const remembered = shops.find((shop) => shop.shopId === rememberedShopId)
     if (remembered) return remembered
   }
-  return shops.length === 1 ? shops[0]! : null
+  return googleHomeShop(shops)
 }
 
 async function bindDataToShop(shopId: string): Promise<void> {
@@ -214,7 +217,12 @@ export async function attachExistingCloudShop(): Promise<string | null> {
     }
     return null
   }
-  await rememberShop(selected.shopId, selected.role)
+  try {
+    await rememberShop(selected.shopId, selected.role)
+  } catch (e) {
+    if (e instanceof CloudTenantConflictError) return null
+    throw e
+  }
   await saveCachedLicense(licenseFromShopRow(selected))
   return selected.shopId
 }
@@ -239,6 +247,12 @@ export async function refreshShopLicense(): Promise<ShopLicense | null> {
 export async function createCloudShop(): Promise<string> {
   const base = apiBase()
   if (!base) throw new Error('Chưa cấu hình địa chỉ máy chủ đồng bộ')
+  const existing = googleHomeShop(await listCloudShops())
+  if (existing) {
+    await rememberShop(existing.shopId, existing.role)
+    await saveCachedLicense(licenseFromShopRow(existing))
+    return existing.shopId
+  }
   const res = await apiPost<{ shopId: string; role?: string }>(base, '/v1/shops', getCloudIdToken)
   await rememberShop(res.shopId, res.role || 'owner')
   return res.shopId

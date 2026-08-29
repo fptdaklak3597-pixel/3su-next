@@ -27,20 +27,24 @@ beforeEach(async () => {
 })
 
 describe('cloud shop selection', () => {
-  it('không tự chọn shop đầu tiên khi tài khoản có nhiều shop', () => {
-    expect(selectShopForSession(shops, null, null)).toBeNull()
+  it('một Google — vào shop chủ, không kẹt màn chọn khi lỡ có nhiều membership', () => {
+    expect(selectShopForSession(shops, null, null)?.shopId).toBe('shop-a')
   })
 
   it('dữ liệu đã gắn shop nào thì shop đó thắng remembered binding', () => {
     expect(selectShopForSession(shops, 'shop-b', 'shop-a')?.shopId).toBe('shop-a')
   })
 
-  it('chỉ tự chọn khi tài khoản có đúng một shop', () => {
+  it('chỉ tự chọn membership duy nhất khi không phải chủ', () => {
     expect(selectShopForSession([shops[1]!], null, null)?.shopId).toBe('shop-b')
   })
 
   it('không mở app nếu data shop không còn trong membership', () => {
     expect(selectShopForSession([shops[1]!], 'shop-b', 'shop-a')).toBeNull()
+  })
+
+  it('không fallback sang shop đã nhớ khi data shop khác không có trong list', () => {
+    expect(selectShopForSession(shops, 'shop-a', 'shop-07c7')).toBeNull()
   })
 })
 

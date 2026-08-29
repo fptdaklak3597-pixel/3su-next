@@ -4,7 +4,6 @@
  */
 import { useApp } from '@/core/store'
 import { cloudSignOut, isFirebaseConfigured } from '@/core/sync/firebase'
-import { apiBase } from '@/core/sync/cloud'
 import { AuthStage } from './AuthStageArt'
 import { WebCloudAuth } from './WebCloudAuth'
 import { CloudShopJoin } from './CloudShopJoin'
@@ -21,7 +20,7 @@ export function AuthBootSplash({ message }: { message?: string } = {}) {
 
 export function CloudAuthScreen() {
   const showToast = useApp((s) => s.showToast)
-  const configured = isFirebaseConfigured() && !!apiBase()
+  const configured = isFirebaseConfigured()
 
   return (
     <div className="auth-screen">
@@ -63,7 +62,6 @@ export function CloudShopJoinScreen() {
             />
           </div>
         </div>
-        <AuthStage />
       </div>
     </div>
   )
@@ -90,7 +88,6 @@ export function CloudVerifyEmailScreen() {
             />
           </div>
         </div>
-        <AuthStage />
       </div>
     </div>
   )

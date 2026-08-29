@@ -27,6 +27,7 @@ describe('Cloudflare Pages security headers', () => {
     const text = await headersFile()
     expect(text).toContain("default-src 'self'")
     expect(text).toContain("script-src 'self'")
+    expect(text).toContain("media-src 'self'")
   })
 
   it('cho phép iframe Firebase cùng origin + popup Google', async () => {
@@ -43,6 +44,7 @@ describe('Cloudflare Pages security headers', () => {
     const mobile = await readFile(resolve(process.cwd(), 'mobile.html'), 'utf8')
     for (const html of [web, mobile]) {
       const meta = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1] ?? ''
+      expect(meta).toContain("media-src 'self'")
       expect(meta).toContain("frame-src 'self'")
       expect(meta).toContain('https://www.gstatic.com')
       expect(meta).toContain('https://www.google.com')
