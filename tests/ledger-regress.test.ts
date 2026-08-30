@@ -109,6 +109,29 @@ describe('S1 — nợ NCC không trừ trùng', () => {
     const payments = await dbx.supplierPayments.toArray()
     expect(supplierDebt('sup1', receipts, payments)).toBe(30)
   })
+
+  it('legacy on-receipt payment thiếu prefix vẫn không trừ đúp', () => {
+    const receipts = [{
+      id: 'gr1', code: 'NK-20260818-100', supplier: 'A', supplierId: 'sup1',
+      date: '2026-08-18', expiry: '', note: '', rows: [], total: 100, paid: 70, ts: 1,
+    }]
+    const payments = [{
+      id: 'sp1', supplierId: 'sup1', amount: 70, date: '2026-08-18', note: '',
+    }]
+    expect(supplierDebt('sup1', receipts, payments)).toBe(30)
+  })
+
+  it('payment standalone cùng số không bị nuốt', () => {
+    const receipts = [{
+      id: 'gr1', code: 'NK-1', supplier: 'A', supplierId: 'sup1',
+      date: '2026-08-18', expiry: '', note: '', rows: [], total: 100, paid: 70, ts: 1,
+    }]
+    const payments = [{
+      id: 'sp1', supplierId: 'sup1', amount: 70, date: '2026-08-18',
+      note: 'Trả riêng', paymentKind: 'standalone' as const,
+    }]
+    expect(supplierDebt('sup1', receipts, payments)).toBe(0)
+  })
 })
 
 describe('S2 / M10 — nợ khách sàn 0', () => {
@@ -129,6 +152,8 @@ describe('S2 / M10 — nợ khách sàn 0', () => {
     expect((await dbx.customers.get(c.id))!.debt).toBe(0)
     await voidSale(sale.id, 'khách đổi ý')
     expect((await dbx.customers.get(c.id))!.debt).toBe(0)
+    const voidPay = await dbx.debtPayments.get(`dp_void_${sale.id}`)
+    expect(voidPay?.amount).toBe(-100)
   })
 
   it('thu vượt nợ → từ chối; thu đúng → debt 0', async () => {

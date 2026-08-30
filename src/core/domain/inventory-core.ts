@@ -215,6 +215,8 @@ export function analyzeInventory(products: Product[], lowStock: number, warnDays
 
 /* ─── Nhập kho (Goods Receipt) — giá vốn bình quân gia quyền + FEFO lô ─── */
 export type GoodsReceiptInput = {
+  /** Id ổn định khi nhập từ PO; phiếu lẻ để trống thì uid. */
+  id?: string
   supplier: string
   supplierId?: string
   purchaseOrderId?: string
@@ -277,6 +279,7 @@ function normalizeReceiptRows(rows: GoodsReceiptRow[]): GoodsReceiptRow[] {
       unitRatio,
       cost: Math.round(row.cost),
       expiry: String(row.expiry || ''),
+      ...(row.lineId ? { lineId: String(row.lineId) } : {}),
     }
   })
 }
@@ -289,11 +292,13 @@ export async function applyGoodsReceiptInTx(input: GoodsReceiptInput): Promise<G
     if (!p || p.deleted) throw new Error('Không tìm thấy hàng: ' + (r.name || r.productId))
     if (!Number.isFinite(p.stock) || !Number.isFinite(p.cost)) throw new Error('Dữ liệu tồn kho không hợp lệ: ' + p.name)
   }
+  const id = input.id || uid('gr')
+  if (await dbx.goodsReceipts.get(id)) throw new Error('Đơn này đã nhập kho rồi')
   const code = 'NK-' + input.date.replace(/-/g, '') + '-' + String(Math.floor(Math.random() * 900) + 100)
   const total = Math.round(rows.reduce((a, r) => a + r.qty * r.cost, 0))
   const payment = normalizeReceiptPayment(total, input.paid, input.payMethod)
   const gr: GoodsReceipt = {
-    id: uid('gr'),
+    id,
     code,
     supplier: String(input.supplier || '').trim() || 'NCC lẻ',
     supplierId: input.supplierId,

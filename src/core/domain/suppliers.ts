@@ -32,10 +32,17 @@ export function supplierReceiptCount(supId: string, receipts: GoodsReceipt[]): n
 /** Prefix app từng gắn lúc nhập — bỏ qua khi tính extraPaid (dữ liệu cũ). */
 export const GR_PAY_NOTE_PREFIX = 'Thanh toán phiếu nhập'
 
-export function isOnReceiptPayment(p: SupplierPayment): boolean {
+export function isOnReceiptPayment(p: SupplierPayment, receipts: GoodsReceipt[] = []): boolean {
   if (p.paymentKind === 'receipt') return true
   if (p.paymentKind === 'standalone') return false
-  return (p.note || '').startsWith(GR_PAY_NOTE_PREFIX)
+  if ((p.note || '').startsWith(GR_PAY_NOTE_PREFIX)) return true
+  if (p.receiptId && receipts.some((r) => r.id === p.receiptId)) return true
+  return receipts.some((r) =>
+    r.supplierId === p.supplierId
+    && safeMoney(r.paid) > 0
+    && safeMoney(r.paid) === safeMoney(p.amount)
+    && (r.date || '').slice(0, 10) === (p.date || '').slice(0, 10),
+  )
 }
 
 /**
@@ -55,7 +62,7 @@ export function supplierBalance(
       return sum + (total - paid)
     }, 0)
   const paid = payments
-    .filter((p) => p.supplierId === supId && !isOnReceiptPayment(p))
+    .filter((p) => p.supplierId === supId && !isOnReceiptPayment(p, receipts))
     .reduce((sum, payment) => sum + Math.max(0, safeMoney(payment.amount)), 0)
   return Math.round(owed - paid)
 }
@@ -106,7 +113,7 @@ export function supplierMonthlyStatement(
     return a + Math.max(0, Math.min(total, safeMoney(r.paid)))
   }, 0)
   const extraPaid = pays
-    .filter((p) => !isOnReceiptPayment(p))
+    .filter((p) => !isOnReceiptPayment(p, receipts))
     .reduce((a, p) => a + Math.max(0, safeMoney(p.amount)), 0)
   const balance = Math.round(purchased - paidOnReceipts - extraPaid)
   return {

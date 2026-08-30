@@ -1,5 +1,6 @@
 /**
  * Checkout facade: authoritative path when enabled, else legacy local confirmSale.
+ * Authoritative: chiếu sổ local từ SaleCommitted trên máy bán; máy khác chờ cầu event.
  */
 import type { CheckoutInput, CheckoutResult } from '../domain/sales-core'
 import { confirmSale as confirmSaleCore } from '../domain/sales-core'
@@ -16,6 +17,7 @@ import { getCloudShopId } from '../sync/cloud'
 import { logError } from '../errorLogger'
 import { postShopCommand, queueEinvoiceFromSale } from './cloudApi'
 import { saleFromAuthoritativePayload, type AuthoritativeSalePayload } from './saleMapper'
+import { projectAuthoritativeSale } from './projectSale'
 import { clearDraft, DRAFT_CART } from '../domain/drafts'
 import type { Sale } from '../types'
 
@@ -71,6 +73,8 @@ export async function confirmCheckout(input: CheckoutInput): Promise<ConfirmChec
     committed.payload as AuthoritativeSalePayload,
     input.tendered,
   )
+  await projectAuthoritativeSale(sale)
+  await reconcileProductBatchProjections(sale.items.map((it) => it.productId))
   await clearDraft(DRAFT_CART)
   return { status: 'committed', sale, warnings: [] }
 }

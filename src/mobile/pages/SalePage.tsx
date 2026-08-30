@@ -368,7 +368,7 @@ export function SalePage() {
               if (!p) return null
               const unitPrice = cartUnitPrice(ci, p, useWs)
               return (
-                <div key={idx} className="flex items-center gap-2">
+                <div key={`${ci.productId}:${ci.unitName}:${ci.unitRatio}`} className="flex items-center gap-2">
                   <div className="flex-1 min-w-0">
                     <div className="text-[13px] font-medium truncate" style={{ color: 'var(--ink)' }}>{p.name}</div>
                     <div className="text-[11px]" style={{ color: 'var(--mute)' }}>

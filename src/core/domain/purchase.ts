@@ -9,6 +9,7 @@ import { dbx } from '../db'
 import { uid, today } from '../format'
 import type { Product, PurchaseOrder, PurchaseOrderRow, StockForecast } from '../types'
 import { applyGoodsReceiptInTx } from './inventory'
+import { goodsReceiptIdForPurchaseOrder, poLineKey } from './po-receive'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
 import { withExclusiveLock } from '../offline'
 import { requirePermission } from './auth'
@@ -135,7 +136,7 @@ export async function updatePurchaseOrderStatus(
 }
 
 function rowKey(row: PurchaseOrderRow, index: number): string {
-  return row.lineId || `${row.productId}#${index}`
+  return poLineKey(row, index)
 }
 
 function requestedQty(
@@ -190,13 +191,21 @@ export async function receivePurchaseOrder(
         if (!takes.length) throw new Error('Không còn hàng để nhận')
 
         const gr = await applyGoodsReceiptInTx({
+          id: goodsReceiptIdForPurchaseOrder(
+            po.id,
+            takes.map(({ row, take, index }) => ({
+              lineKey: rowKey(row, index),
+              priorReceived: Number.isFinite(row.receivedQty) ? Math.max(0, row.receivedQty) : 0,
+              qty: take,
+            })),
+          ),
           supplier: po.supplierName,
           supplierId: po.supplierId,
           purchaseOrderId: po.id,
           date: today(),
           expiry: opts.expiry ?? '',
           note: 'Nhập từ ' + po.code,
-          rows: takes.map(({ row, take }) => ({
+          rows: takes.map(({ row, take, index }) => ({
             productId: row.productId,
             name: row.name,
             unit: row.unit,
@@ -204,6 +213,7 @@ export async function receivePurchaseOrder(
             qty: take,
             cost: row.cost,
             expiry: '',
+            lineId: rowKey(row, index),
           })),
           paid: opts.paid,
           payMethod: opts.payMethod,

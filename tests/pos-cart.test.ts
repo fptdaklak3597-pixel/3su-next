@@ -48,6 +48,16 @@ describe('setCartLineQty / removeCartLine', () => {
   it('xóa đúng index', () => {
     expect(removeCartLine([line(), line({ productId: 'p2' })], 0)).toEqual([line({ productId: 'p2' })])
   })
+
+  it('đổi đơn vị: gộp vào dòng cùng SP+đơn vị, không để hai dòng trùng', () => {
+    const cart = [
+      line({ unitName: 'chai', unitRatio: 1, qty: 2 }),
+      line({ unitName: 'thùng', unitRatio: 24, qty: 1 }),
+    ]
+    const item = cart[0]!
+    const next = mergeCartLine(removeCartLine(cart, 0), { ...item, unitName: 'thùng', unitRatio: 24 })
+    expect(next).toEqual([line({ unitName: 'thùng', unitRatio: 24, qty: 3 })])
+  })
 })
 
 describe('discountToAmount', () => {

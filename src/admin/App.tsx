@@ -38,6 +38,7 @@ export function AdminApp() {
   const [inSession, setInSession] = useState(() => !!getAdminToken())
   const [denied, setDenied] = useState('')
   const [probed, setProbed] = useState(false)
+  const [probeKey, setProbeKey] = useState(0)
 
   useEffect(() => {
     if (!inSession) {
@@ -47,6 +48,7 @@ export function AdminApp() {
     }
     let cancelled = false
     setProbed(false)
+    setDenied('')
     void listAdminShops()
       .then(() => { if (!cancelled) { setDenied(''); setProbed(true) } })
       .catch((e: unknown) => {
@@ -57,11 +59,15 @@ export function AdminApp() {
           setInSession(false)
           return
         }
+        if (msg === 'Không có quyền admin') {
+          setDenied(msg)
+          setProbed(true)
+          return
+        }
         setDenied(msg)
-        setProbed(true)
       })
     return () => { cancelled = true }
-  }, [inSession])
+  }, [inSession, probeKey])
 
   function signOut() {
     clearAdminSession()
@@ -69,6 +75,20 @@ export function AdminApp() {
   }
 
   if (!inSession) return <AdminLogin onIn={() => setInSession(true)} />
+
+  if (!probed && denied) {
+    return (
+      <div className="admin-gate">
+        <div className="admin-card">
+          <h1>Không kiểm tra được</h1>
+          <p className="admin-lead">{denied}</p>
+          <button type="button" className="auth-btn auth-btn-pri" onClick={() => setProbeKey((k) => k + 1)}>
+            Thử lại
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (!probed) {
     return <div className="admin-gate"><p>Đang kiểm tra quyền…</p></div>
@@ -90,7 +110,7 @@ export function AdminApp() {
 
   return (
     <BrowserRouter>
-      <Shell onSignOut={signOut} banner={denied && denied !== 'Không có quyền admin' ? denied : ''} />
+      <Shell onSignOut={signOut} banner="" />
     </BrowserRouter>
   )
 }

@@ -211,7 +211,9 @@ export function WebSalePage() {
   }, [cart, setCart])
 
   function changeUnit(idx: number, unit: { n: string; r: number }) {
-    setCart(cart.map((c, i) => i === idx ? { ...c, unitName: unit.n, unitRatio: unit.r } : c))
+    const item = cart[idx]
+    if (!item) return
+    setCart(mergeCartLine(removeCartLine(cart, idx), { ...item, unitName: unit.n, unitRatio: unit.r }))
   }
 
   const subtotal = useMemo(() => cart.reduce((sum, ci) => {
@@ -422,7 +424,7 @@ export function WebSalePage() {
           <div className="web-pos-lines flex-1 overflow-y-auto min-h-0">
             {cart.map((ci, idx) => (
               <CartRow
-                key={idx}
+                key={`${ci.productId}:${ci.unitName}:${ci.unitRatio}`}
                 ci={ci}
                 p={products.find((x) => x.id === ci.productId)}
                 useWs={useWs}

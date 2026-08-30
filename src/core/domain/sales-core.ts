@@ -4,14 +4,14 @@
  */
 import { dbx, getMeta, getSettings, setMeta } from '../db'
 import { DRAFT_CART } from './drafts'
-import type { Product, ProductBatch, Sale, SaleItem, PayMethod, Customer, DebtPayment } from '../types'
+import type { Product, ProductBatch, Sale, SaleItem, PayMethod, Customer } from '../types'
 import { consumeBatchesFefo, consumeBatchesFefoAllowNegative, isCatalogUnitRatio, liveBatchExpiry, restoreBatchesFefo } from './inventory'
 import { requirePermission } from './auth'
 import { assertCloudShopWritable } from '../sync/license'
 import { uid, localDay, prevCalendarDay, vnDay } from '../format'
 import { enqueueOp, requestFlush } from '../sync/engine'
 import { notifyDbChanged, withExclusiveLock } from '../offline'
-import { allocateCustomerDebt, allocationForSale } from './debt-allocation'
+import { applySaleVoidDebtEffectsInTx } from './sale-void-debt'
 
 /* ─── Giỏ hàng (in-memory, persist qua store) ─── */
 export interface CartItem {
@@ -376,38 +376,7 @@ export async function voidSale(saleId: string, reason: string): Promise<{ refund
       })
     }
 
-    // Hoàn nợ FIFO: chỉ trừ phần chưa thu; phần đã thu → phiếu hoàn tiền local (không đẩy debt.pay âm)
-    if (sale.customerId) {
-      const c = await dbx.customers.get(sale.customerId)
-      if (c) {
-        if (sale.debtAmount > 0) {
-          const openSales = await dbx.sales
-            .filter((s) => s.customerId === sale.customerId && (!s.voided || s.id === sale.id))
-            .toArray()
-          // Sale đã đánh voided — dùng bản trước void cho phân bổ
-          const forAlloc = openSales.map((s) => s.id === sale.id ? { ...s, voided: false } : s)
-          const pays = await dbx.debtPayments.where('customerId').equals(sale.customerId).toArray()
-          const slice = allocationForSale(allocateCustomerDebt(forAlloc, pays, sale.customerId), sale.id)
-          const unpaid = slice.unpaid
-          refund = slice.allocated
-          c.debt = Math.max(0, c.debt - unpaid)
-          if (refund > 0) {
-            const dp: DebtPayment = {
-              id: `dp_void_${sale.id}`,
-              customerId: sale.customerId,
-              amount: -refund,
-              date: new Date().toISOString(),
-              note: 'Hoàn tiền do hủy đơn ' + sale.id.slice(-6),
-            }
-            if (!(await dbx.debtPayments.get(dp.id))) await dbx.debtPayments.add(dp)
-          }
-        }
-        c.totalSpent = Math.max(0, c.totalSpent - sale.total)
-        c.orderCount = Math.max(0, c.orderCount - 1)
-        c.updatedAt = Date.now()
-        await dbx.customers.put(c)
-      }
-    }
+    refund = await applySaleVoidDebtEffectsInTx(sale, { adjustCustomer: true })
     refund += cashCollectedOnSale(sale)
     await enqueueOp('sale.void', { saleId, reason })
   }))

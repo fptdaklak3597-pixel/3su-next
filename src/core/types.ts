@@ -139,6 +139,8 @@ export interface GoodsReceiptRow {
   cost: number
   /** HSD riêng của dòng này (YYYY-MM-DD hoặc '') */
   expiry: string
+  /** Dòng PO nguồn — đối soát nhận hàng, không bắt buộc với phiếu lẻ. */
+  lineId?: string
 }
 
 export interface GoodsReceipt {

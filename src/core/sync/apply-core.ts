@@ -10,7 +10,8 @@
 import { dbx, retainLocalPrivilegedVerifier } from '../db'
 import { applyStockDeltaToBatches, consumeBatchesFefoAllowNegative, isCatalogUnitRatio, liveBatchExpiry, MAX_STOCK_QTY_DELTA, restoreBatchesFefo } from '../domain/inventory'
 import { getThisDeviceId } from '../domain/devices'
-import { allocateCustomerDebt, allocationForSale } from '../domain/debt-allocation'
+import { poReceiveWouldOverflowInTx, syncPoReceiveFromReceiptsInTx } from '../domain/po-receive'
+import { applySaleVoidDebtEffectsInTx } from '../domain/sale-void-debt'
 import { compareHlc } from './hlc'
 import { observeRemoteHlc } from './engine'
 import { isSyncablePasswordHash } from '../domain/auth'
@@ -385,7 +386,10 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (!payload?.saleId) payloadError('sale.void thiếu saleId')
       const sale = await dbx.sales.get(payload.saleId)
       if (!sale) dependencyError('sale.void chưa có đơn ' + payload.saleId)
-      if (sale.voided) return
+      if (sale.voided) {
+        await applySaleVoidDebtEffectsInTx(sale, { adjustCustomer: false })
+        return
+      }
       for (const it of sale.items) {
         if (!(await dbx.products.get(it.productId))) dependencyError('sale.void thiếu SP ' + it.productId)
       }
@@ -424,36 +428,7 @@ async function applyOne(op: SyncOp): Promise<void> {
         }
       }
 
-      if (sale.customerId) {
-        const c = await dbx.customers.get(sale.customerId)
-        if (c) {
-          if (sale.debtAmount > 0) {
-            const openSales = await dbx.sales
-              .filter((s) => s.customerId === sale.customerId)
-              .toArray()
-            const forAlloc = openSales.map((s) => s.id === sale.id ? { ...s, voided: false } : s)
-            const pays = await dbx.debtPayments.where('customerId').equals(sale.customerId).toArray()
-            const slice = allocationForSale(allocateCustomerDebt(forAlloc, pays, sale.customerId), sale.id)
-            c.debt = Math.max(0, c.debt - slice.unpaid)
-            if (slice.allocated > 0) {
-              const dpId = `dp_void_${sale.id}`
-              if (!(await dbx.debtPayments.get(dpId))) {
-                await dbx.debtPayments.add({
-                  id: dpId,
-                  customerId: sale.customerId,
-                  amount: -slice.allocated,
-                  date: new Date().toISOString(),
-                  note: 'Hoàn tiền do hủy đơn ' + sale.id.slice(-6),
-                })
-              }
-            }
-          }
-          c.totalSpent = Math.max(0, c.totalSpent - sale.total)
-          c.orderCount = Math.max(0, c.orderCount - 1)
-          c.updatedAt = Date.now()
-          await dbx.customers.put(c)
-        }
-      }
+      await applySaleVoidDebtEffectsInTx(sale, { adjustCustomer: true })
       return
     }
     case 'product.upsert': {
@@ -577,7 +552,14 @@ async function applyOne(op: SyncOp): Promise<void> {
       if (!grRaw?.id || !Array.isArray(grRaw.rows) || grRaw.rows.length === 0) {
         payloadError('gr.commit thiếu phiếu hoặc dòng hàng')
       }
-      if (await dbx.goodsReceipts.get(grRaw.id)) return
+      if (await dbx.goodsReceipts.get(grRaw.id)) {
+        await syncPoReceiveFromReceiptsInTx(grRaw.purchaseOrderId)
+        return
+      }
+      if (await poReceiveWouldOverflowInTx(grRaw)) {
+        await syncPoReceiveFromReceiptsInTx(grRaw.purchaseOrderId)
+        return
+      }
       const catalog = new Map<string, Product>()
       for (const row of grRaw.rows) {
         if (!row?.productId) payloadError('gr.commit có dòng không hợp lệ')
@@ -672,6 +654,7 @@ async function applyOne(op: SyncOp): Promise<void> {
           await dbx.suppliers.put(sup)
         }
       }
+      await syncPoReceiveFromReceiptsInTx(gr.purchaseOrderId)
       return
     }
     case 'settings.set': {
@@ -777,6 +760,7 @@ async function applyOne(op: SyncOp): Promise<void> {
       const cur = await dbx.purchaseOrders.get(po.id)
       if (cur?.hlc && compareHlc(op.hlc, cur.hlc) <= 0) return
       await dbx.purchaseOrders.put({ ...po, hlc: op.hlc })
+      await syncPoReceiveFromReceiptsInTx(po.id)
       return
     }
     case 'invoice.upsert': {

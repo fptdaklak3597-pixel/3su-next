@@ -191,6 +191,39 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect((await dbx.products.get('p1'))!.stock).toBe(10)
   })
 
+  it('sale.void đã voided nhưng thiếu dp_void → vá phiếu hoàn, không trừ nợ lần nữa', async () => {
+    const { reconcileFrom } = await import('@/core/domain/reconcile')
+    await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
+    await dbx.customers.put(mkCustomer({ id: 'c1', debt: 0, totalSpent: 0, orderCount: 0 }))
+    const sale: Sale = {
+      id: 's_voided', total: 100, profit: 40, discount: 0, payMethod: 'debt',
+      tendered: 0, change: 0, debtAmount: 100, customerId: 'c1',
+      date: new Date().toISOString(), synced: false, voided: true,
+      items: [{ productId: 'p1', name: 'SP', qty: 1, price: 100, cost: 60, unit: 'cái', unitRatio: 1 }],
+    }
+    await dbx.sales.put(sale)
+    const pay: DebtPayment = {
+      id: 'dp_paid', customerId: 'c1', amount: 100,
+      date: new Date().toISOString(), note: 'Thu nợ',
+    }
+    await dbx.debtPayments.add(pay)
+
+    await applyOps([remoteOp('sale.void', { saleId: 's_voided', reason: 'repair' })])
+    const voucher = await dbx.debtPayments.get('dp_void_s_voided')
+    expect(voucher?.amount).toBe(-100)
+    expect((await dbx.customers.get('c1'))!.debt).toBe(0)
+    expect((await dbx.products.get('p1'))!.stock).toBe(10)
+
+    const report = reconcileFrom(
+      await dbx.products.toArray(),
+      await dbx.customers.toArray(),
+      await dbx.sales.toArray(),
+      await dbx.stockMoves.toArray(),
+      await dbx.debtPayments.toArray(),
+    )
+    expect(report.debtDrifts).toEqual([])
+  })
+
   it('stock.adjust giao hoán: [-3, +5] và [+5, -3] cho cùng kết quả', async () => {
     await dbx.products.put(mkProduct({ id: 'p1', stock: 10 }))
     await applyOps([

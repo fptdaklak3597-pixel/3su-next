@@ -6,7 +6,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '@/core/store'
-import { exportBackup, restoreLocalBackup, wipeAll, setCurrentUser, type BackupData } from '@/core/db'
+import { exportBackup, getSettings, restoreLocalBackup, wipeAll, setCurrentUser, type BackupData } from '@/core/db'
 import {
   getAutoBackups,
   parseRestoreFile,
@@ -58,13 +58,13 @@ export function SettingsPage() {
   }, [])
 
   async function patchSettings(patch: Partial<Settings>) {
-    const prev = settings
     const next = { ...settings, ...patch }
     setSettings(next)
     try {
       await saveSettingsSynced(next)
     } catch (e) {
-      setSettings(prev)
+      const fresh = await getSettings()
+      setSettings(fresh)
       logError(e, 'settings.save')
       showToast('Không lưu được cài đặt', 'bad')
     }

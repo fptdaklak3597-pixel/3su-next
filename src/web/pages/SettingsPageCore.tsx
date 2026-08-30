@@ -9,7 +9,7 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { useApp } from '@/core/store'
-import { exportBackup, restoreLocalBackup, setCurrentUser, wipeAll, type BackupData } from '@/core/db'
+import { exportBackup, getSettings, restoreLocalBackup, setCurrentUser, wipeAll, type BackupData } from '@/core/db'
 import {
   exportRemindDays,
   getAutoBackups,
@@ -82,13 +82,13 @@ export function WebSettingsPage() {
   }, [shop.name, shop.phone, shop.address])
 
   async function patchSettings(patch: Partial<Settings>) {
-    const prev = settings
     const next = { ...settings, ...patch }
     setSettings(next)
     try {
       await saveSettingsSynced(next)
     } catch (e) {
-      setSettings(prev)
+      const fresh = await getSettings()
+      setSettings(fresh)
       logError(e, 'settings.save')
       showToast('Không lưu được cài đặt', 'bad')
     }

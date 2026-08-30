@@ -7,31 +7,32 @@ import {
 } from '@/core/sync/license'
 
 export function useShopLicense(enabled: boolean): { ready: boolean; value: ShopLicense | null } {
-  const [gate, setGate] = useState({ enabled: false, fetched: false, value: null as ShopLicense | null })
-  if (enabled !== gate.enabled) {
-    setGate({ enabled, fetched: false, value: null })
-  }
+  const [gate, setGate] = useState({ fetched: false, value: null as ShopLicense | null })
 
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled) {
+      setGate({ fetched: false, value: null })
+      return
+    }
     let cancelled = false
+    setGate({ fetched: false, value: null })
     void (async () => {
       const cached = await loadCachedLicense()
       if (!cancelled && cached) {
-        setGate((g) => (g.enabled === enabled ? { ...g, fetched: true, value: cached } : g))
+        setGate({ fetched: true, value: cached })
       }
       try {
         const { refreshShopLicense } = await import('@/core/sync/cloud')
         const fresh = await refreshShopLicense()
-        if (!cancelled) setGate((g) => (g.enabled === enabled ? { ...g, fetched: true, value: fresh } : g))
+        if (!cancelled) setGate({ fetched: true, value: fresh })
       } catch {
         if (!cancelled) {
-          setGate((g) => (g.enabled === enabled ? { ...g, fetched: true, value: g.value ?? cached } : g))
+          setGate((g) => ({ fetched: true, value: g.value ?? cached }))
         }
       }
     })()
     const unsub = watchLicense((lic) => {
-      if (!cancelled) setGate((g) => (g.enabled === enabled ? { ...g, value: lic } : g))
+      if (!cancelled) setGate((g) => ({ ...g, value: lic }))
     })
     return () => {
       cancelled = true

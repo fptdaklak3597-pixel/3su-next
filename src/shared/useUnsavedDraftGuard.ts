@@ -34,10 +34,15 @@ export function useUnsavedDraftGuard(dirty: boolean, allowPaths: string[] = []) 
     onCancel: () => blocker.reset?.(),
   })
 
+  useEffect(() => {
+    if (blocker.state !== 'blocked') skip.current = false
+  }, [blocker.state])
+
   return {
     dialog,
     allowLeave() {
       skip.current = true
+      if (blocker.state === 'blocked') blocker.proceed?.()
     },
   }
 }
