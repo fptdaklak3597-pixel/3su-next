@@ -453,15 +453,13 @@ html[data-shell="web"][data-theme="dark"] .web-m:hover {
 
 /* ─── Page chrome ─── */
 .web-page {
-  padding: 32px 24px 80px;
-  max-width: 1360px;
-  margin: 0 auto;
+  padding: 24px 24px 32px;
+  max-width: none;
   width: 100%;
 }
 .web-page-home {
-  max-width: 1160px;
-  margin: 0 auto;
-  padding: 32px 24px 64px;
+  max-width: none;
+  padding: 24px 24px 32px;
 }
 
 .web-ph {
