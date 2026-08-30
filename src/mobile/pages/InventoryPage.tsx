@@ -2,7 +2,7 @@
  * 3SU Next — Kho hàng (Inventory)
  * Port từ 16-inventory.js: product list, filters, stock badges, HSD.
  */
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
@@ -10,7 +10,7 @@ import { useApp } from '@/core/store'
 import { fmt, fmtShort, matchesSearch, expiryStatus } from '@/core/format'
 import { lowStockItems, outOfStockItems, inventoryValue, productCategories } from '@/core/domain/inventory'
 import { seed500, seedCategories } from '@/core/domain/seed'
-import { exportCatalogXlsx } from '@/web/lib/catalogXlsx'
+import { exportCatalogXlsx, importCatalogXlsx } from '@/web/lib/catalogXlsx'
 import { logError } from '@/core/errorLogger'
 import { Sheet } from '@/shared/components'
 import { Search, Plus, PackagePlus, ClipboardCheck, Sparkles, Tag } from 'lucide-react'
@@ -29,6 +29,7 @@ export function InventoryPage() {
   const [seeding, setSeeding] = useState(false)
   const [seedCats, setSeedCats] = useState<{ cat: string; count: number }[]>([])
   const showToast = useApp((s) => s.showToast)
+  const importRef = useRef<HTMLInputElement>(null)
 
   const products = useLiveQuery(
     () => dbx.products.filter((p) => !p.deleted).toArray(),
@@ -55,6 +56,30 @@ export function InventoryPage() {
     }).sort((a, b) => a.name.localeCompare(b.name, 'vi'))
   }, [products, filter, cat, query, settings.lowStock])
 
+  async function handleExport() {
+    try {
+      await exportCatalogXlsx(products)
+      showToast('✓ Đã xuất Excel', 'ok')
+    } catch (e) {
+      logError(e, 'kho.xlsx')
+      showToast('Lỗi khi xuất Excel', 'bad')
+    }
+  }
+
+  async function handleImport(file: File) {
+    try {
+      const res = await importCatalogXlsx(file, products)
+      const err = res.errors.slice(0, 3).map((e) => `dòng ${e.row}: ${e.message}`).join(' · ')
+      showToast(
+        `Nhập xong: +${res.added} · sửa ${res.updated}${res.skipped ? ` · bỏ ${res.skipped}` : ''}${err ? ` · ${err}` : ''}`,
+        res.errors.length ? 'bad' : 'ok',
+      )
+    } catch (e) {
+      logError(e, 'catalog.import')
+      showToast('Lỗi khi nhập Excel', 'bad')
+    }
+  }
+
   async function handleSeed() {
     setSeeding(true)
     try {
@@ -79,7 +104,8 @@ export function InventoryPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          <button className="btn-ghost text-sm" onClick={() => { try { void exportCatalogXlsx(products) } catch (e) { logError(e, 'kho.xlsx') } }}>Excel</button>
+          <button className="btn-ghost text-sm" onClick={() => { void handleExport() }} disabled={products.length === 0}>Xuất</button>
+          <button className="btn-ghost text-sm" onClick={() => importRef.current?.click()}>Nhập</button>
           <button className="btn-back" onClick={() => navigate('/kiem-ke')} aria-label="Kiểm kê">
             <ClipboardCheck size={17} />
           </button>
@@ -90,6 +116,17 @@ export function InventoryPage() {
             <PackagePlus size={17} />
           </button>
         </div>
+        <input
+          ref={importRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            e.target.value = ''
+            if (f) void handleImport(f)
+          }}
+        />
       </header>
 
       {/* Search + filters */}

@@ -5,7 +5,7 @@
  */
 import { normalizeVi } from '@/core/format'
 import { addProduct, updateProduct } from '@/core/domain/inventory'
-import type { Product } from '@/core/types'
+import type { Product, ProductUnit } from '@/core/types'
 
 export interface CatalogDraft {
   barcode: string
@@ -18,14 +18,20 @@ export interface CatalogDraft {
   stock: number | null
   wholesalePrice: number | null
   expiry: string
+  /** null = ô trống / không có cột — không ghi đè khi update */
+  units: ProductUnit[] | null
 }
 
-export const CATALOG_HEADERS = ['Mã hàng', 'Tên hàng', 'Nhóm', 'Đơn vị', 'Giá bán', 'Giá vốn', 'Tồn', 'Giá sỉ', 'HSD'] as const
+export const CATALOG_HEADERS = [
+  'Mã hàng', 'Tên hàng', 'Nhóm', 'Đơn vị', 'Giá bán', 'Giá vốn', 'Tồn', 'Giá sỉ', 'HSD', 'Quy đổi', 'Mã vạch',
+] as const
 
 const HEADER_KEY: Record<string, keyof CatalogDraft> = {
   barcode: 'barcode',
   ma: 'barcode',
   'ma hang': 'barcode',
+  'ma vach': 'barcode',
+  mavach: 'barcode',
   name: 'name',
   ten: 'name',
   'ten hang': 'name',
@@ -49,6 +55,38 @@ const HEADER_KEY: Record<string, keyof CatalogDraft> = {
   expiry: 'expiry',
   hsd: 'expiry',
   'han su dung': 'expiry',
+  units: 'units',
+  'quy doi': 'units',
+  quydoi: 'units',
+  'don vi phu': 'units',
+  'don vi quy doi': 'units',
+}
+
+/** `thùng=24, lốc=6` — tối đa 2 đơn vị phụ (cùng form sửa SP). */
+export function formatUnitsCell(units: ProductUnit[] | undefined): string {
+  return (units ?? [])
+    .filter((u) => u.n.trim() && u.r > 1)
+    .slice(0, 2)
+    .map((u) => `${u.n.trim()}=${Math.floor(u.r)}`)
+    .join(', ')
+}
+
+export function parseUnitsCell(v: unknown): ProductUnit[] | null {
+  if (v === null || v === undefined) return null
+  const raw = String(v).trim()
+  if (!raw) return null
+  const parts = raw.split(/[,;|/]+/).map((s) => s.trim()).filter(Boolean)
+  const out: ProductUnit[] = []
+  for (const part of parts) {
+    const m = part.match(/^(?:1\s+)?(.+?)\s*[=:x×*]\s*(\d+(?:[.,]\d+)?)\s*$/i)
+    if (!m) continue
+    const n = m[1].trim()
+    const r = Math.floor(Number(String(m[2]).replace(',', '.')))
+    if (!n || !(r > 1)) continue
+    out.push({ n, r })
+    if (out.length >= 2) break
+  }
+  return out.length ? out : null
 }
 
 function headerKey(h: unknown): keyof CatalogDraft | null {
@@ -77,12 +115,19 @@ export function parseCatalogSheet(rows: unknown[][]): CatalogDraft[] {
     const draft: CatalogDraft = {
       barcode: '', name: '', cat: '', unit: 'cái',
       price: null, cost: null, stock: null, wholesalePrice: null, expiry: '',
+      units: null,
     }
     keys.forEach((k, i) => {
       if (!k) return
       const v = line[i]
       if (k === 'price' || k === 'cost' || k === 'stock' || k === 'wholesalePrice') draft[k] = num(v)
-      else draft[k] = String(v ?? '').trim()
+      else if (k === 'units') draft.units = parseUnitsCell(v)
+      else if (k === 'barcode') {
+        const s = String(v ?? '').trim()
+        if (s) draft.barcode = s
+      } else {
+        draft[k] = String(v ?? '').trim()
+      }
     })
     if (!draft.name && !draft.barcode) continue
     out.push(draft)
@@ -145,6 +190,7 @@ export async function applyCatalogDrafts(
       if (d.price !== null) patch.price = d.price
       if (d.cost !== null) patch.cost = d.cost
       if (d.wholesalePrice !== null) patch.wholesalePrice = d.wholesalePrice
+      if (d.units !== null) patch.units = d.units
       await updateProduct(hit.id, patch)
       updated += 1
     } else {
@@ -158,6 +204,7 @@ export async function applyCatalogDrafts(
         barcode: d.barcode.trim(),
         expiry: d.expiry.trim(),
         wholesalePrice: d.wholesalePrice ?? 0,
+        units: d.units ?? [],
       })
       known.push(created)
       added += 1
@@ -166,12 +213,17 @@ export async function applyCatalogDrafts(
   return { added, updated, skipped }
 }
 
-export async function exportCatalogXlsx(products: Product[]): Promise<void> {
-  const XLSX = await import('xlsx')
+export function catalogExportRows(products: Product[]): unknown[][] {
   const body = products.filter((p) => !p.deleted).map((p) => ([
     p.barcode, p.name, p.cat, p.unit, p.price, p.cost, p.stock, p.wholesalePrice, p.expiry,
+    formatUnitsCell(p.units), p.barcode,
   ]))
-  const ws = XLSX.utils.aoa_to_sheet([CATALOG_HEADERS.slice(), ...body])
+  return [CATALOG_HEADERS.slice(), ...body]
+}
+
+export async function exportCatalogXlsx(products: Product[]): Promise<void> {
+  const XLSX = await import('xlsx')
+  const ws = XLSX.utils.aoa_to_sheet(catalogExportRows(products))
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'Hang hoa')
   XLSX.writeFile(wb, `3su-hang-hoa-${new Date().toISOString().slice(0, 10)}.xlsx`)

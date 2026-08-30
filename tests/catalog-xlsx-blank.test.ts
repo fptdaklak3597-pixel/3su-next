@@ -30,6 +30,7 @@ describe('catalogXlsx blank cells', () => {
     const draft: CatalogDraft = {
       barcode: '', name: 'Mì', cat: '', unit: '',
       price: 120, cost: null, stock: null, wholesalePrice: null, expiry: '',
+      units: null,
     }
     const stats = await applyCatalogDrafts([draft], [mkProduct()])
     expect(stats.updated).toBe(1)
@@ -37,5 +38,26 @@ describe('catalogXlsx blank cells', () => {
     expect(p.price).toBe(120)
     expect(p.cost).toBe(60)
     expect(p.wholesalePrice).toBe(50)
+  })
+
+  it('update chỉ đè quy đổi khi ô có giá trị — giữ units cũ nếu trống', async () => {
+    await dbx.products.add(mkProduct({
+      units: [{ n: 'thùng', r: 24 }],
+    }))
+    const draft: CatalogDraft = {
+      barcode: '', name: 'Mì', cat: '', unit: '',
+      price: null, cost: null, stock: null, wholesalePrice: null, expiry: '',
+      units: null,
+    }
+    await applyCatalogDrafts([draft], [mkProduct({ units: [{ n: 'thùng', r: 24 }] })])
+    const kept = (await dbx.products.get('p1'))!
+    expect(kept.units).toEqual([{ n: 'thùng', r: 24 }])
+
+    await applyCatalogDrafts([{
+      ...draft,
+      units: [{ n: 'lốc', r: 6 }],
+    }], [kept])
+    const next = (await dbx.products.get('p1'))!
+    expect(next.units).toEqual([{ n: 'lốc', r: 6 }])
   })
 })
