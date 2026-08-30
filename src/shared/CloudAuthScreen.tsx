@@ -3,6 +3,7 @@
  * Nhịp bố cục lấy từ claude.ai/login; thương hiệu và copy là 3SU.
  */
 import { useApp } from '@/core/store'
+import { enterDevUiPreview } from '@/core/devPreview'
 import { cloudSignOut, isFirebaseConfigured } from '@/core/sync/firebase'
 import { AuthStage } from './AuthStageArt'
 import { WebCloudAuth } from './WebCloudAuth'
@@ -15,6 +16,15 @@ export function AuthBootSplash({ message }: { message?: string } = {}) {
     <div className="auth-boot" role="status">
       <p>{message ?? 'Đang mở cửa hàng…'}</p>
     </div>
+  )
+}
+
+export function DevPreviewEnter() {
+  if (!import.meta.env.DEV) return null
+  return (
+    <button type="button" className="auth-btn" style={{ marginTop: 16 }} onClick={() => enterDevUiPreview()}>
+      Xem cửa hàng trên máy này
+    </button>
   )
 }
 
@@ -38,6 +48,7 @@ export function CloudAuthScreen() {
                 onInfo={(msg) => showToast(msg, 'ok')}
               />
             )}
+            <DevPreviewEnter />
           </div>
         </div>
         <AuthStage />
@@ -60,6 +71,7 @@ export function CloudShopJoinScreen() {
               onReady={() => showToast('Đã vào cửa hàng', 'ok')}
               onError={(msg) => showToast(msg, 'bad')}
             />
+            <DevPreviewEnter />
           </div>
         </div>
       </div>

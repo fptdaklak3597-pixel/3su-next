@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Bot, MessageCircle, Send, X } from 'lucide-react'
 import { useAiChat } from '@/core/ai/store'
 import { apiBase } from '@/core/sync/cloud'
+import { isDevUiPreview } from '@/core/devPreview'
 
 export function AiChatDock() {
   const cloudOk = !!apiBase()
@@ -22,9 +23,7 @@ export function AiChatDock() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, open])
 
-  const uiPreview = import.meta.env.DEV
-    && typeof window !== 'undefined'
-    && new URLSearchParams(window.location.search).get('preview') === '1'
+  const uiPreview = isDevUiPreview()
   if (!cloudOk && !uiPreview) return null
 
   async function handleSend() {

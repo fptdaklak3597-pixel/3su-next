@@ -3,6 +3,7 @@
  */
 import { useState, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { Search } from 'lucide-react'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, matchesSearch, vnDaysAgo, vnToday } from '@/core/format'
@@ -131,12 +132,21 @@ export function WebCustomersPage() {
 
   return (
     <div className="web-page">
-      <div className="web-ph">
+      <div className="web-list-hdr">
         <div>
-          <h2>Khách hàng</h2>
-          <p>{totalDebt > 0 ? `${debtN} khách còn nợ ${fmt(totalDebt)}` : 'Chưa ai nợ tiền'}</p>
+          <div className="web-eyebrow">Đối tác</div>
+          <h1 className="web-list-title">Khách hàng</h1>
+          <div className="web-list-sub">
+            <strong>{customers.length}</strong> khách
+            {debtN > 0 && (
+              <>
+                <span className="web-list-sub-sep" />
+                <span className="web-list-sub-warn"><strong>{debtN}</strong> khách còn nợ <strong>{fmt(totalDebt)}</strong></span>
+              </>
+            )}
+          </div>
         </div>
-        <div className="web-ph-actions">
+        <div className="web-list-hdr-actions">
           <button className="web-btn" onClick={() => { try { void exportCustomerDebtXlsx(customers) } catch (e) { logError(e, 'debt.xlsx') } }}>Xuất Excel</button>
           <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm khách</button>
         </div>
@@ -152,13 +162,15 @@ export function WebCustomersPage() {
         <button className={`web-chip ${seg === 'ws' ? 'on' : ''}`} onClick={() => setSeg('ws')}>Lấy sỉ</button>
       </div>
 
-      <input
-        className="web-search mb-3"
-        style={{ paddingLeft: 12 }}
-        placeholder="Tìm theo tên hoặc số điện thoại"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-      />
+      <div className="web-find">
+        <Search size={16} strokeWidth={1.8} />
+        <input
+          className="web-search"
+          placeholder="Tìm theo tên hoặc số điện thoại"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
 
       <div className="web-table-wrap">
         <table className="web-table">

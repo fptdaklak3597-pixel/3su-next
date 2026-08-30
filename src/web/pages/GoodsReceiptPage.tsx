@@ -166,6 +166,7 @@ export function WebGoodsReceiptPage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Giao dịch</div>
           <h2>Nhập hàng</h2>
           <p>{rows.length} mặt hàng · {fmt(total)}</p>
         </div>

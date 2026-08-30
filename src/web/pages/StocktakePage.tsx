@@ -135,6 +135,7 @@ export function WebStocktakePage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Hàng hóa</div>
           <h2>{tab === 'forecast' ? 'Dự báo nhập' : 'Kiểm kê'}</h2>
           <p>{tab === 'forecast' ? 'Sắp hết theo tốc độ bán 30 ngày' : `${diffCount} dòng lệch · ${saveRows.length} dòng sẽ lưu`}</p>
         </div>

@@ -9,6 +9,7 @@ import {
 } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useApp } from '@/core/store'
+import { isDevUiPreview } from '@/core/devPreview'
 import { dbx, getSettings, getShop, getCurrentUser, getTrial } from '@/core/db'
 import { hydrateCartDraft, useCartDraftPersistence } from '@/shared/useCartDraftPersistence'
 import { useDraftLeaveGuard } from '@/shared/useDraftLeaveGuard'
@@ -120,8 +121,7 @@ function MobileRoot() {
 
   const cloud = useCloudSession()
   const usersCount = useLiveQuery(() => dbx.users.count(), [], 0)
-  const uiPreview = import.meta.env.DEV && typeof window !== 'undefined'
-    && new URLSearchParams(window.location.search).get('preview') === '1'
+  const uiPreview = isDevUiPreview()
   const needsStaff = ready && usersCount > 0 && !user && !uiPreview
   const needsCloud = cloud === 'out' && !uiPreview
   const needsShop = cloud === 'need-shop' && !uiPreview

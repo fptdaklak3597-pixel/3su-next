@@ -57,6 +57,7 @@ export function WebPurchaseOrdersPage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Giao dịch</div>
           <h2>Đơn mua hàng</h2>
           <p>{pendingCount} đơn chờ nhập</p>
         </div>

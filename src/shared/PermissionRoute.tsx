@@ -3,6 +3,7 @@ import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
+import { isDevUiPreview } from '@/core/devPreview'
 import { canAccessFeature } from '@/core/domain/access'
 import type { UserPerms } from '@/core/types'
 
@@ -11,9 +12,7 @@ export function PermissionRoute({ permission }: { permission: keyof UserPerms })
   const showToast = useApp((s) => s.showToast)
   const location = useLocation()
   const userRecordCount = useLiveQuery(() => dbx.users.count(), [])
-  const devPreview = import.meta.env.DEV
-    && typeof window !== 'undefined'
-    && new URLSearchParams(window.location.search).get('preview') === '1'
+  const devPreview = isDevUiPreview()
 
   const ready = userRecordCount !== undefined
   const allowed = ready && canAccessFeature(user, permission, userRecordCount, devPreview)

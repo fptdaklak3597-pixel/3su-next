@@ -258,6 +258,7 @@ export function WebProductDetailPage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Kho hàng</div>
           <h2>{isNew ? 'Thêm sản phẩm' : 'Sửa sản phẩm'}</h2>
           {!isNew && product ? (
             <p>

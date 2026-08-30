@@ -113,6 +113,7 @@ export function WebDevicesPage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Hệ thống</div>
           <h2>Thiết bị</h2>
           <p>Máy đã mở app trên trình duyệt này. Máy mới: Tài khoản → tạo mã. Nhân viên dùng Gmail của họ.</p>
         </div>

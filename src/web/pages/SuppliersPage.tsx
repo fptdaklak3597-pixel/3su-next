@@ -3,6 +3,7 @@
  */
 import { useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { Search } from 'lucide-react'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, matchesSearch } from '@/core/format'
@@ -106,18 +107,30 @@ export function WebSuppliersPage() {
 
   return (
     <div className="web-page">
-      <div className="web-ph">
+      <div className="web-list-hdr">
         <div>
-          <h2>Nhà cung cấp</h2>
-          <p>{suppliers.length} NCC · nợ {fmt(debtSum)}</p>
+          <div className="web-eyebrow">Đối tác</div>
+          <h1 className="web-list-title">Nhà cung cấp</h1>
+          <div className="web-list-sub">
+            <strong>{suppliers.length}</strong> NCC
+            {debtSum > 0 && (
+              <>
+                <span className="web-list-sub-sep" />
+                <span className="web-list-sub-warn">còn nợ <strong>{fmt(debtSum)}</strong></span>
+              </>
+            )}
+          </div>
         </div>
-        <div className="web-ph-actions">
+        <div className="web-list-hdr-actions">
           <button className="web-btn" onClick={() => { try { void exportSupplierDebtXlsx(suppliers, receipts, payments) } catch (e) { logError(e, 'ncc.xlsx') } }}>Xuất Excel</button>
           <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm NCC</button>
         </div>
       </div>
 
-      <input className="web-search mb-3" style={{ paddingLeft: 12 }} placeholder="Tìm tên / SĐT…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <div className="web-find">
+        <Search size={16} strokeWidth={1.8} />
+        <input className="web-search" placeholder="Tìm tên / SĐT…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      </div>
 
       {rows.length === 0 ? (
         <WebEmpty title="Chưa có nhà cung cấp" sub="Thêm NCC để ghi công nợ khi nhập hàng.">

@@ -270,6 +270,7 @@ export function WebNotesPage() {
     <div className="web-page web-notes-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Hệ thống</div>
           <h2>Ghi chú</h2>
           <p>
             {openCount} việc chưa xong · {notes.length} ghi chú

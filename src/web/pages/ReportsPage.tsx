@@ -4,6 +4,7 @@
  */
 import { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { Download, Printer, TrendingUp, Sparkles, BarChart3 } from 'lucide-react'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, fmtShort } from '@/core/format'
@@ -67,16 +68,17 @@ export function WebReportsPage() {
 
   return (
     <div className="web-page">
-      <div className="web-ph">
+      <div className="web-list-hdr">
         <div>
-          <h2>Báo cáo</h2>
-          <p>{report.from} → {report.to}</p>
+          <div className="web-eyebrow">Phân tích</div>
+          <h1 className="web-list-title">Báo cáo</h1>
+          <div className="web-list-sub">{report.from} → {report.to}</div>
         </div>
-        <div className="web-ph-actions">
+        <div className="web-list-hdr-actions">
           <button className="web-btn" onClick={() => {
             try { void exportReportXlsx(report) } catch (e) { logError(e, 'report.xlsx') }
-          }}>Xuất Excel</button>
-          <button className="web-btn" onClick={() => window.print()}>In kỳ này</button>
+          }}><Download size={13} strokeWidth={1.6} />Xuất Excel</button>
+          <button className="web-btn" onClick={() => window.print()}><Printer size={13} strokeWidth={1.6} />In kỳ này</button>
         </div>
       </div>
 
@@ -98,31 +100,32 @@ export function WebReportsPage() {
         ))}
       </div>
 
-      <div className="web-today" style={{ marginBottom: 12 }}>
-        <div className="web-kpis">
-          <div className="web-kpi">
-            <div>
-              <div className="l">{metric === 'profit' ? 'Lợi nhuận' : 'Doanh thu'}</div>
-              <div className="v">{fmt(main)}</div>
-              <div className={`d ${delta !== null && delta < 0 ? 'dn' : ''}`}>
-                {delta === null ? 'Chưa có kỳ trước' : `${delta >= 0 ? '↗' : '↘'} ${Math.abs(delta)}% so với kỳ trước`}
-              </div>
-            </div>
+      <div className="web-reports-kpis">
+        <div className="web-kpi-card">
+          <div className="web-kpi-head">
+            <div className="web-kpi-label">{metric === 'profit' ? 'Lợi nhuận' : 'Doanh thu'}</div>
+            <div className="web-kpi-ico blue"><TrendingUp size={13} strokeWidth={1.6} /></div>
           </div>
-          <div className="web-kpi">
-            <div>
-              <div className="l">Đơn</div>
-              <div className="v">{report.orders}</div>
-              <div className="d">{report.items} món</div>
-            </div>
+          <div className="web-kpi-val">{fmt(main)}</div>
+          <div className={`web-kpi-desc ${delta !== null && delta < 0 ? 'dn' : ''}`}>
+            {delta === null ? 'Chưa có kỳ trước' : `${delta >= 0 ? '↗' : '↘'} ${Math.abs(delta)}% so với kỳ trước`}
           </div>
-          <div className="web-kpi">
-            <div>
-              <div className="l">TB/đơn</div>
-              <div className="v">{fmtShort(report.avgOrder)}</div>
-              <div className="d">{report.payBreakdown.map((p) => `${p.method} ${p.count}`).join(' · ') || '—'}</div>
-            </div>
+        </div>
+        <div className="web-kpi-card">
+          <div className="web-kpi-head">
+            <div className="web-kpi-label">Đơn</div>
+            <div className="web-kpi-ico green"><BarChart3 size={13} strokeWidth={1.6} /></div>
           </div>
+          <div className="web-kpi-val">{report.orders}</div>
+          <div className="web-kpi-desc">{report.items} món</div>
+        </div>
+        <div className="web-kpi-card">
+          <div className="web-kpi-head">
+            <div className="web-kpi-label">TB/đơn</div>
+            <div className="web-kpi-ico orange"><Sparkles size={13} strokeWidth={1.6} /></div>
+          </div>
+          <div className="web-kpi-val">{fmtShort(report.avgOrder)}</div>
+          <div className="web-kpi-desc">{report.payBreakdown.map((p) => `${p.method} ${p.count}`).join(' · ') || '—'}</div>
         </div>
       </div>
 
@@ -147,7 +150,7 @@ export function WebReportsPage() {
         <WebEmpty title="Chưa có đơn trong kỳ này" sub="Bán đơn đầu để thấy doanh thu, lợi nhuận và top hàng." />
       )}
 
-      <div className="web-grid2">
+      <div className="web-reports-2col">
         <div className="web-card">
           <h3>Sản phẩm bán chạy</h3>
           {report.topProducts.slice(0, 10).map((p, i) => (

@@ -163,7 +163,7 @@ export const useApp = create<AppState>((set, get) => ({
     document.documentElement.setAttribute('data-theme', resolved)
     const meta = document.getElementById('meta-theme-color')
     const web = document.documentElement.getAttribute('data-shell') === 'web'
-    if (meta) meta.setAttribute('content', resolved === 'dark' ? '#151515' : (web ? '#1E40AF' : '#FAF7F2'))
+    if (meta) meta.setAttribute('content', resolved === 'dark' ? (web ? '#0A0A0B' : '#151515') : (web ? '#F5F5F7' : '#FAF7F2'))
     try { localStorage.setItem('3su_theme', t) } catch { /* */ }
   },
 }))

@@ -4,6 +4,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { Search } from 'lucide-react'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { voidSale, salesInDateRange } from '@/core/domain/sales'
@@ -60,30 +61,37 @@ export function WebOrdersPage() {
 
   return (
     <div className="web-page">
-      <div className="web-ph">
+      <div className="web-list-hdr">
         <div>
-          <h2>Đơn hàng</h2>
-          <p>{filtered.length} đơn · {fmt(total)}</p>
+          <div className="web-eyebrow">Giao dịch</div>
+          <h1 className="web-list-title">Đơn hàng</h1>
+          <div className="web-list-sub">
+            <strong>{filtered.length}</strong> đơn · tổng <strong>{fmt(total)}</strong>
+          </div>
         </div>
       </div>
 
-      <div className="web-chips">
+      <div className="web-orders-filters">
+        <div className="web-chips" style={{ marginBottom: 0 }}>
         {([['today', 'Hôm nay'], ['week', '7 ngày'], ['month', '30 ngày'], ['all', 'Tất cả']] as [Period, string][]).map(([v, l]) => (
           <button key={v} className={`web-chip ${period === v ? 'on' : ''}`} onClick={() => { setPeriod(v); setFrom(''); setTo(''); setPage(1) }}>{l}</button>
         ))}
         {([['all', 'Mọi hình thức'], ['cash', 'Tiền mặt'], ['transfer', 'CK'], ['debt', 'Ghi nợ']] as [Pay, string][]).map(([v, l]) => (
           <button key={v} className={`web-chip ${pay === v ? 'on' : ''}`} onClick={() => { setPay(v); setPage(1) }}>{l}</button>
         ))}
+        </div>
       </div>
 
       <div className="web-order-bar">
-        <input
-          className="web-search"
-          style={{ paddingLeft: 12 }}
-          placeholder="Tìm mã đơn / món / khách…"
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setPage(1) }}
-        />
+        <div className="web-find" style={{ flex: 1, marginBottom: 0 }}>
+          <Search size={16} strokeWidth={1.8} />
+          <input
+            className="web-search"
+            placeholder="Tìm mã đơn / món / khách…"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setPage(1) }}
+          />
+        </div>
         <WebDateRange
           from={from}
           to={to}

@@ -7,7 +7,10 @@ export function WebInvoiceImportPage() {
   return (
     <div className="web-page web-embed">
       <div className="web-ph">
-        <h2>Nhập từ hoá đơn</h2>
+        <div>
+          <div className="web-eyebrow">Giao dịch</div>
+          <h2>Nhập từ hoá đơn</h2>
+        </div>
       </div>
       <InvoiceImportPage />
     </div>

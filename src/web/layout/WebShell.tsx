@@ -1,10 +1,10 @@
 /**
- * 3SU Web — một thanh công cụ (KiotViet).
+ * 3SU Web — thanh công cụ sáng, accent Apple.
  * POS (/ban-hang) tự vẽ thanh riêng, shell chỉ còn khung.
  */
 import { useEffect, useState, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Menu } from 'lucide-react'
+import { Menu, Store } from 'lucide-react'
 import { AiChatDock } from '@/shared/AiChatDock'
 import { useApp } from '@/core/store'
 import { hasPerm } from '@/core/domain/auth'
@@ -183,6 +183,7 @@ export function WebShell() {
                 className={`web-sale-btn web-sale-btn-nav ${path.startsWith('/ban-hang') ? 'on' : ''}`}
                 onClick={() => go('/ban-hang')}
               >
+                <Store size={16} strokeWidth={1.8} />
                 Bán hàng
               </button>
             )}

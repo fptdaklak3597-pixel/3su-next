@@ -70,12 +70,20 @@ export function WebOrderDetailPage() {
 
   return (
     <div className="web-page">
-      <div className="web-ph">
+      <div className="web-list-hdr">
         <div>
-          <h2>Chi tiết đơn</h2>
-          <p>{formatDateTime(sale.date)} · {payLabel(sale.payMethod)}{customer ? ` · ${customer.name}` : ''} · In: {printStatusLabel(printLog)}</p>
+          <div className="web-eyebrow">Đơn hàng #{sale.id.slice(-6)}</div>
+          <h1 className="web-list-title">Chi tiết</h1>
+          <div className="web-list-sub">
+            <span>{formatDateTime(sale.date)}</span>
+            <span className="web-list-sub-sep" />
+            <span>{payLabel(sale.payMethod)}</span>
+            {customer && (<><span className="web-list-sub-sep" /><span>{customer.name}</span></>)}
+            <span className="web-list-sub-sep" />
+            <span>In: {printStatusLabel(printLog)}</span>
+          </div>
         </div>
-        <div className="web-ph-actions">
+        <div className="web-list-hdr-actions">
           <button className="web-btn" onClick={() => navigate('/don-hang')}>Danh sách</button>
           <button className="web-btn" onClick={handlePrint}>{printLog ? 'In lại' : 'In hóa đơn'}</button>
           {!sale.voided && <button className="web-btn danger" onClick={() => setConfirmVoid(true)}>Hủy đơn</button>}
@@ -86,6 +94,7 @@ export function WebOrderDetailPage() {
         <p className="web-sub" style={{ color: 'var(--bad)' }}>Đã hủy{sale.voidReason ? ` — ${sale.voidReason}` : ''}</p>
       )}
 
+      <div className="web-order-detail-grid">
       <div className="web-table-wrap">
         <table className="web-table">
           <thead>
@@ -109,7 +118,8 @@ export function WebOrderDetailPage() {
         </table>
       </div>
 
-      <div className="web-card" style={{ marginTop: 12, maxWidth: 420 }}>
+      <aside className="web-order-detail-side">
+      <div className="web-card" style={{ marginTop: 0, maxWidth: 'none' }}>
         {sale.discount > 0 && <div className="web-ln"><span>Giảm giá</span><span>-{fmt(sale.discount)}</span></div>}
         <div className="web-ln big"><span>Tổng cộng</span><span>{fmt(sale.total)}</span></div>
         <div className="web-ln"><span>Lợi nhuận</span><span>{fmt(sale.profit)}</span></div>
@@ -120,6 +130,8 @@ export function WebOrderDetailPage() {
           </>
         )}
         {sale.debtAmount > 0 && <div className="web-ln"><span>Ghi nợ</span><span>{fmt(sale.debtAmount)}</span></div>}
+      </div>
+      </aside>
       </div>
 
       {confirmVoid && (

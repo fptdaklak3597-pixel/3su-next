@@ -59,6 +59,7 @@ export function WebUsersPage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Hệ thống</div>
           <h2>Người dùng</h2>
           <p>{users.length} tài khoản{first ? ' · tạo chủ cửa hàng đầu tiên' : ' · @tên + PIN đồng bộ sang máy khác khi đã vào cửa hàng'}</p>
         </div>

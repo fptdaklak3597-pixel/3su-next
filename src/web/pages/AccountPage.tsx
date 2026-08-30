@@ -81,6 +81,7 @@ export function WebAccountPage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Hệ thống</div>
           <h2>Tài khoản</h2>
           <p>{who}</p>
         </div>

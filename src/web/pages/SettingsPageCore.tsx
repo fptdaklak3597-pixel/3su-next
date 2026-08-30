@@ -146,6 +146,7 @@ export function WebSettingsPage() {
     <div className="web-page web-settings">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Hệ thống</div>
           <h2>Cài đặt</h2>
           <p className="web-sub" style={{ margin: '4px 0 0' }}>
             Đồng bộ: <strong>{syncText}</strong>

@@ -4,6 +4,7 @@
 import { useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { Search } from 'lucide-react'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
 import { fmt, fmtShort, expiryStatus, daysToExpiry, vnDaysAgo, vnToday } from '@/core/format'
@@ -102,16 +103,17 @@ export function WebInventoryPage() {
 
   return (
     <div className="web-page">
-      <div className="web-ph">
-        <h2>Hàng hóa</h2>
-        <input
-          className="web-search"
-          style={{ paddingLeft: 12, maxWidth: 360, flex: 1 }}
-          placeholder="Theo mã, tên hàng"
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setPage(1) }}
-        />
-        <div className="web-ph-actions">
+      <div className="web-list-hdr">
+        <div>
+          <div className="web-eyebrow">Kho hàng</div>
+          <h1 className="web-list-title">Hàng hóa</h1>
+          <div className="web-list-sub">
+            <strong>{products.length}</strong> món · vốn <strong>{fmtShort(totalValue)}</strong>
+            {lowN > 0 && <><span className="web-list-sub-sep" /><span className="web-list-sub-warn">{lowN} sắp hết</span></>}
+            {hsdN > 0 && <><span className="web-list-sub-sep" /><span className="web-list-sub-warn">{hsdN} gần HSD</span></>}
+          </div>
+        </div>
+        <div className="web-list-hdr-actions">
           {products.length < 500 && (
             <button className="web-btn" onClick={() => setSeedOpen(true)}>Nạp mẫu</button>
           )}
@@ -133,7 +135,15 @@ export function WebInventoryPage() {
           }}
         />
       </div>
-      <p className="web-sub">{products.length} món · vốn {fmtShort(totalValue)} · {lowN} sắp hết · {hsdN} gần HSD</p>
+      <div className="web-find">
+        <Search size={16} strokeWidth={1.8} />
+        <input
+          className="web-search"
+          placeholder="Tìm theo tên, mã hàng, mã vạch"
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setPage(1) }}
+        />
+      </div>
       {products.length === 0 && (
         <WebEmpty title="Chưa có hàng hóa" sub="Thêm vài món thật hoặc nạp mẫu, rồi bán đơn đầu từ Bán hàng.">
           <button className="web-btn" onClick={() => setSeedOpen(true)}>Nạp mẫu 500</button>
@@ -142,6 +152,7 @@ export function WebInventoryPage() {
         </WebEmpty>
       )}
 
+      {products.length > 0 && (
       <div className="web-hang">
         <aside className="web-filters">
           <div className="fg">
@@ -238,6 +249,7 @@ export function WebInventoryPage() {
           </div>
         </div>
       </div>
+      )}
       <WebSeedSheet open={seedOpen} onClose={() => setSeedOpen(false)} />
     </div>
   )

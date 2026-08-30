@@ -28,6 +28,7 @@ export function WebReconcilePage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Báo cáo</div>
           <h2>Đối soát sổ</h2>
           <p>Tồn = tổng xuất nhập; nợ = đơn ghi nợ − phiếu thu. Lệch thì cờ đỏ — không tự sửa.</p>
         </div>

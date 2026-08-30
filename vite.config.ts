@@ -26,10 +26,10 @@ import {
 
 const ONE_YEAR = 60 * 60 * 24 * 365
 
-/** Web = KiotViet xanh; mobile = warm paper (xem src/index.css / web/theme.css). */
-const THEME_COLOR_WEB = '#1E40AF'
+/** Web = nền sáng Apple; mobile = warm paper (xem src/index.css / web/theme.css). */
+const THEME_COLOR_WEB = '#F5F5F7'
 const THEME_COLOR_MOBILE = '#FAF7F2'
-const BACKGROUND_COLOR_WEB = '#F6F8FB'
+const BACKGROUND_COLOR_WEB = '#F5F5F7'
 const BACKGROUND_COLOR_MOBILE = '#FAF7F2'
 
 const SRC = path.resolve(__dirname, './src')

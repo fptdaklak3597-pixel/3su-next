@@ -53,6 +53,7 @@ export function WebInvoicesPage() {
     <div className="web-page">
       <div className="web-ph">
         <div>
+          <div className="web-eyebrow">Giao dịch</div>
           <h2>Sổ hóa đơn</h2>
           <p>{invoices.length} HĐ · {fmt(totalSum)}</p>
         </div>

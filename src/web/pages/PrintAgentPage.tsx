@@ -159,6 +159,7 @@ export function WebPrintAgentPage() {
       <div className="web-page web-print-agent-body">
         <div className="web-ph">
           <div>
+            <div className="web-eyebrow">Hệ thống</div>
             <h2>Máy in</h2>
             <p>{detail}</p>
           </div>
