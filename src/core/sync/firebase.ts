@@ -9,7 +9,6 @@ import {
   onAuthStateChanged,
   reload,
   getRedirectResult,
-  sendSignInLinkToEmail,
   signInWithCredential,
   signInWithEmailLink,
   signInWithPopup,
@@ -23,6 +22,7 @@ import {
   classifyCloudUser,
   cloudAuthMessage,
   isCloudEmailPending,
+  sendEmailSignInLinkRequest,
   type CloudGate,
 } from './cloudAuth'
 import { firebaseOptions, googleSignInMode, isCursorUserAgent, isFirebaseConfigured } from './firebaseConfig'
@@ -34,6 +34,7 @@ export {
   cloudAuthMessage,
   cloudMailHint,
   isCloudEmailPending,
+  sendEmailSignInLinkRequest,
 } from './cloudAuth'
 
 let app: FirebaseApp | null = null
@@ -62,6 +63,21 @@ export function watchCloudUser(fn: (u: User | null) => void): () => void {
   const a = getFirebaseAuth()
   if (!a) { fn(null); return () => {} }
   return onAuthStateChanged(a, fn)
+}
+
+/** IndexedDB Firebase hỏng thì authStateReady() treo — splash không được kẹt. */
+async function authStateReadyOrTimeout(a: Auth, ms = 8000): Promise<void> {
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('auth-ready-timeout')), ms)
+      a.authStateReady().then(
+        () => { clearTimeout(t); resolve() },
+        (e) => { clearTimeout(t); reject(e) },
+      )
+    })
+  } catch {
+    /* tiếp tục với currentUser hiện có */
+  }
 }
 
 /** Chờ Firebase khôi phục session (boot connectCloud). */
@@ -177,10 +193,14 @@ export function isEmailLinkInUrl(): boolean {
 }
 
 export async function cloudSendEmailLink(email: string): Promise<void> {
-  const a = getFirebaseAuth()
-  if (!a) throw new Error('Chưa cấu hình Firebase')
+  const opts = firebaseOptions()
+  if (!opts?.apiKey) throw new Error('Chưa cấu hình Firebase')
   const clean = email.trim()
-  await sendSignInLinkToEmail(a, clean, actionCodeSettings())
+  await sendEmailSignInLinkRequest({
+    apiKey: opts.apiKey,
+    email: clean,
+    continueUrl: actionCodeSettings().url,
+  })
   localStorage.setItem(EMAIL_KEY, clean)
 }
 
@@ -201,7 +221,7 @@ export async function completePendingSignIn(emailOverride?: string): Promise<Use
 async function doCompletePendingSignIn(emailOverride?: string): Promise<User | null> {
   const a = getFirebaseAuth()
   if (!a || typeof window === 'undefined') return null
-  await a.authStateReady()
+  await authStateReadyOrTimeout(a)
   const gisId = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(GIS_ID_KEY) : ''
   if (gisId) {
     sessionStorage.removeItem(GIS_ID_KEY)
@@ -389,7 +409,7 @@ async function redirectGoogle(auth: Auth): Promise<null> {
 export async function cloudSignInGoogle(): Promise<User | null> {
   const a = getFirebaseAuth()
   if (!a) throw new Error('Chưa cấu hình Firebase')
-  await a.authStateReady()
+  await authStateReadyOrTimeout(a)
   const opts = firebaseOptions()
   const host = typeof window !== 'undefined' ? window.location.hostname : ''
   const mode = googleSignInMode(opts?.authDomain || '', host, isEmbeddedAuthBrowser())

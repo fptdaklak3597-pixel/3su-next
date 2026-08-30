@@ -14,6 +14,7 @@ import {
   takeAuthError,
 } from '@/core/sync/firebase'
 import { enterExistingCloudShop } from '@/core/sync/cloud'
+import { logError } from '@/core/errorLogger'
 import { markCloudShopEntered } from './useCloudSession'
 import { CloudVerifyEmail } from './CloudVerifyEmail'
 import { CloudShopJoin } from './CloudShopJoin'
@@ -47,6 +48,7 @@ export function WebCloudAuth({
   const [error, setError] = useState(takeAuthError)
 
   function fail(e: unknown) {
+    logError(e, 'auth.cloud')
     const msg = cloudAuthMessage(e)
     setError(msg)
     onError?.(msg)

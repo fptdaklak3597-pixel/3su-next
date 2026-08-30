@@ -15,6 +15,7 @@ import {
   refreshCloudUser,
 } from '@/core/sync/firebase'
 import { enterExistingCloudShop } from '@/core/sync/cloud'
+import { logError } from '@/core/errorLogger'
 import { markCloudShopEntered } from './useCloudSession'
 
 export function CloudVerifyEmail({
@@ -98,6 +99,7 @@ export function CloudVerifyEmail({
             await cloudSendEmailLink(to)
             onInfo?.(`Đã gửi lại mail từ ${CLOUD_MAIL_FROM}.`)
           } catch (e) {
+            logError(e, 'auth.resend')
             onError?.(cloudAuthMessage(e))
           } finally {
             setBusy(false)

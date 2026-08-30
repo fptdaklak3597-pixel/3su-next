@@ -4,7 +4,10 @@ import {
   CLOUD_MAIL_FROM,
   cloudAuthMessage,
   cloudMailHint,
+  emailLinkUndeliverableReason,
+  identityAuthCode,
   isCloudEmailPending,
+  sendEmailSignInLinkRequest,
 } from '@/core/sync/cloudAuth'
 import { firebaseOptions, googleSignInMode, isCursorUserAgent, resolveAuthDomain } from '@/core/sync/firebaseConfig'
 
@@ -29,7 +32,9 @@ describe('cloud email gate', () => {
     expect(cloudAuthMessage({ code: 'auth/missing-email' })).toMatch(/Nhập lại email/)
     expect(cloudAuthMessage({ code: 'auth/expired-action-code' })).toMatch(/hết hạn/)
     expect(cloudAuthMessage({ code: 'auth/no-auth-event' })).toMatch(/Google/)
-    expect(cloudAuthMessage({ code: 'auth/internal-error' })).toMatch(/Firebase/)
+    expect(cloudAuthMessage({ code: 'auth/internal-error' })).toMatch(/Google/)
+    expect(emailLinkUndeliverableReason('login-test@3su.shop')).toMatch(/Google/)
+    expect(emailLinkUndeliverableReason('user@gmail.com')).toBeNull()
     expect(cloudAuthMessage(new Error('Unable to process request due to missing initial state'))).toMatch(/Google/)
     expect(cloudAuthMessage(new Error('Error 400: origin_mismatch'))).toMatch(/origin/)
     expect(cloudAuthMessage(new Error('gis-timeout'))).toMatch(/Chrome/)
@@ -75,5 +80,57 @@ describe('authDomain cùng origin', () => {
   it('nhận diện Cursor/Electron từ userAgent — không cần probe popup', () => {
     expect(isCursorUserAgent('Mozilla/5.0 Cursor/3.16.17 Chrome/144.0.7559.236 Electron/40.10.3')).toBe(true)
     expect(isCursorUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/144.0.0.0')).toBe(false)
+  })
+})
+
+describe('gửi mail đăng nhập REST', () => {
+  it('gọi Identity Toolkit EMAIL_SIGNIN, bỏ khoảng trắng email', async () => {
+    const calls: Array<{ url: string; body: string }> = []
+    await sendEmailSignInLinkRequest({
+      apiKey: 'test-key',
+      email: '  shop@gmail.com  ',
+      continueUrl: 'https://3su.shop/',
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), body: String(init?.body) })
+        return new Response(JSON.stringify({ email: 'shop@gmail.com' }), { status: 200 })
+      },
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toContain('accounts:sendOobCode')
+    expect(calls[0]!.url).toContain('test-key')
+    expect(JSON.parse(calls[0]!.body)).toEqual({
+      requestType: 'EMAIL_SIGNIN',
+      email: 'shop@gmail.com',
+      continueUrl: 'https://3su.shop/',
+      canHandleCodeInApp: true,
+    })
+  })
+
+  it('INVALID_EMAIL và mất mạng ra mã Firebase để UI dịch', async () => {
+    expect(identityAuthCode('INVALID_EMAIL : bad')).toBe('auth/invalid-email')
+    await expect(sendEmailSignInLinkRequest({
+      apiKey: 'k',
+      email: 'bad',
+      continueUrl: 'https://3su.shop/',
+      fetchImpl: async () => new Response(JSON.stringify({ error: { message: 'INVALID_EMAIL' } }), { status: 400 }),
+    })).rejects.toMatchObject({ code: 'auth/invalid-email' })
+    await expect(sendEmailSignInLinkRequest({
+      apiKey: 'k',
+      email: 'a@b.c',
+      continueUrl: 'https://3su.shop/',
+      fetchImpl: async () => { throw new TypeError('Failed to fetch') },
+    })).rejects.toMatchObject({ code: 'auth/network-request-failed' })
+    await expect(sendEmailSignInLinkRequest({
+      apiKey: 'k',
+      email: '   ',
+      continueUrl: 'https://3su.shop/',
+      fetchImpl: async () => { throw new Error('không được gọi mạng') },
+    })).rejects.toMatchObject({ code: 'auth/missing-email' })
+    await expect(sendEmailSignInLinkRequest({
+      apiKey: 'k',
+      email: 'login-test@3su.shop',
+      continueUrl: 'https://3su.shop/',
+      fetchImpl: async () => { throw new Error('không được gọi mạng') },
+    })).rejects.toMatchObject({ code: 'auth/email-undeliverable' })
   })
 })

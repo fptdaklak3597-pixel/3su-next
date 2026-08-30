@@ -15,7 +15,7 @@ import { pullCloudSnapshot, pushLocalSnapshot } from '@/core/sync/engine'
 import { textQrSrc } from '@/core/browser/textQr'
 import { ConfirmDialog, EmptyState } from '@/shared/components'
 import { ChevronLeft, Smartphone, Trash2, CloudOff, Cloud } from 'lucide-react'
-import { cloudSendEmailLink, cloudSignInGoogle, isFirebaseConfigured } from '@/core/sync/firebase'
+import { cloudAuthMessage, cloudSendEmailLink, cloudSignInGoogle, isFirebaseConfigured } from '@/core/sync/firebase'
 import { apiBase, attachExistingCloudShop, connectCloud, createCloudShop, createPairCode, disconnectCloud, getCloudShopId, isCloudPaused, redeemPairCode } from '@/core/sync/cloud'
 import type { PairedDevice } from '@/core/types'
 
@@ -74,7 +74,7 @@ function CloudSyncSection() {
           <input className="field-input" placeholder="Email cloud" value={email} onChange={(e) => setEmail(e.target.value)} />
           <button className="btn-cta" disabled={busy} onClick={() => {
             setBusy(true)
-            cloudSendEmailLink(email).then(() => showToast('Đã gửi mail xác nhận. Mở hộp thư rồi bấm liên kết.', 'ok')).catch((e) => showToast(e instanceof Error ? e.message : 'Lỗi', 'bad')).finally(() => setBusy(false))
+            cloudSendEmailLink(email).then(() => showToast('Đã gửi mail xác nhận. Mở hộp thư rồi bấm liên kết.', 'ok')).catch((e) => showToast(cloudAuthMessage(e), 'bad')).finally(() => setBusy(false))
           }}>Gửi mail vào cửa hàng</button>
           <button className="btn-ghost text-sm" disabled={busy} onClick={() => {
             setBusy(true)
