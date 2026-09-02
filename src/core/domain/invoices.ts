@@ -129,6 +129,24 @@ export function invoiceXmlState(inv: InvoiceRecord): 'có' | 'chưa' {
   return invoiceExtra(inv).hasXml ? 'có' : 'chưa'
 }
 
+/** Số HĐ trên danh sách: ký hiệu · số, giống máy Invoice. */
+export function invoiceDisplayCode(inv: InvoiceRecord): string {
+  const extra = invoiceExtra(inv)
+  const code = String(inv.code || '')
+  const split = code.match(/^(.*)-(\d+)$/)
+  const series = extra.khhdon || split?.[1] || ''
+  const number = extra.shdon || split?.[2] || ''
+  if (series && number) return `${series} · ${number}`
+  return code || '—'
+}
+
+export function invoiceListStatus(inv: InvoiceRecord): { label: string; tone: 'ok' | 'out' | 'low' } {
+  if (inv.status === 'cancelled') return { label: 'Đã hủy', tone: 'out' }
+  if (invoiceExtra(inv).receiptId) return { label: 'Đã nhập kho', tone: 'ok' }
+  if (inv.status === 'draft') return { label: 'Nháp', tone: 'low' }
+  return { label: 'Phát hành', tone: 'ok' }
+}
+
 export type InvoiceStockFilter = 'all' | 'open' | 'received'
 export type InvoiceXmlFilter = 'all' | 'yes' | 'no'
 export type InvoiceStatusFilter = 'all' | InvoiceRecord['status']

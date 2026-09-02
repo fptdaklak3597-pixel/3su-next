@@ -1,6 +1,6 @@
 /**
- * Tờ hóa đơn kiểu GDT — cùng form với 3su-invoice (invoice-print.js).
- * Cloud chỉ lưu XML, không có HTML/XSLT gốc từ trang thuế.
+ * Tờ in HTML kiểu 3SU Invoice (invoice-print.js).
+ * Tờ GDT gốc lấy từ file HTML/XSLT máy Invoice đẩy lên cloud.
  */
 export interface GdtLineItem {
   ten?: string
@@ -215,7 +215,7 @@ export function fillFromXml(invoice: GdtInvoiceForm | null | undefined, xmlText:
 export function buildItemsTable(detail: GdtInvoiceForm): string {
   const items = detail?.hdhhdvu || detail?.items || detail?.dshhdv || []
   if (!Array.isArray(items) || !items.length) {
-    return '<tr><td colspan="10" style="text-align:center;color:#666;padding:20px">Không có chi tiết hàng hóa trong phản hồi JSON.</td></tr>'
+    return '<tr><td colspan="10" style="text-align:center;color:#666;padding:20px">Chưa có dòng hàng — máy Invoice chưa gửi file XML.</td></tr>'
   }
   return items.map((item, index) => {
     const taxRate = item.thsuat ?? item.taxRate ?? ''
@@ -235,7 +235,11 @@ export function buildItemsTable(detail: GdtInvoiceForm): string {
   }).join('')
 }
 
-export function renderInvoiceHtml(inv: GdtInvoiceForm, detail: GdtInvoiceForm = {}): string {
+export function renderInvoiceHtml(
+  inv: GdtInvoiceForm,
+  detail: GdtInvoiceForm = {},
+  opts: { embedded?: boolean } = {},
+): string {
   const data: GdtInvoiceForm = { ...inv, ...detail }
   const date = formatInvoiceDate(data.tdlap)
   const [day = '', month = '', year = ''] = date.split('/')
@@ -258,7 +262,7 @@ export function renderInvoiceHtml(inv: GdtInvoiceForm, detail: GdtInvoiceForm = 
 
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HĐ ${escapeHtml(data.khhdon || '')}-${escapeHtml(data.shdon ?? '')}</title><style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{max-width:210mm;margin:0 auto;padding:20px;color:#111;background:#fff;font:13pt/1.5 "Times New Roman",serif}
+  body{max-width:210mm;margin:0 auto;padding:20px;color:#111;background:#f3f8f7;font:13pt/1.5 "Times New Roman",serif}
   .actions{position:sticky;top:10px;display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px}
   .actions button{padding:9px 14px;border:0;border-radius:7px;color:#fff;background:#087b71;font:14px Arial;cursor:pointer}
   .invoice-wrapper{border:3px double rgba(145,87,21,0.69);padding:20px;background:#fff}
@@ -300,7 +304,7 @@ export function renderInvoiceHtml(inv: GdtInvoiceForm, detail: GdtInvoiceForm = 
   @media print{.actions{display:none}body{padding:0}.invoice-wrapper{border:none}}
   @media(max-width:600px){.summary-section{flex-direction:column}.signature-section{flex-direction:column;gap:20px}}
   </style></head><body>
-  <div class="actions"><button onclick="window.print()">In / Lưu PDF</button></div>
+  <div class="actions"${opts.embedded ? ' style="display:none"' : ''}><button onclick="window.print()">In / Lưu PDF</button></div>
   <div class="invoice-wrapper">
     <div class="header">
       <div class="qr-section">QR Code</div>
@@ -383,4 +387,74 @@ export function renderInvoiceHtml(inv: GdtInvoiceForm, detail: GdtInvoiceForm = 
     </div>
   </div>
   </body></html>`
+}
+
+function cssMayLoadOrExecute(value: string): boolean {
+  const css = String(value || '')
+  if (!css) return false
+  if (css.includes('\\')) return true
+  const normalized = css.replace(/\/\*[\s\S]*?\*\//g, '').toLowerCase()
+  const withoutDataUrls = normalized.replace(/url\s*\(\s*['"]?\s*data:[^)]*\)\s*/gi, '')
+  return /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|@import\b|@font-face\b|@counter-style\b|@namespace\b|expression\s*\(|behavior\s*:|-moz-binding\s*:)/i.test(withoutDataUrls)
+}
+
+function isSafeOfflineUrl(value: string): boolean {
+  const text = String(value || '').trim()
+  if (!text || text.startsWith('#') || text.startsWith('?')) return true
+  if (/^data:image\/(?:png|jpe?g|gif|webp|bmp);base64,/i.test(text)) return true
+  if (/^(?:\/\/|[a-z][a-z\d+.-]*:)/i.test(text)) return false
+  return true
+}
+
+/** Làm sạch HTML tờ GDT trước khi nhét vào iframe — giống máy Invoice. */
+export function sanitizeOfflineHtml(html: string): string {
+  if (typeof DOMParser !== 'function') return String(html || '')
+  const parsed = new DOMParser().parseFromString(String(html || ''), 'text/html')
+  if (!parsed?.documentElement) return String(html || '')
+  parsed.querySelectorAll('script,object,embed,form,base,link,iframe,frame,frameset,applet').forEach((el) => el.remove())
+  parsed.querySelectorAll('meta[http-equiv]').forEach((el) => {
+    if (String(el.getAttribute('http-equiv') || '').trim().toLowerCase() === 'refresh') el.remove()
+  })
+  parsed.querySelectorAll('style').forEach((el) => {
+    if (cssMayLoadOrExecute(el.textContent || '')) el.remove()
+  })
+  const urlAttributes = new Set(['src', 'href', 'poster', 'action', 'formaction', 'background', 'cite', 'data', 'xlink:href'])
+  parsed.querySelectorAll('*').forEach((el) => {
+    Array.from(el.attributes).forEach((attr) => {
+      const name = attr.name.toLowerCase()
+      if (name.startsWith('on') || name === 'srcdoc' || name === 'srcset' || name === 'ping') {
+        el.removeAttribute(attr.name)
+        return
+      }
+      if (name === 'style' && cssMayLoadOrExecute(attr.value)) {
+        el.removeAttribute(attr.name)
+        return
+      }
+      if (urlAttributes.has(name) && !isSafeOfflineUrl(attr.value)) el.removeAttribute(attr.name)
+    })
+  })
+  const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; font-src \'none\'; media-src \'none\'; connect-src \'none\'; frame-src \'none\'; object-src \'none\'; base-uri \'none\'; form-action \'none\'">'
+  const head = parsed.head || parsed.documentElement.insertBefore(parsed.createElement('head'), parsed.body)
+  head.insertAdjacentHTML('afterbegin', csp)
+  const doctype = parsed.doctype ? '<!doctype html>\n' : ''
+  return doctype + parsed.documentElement.outerHTML
+}
+
+export function transformXmlWithXslt(xmlText: string, xsltText: string): string | null {
+  if (!xmlText || !xsltText) return null
+  if (typeof DOMParser !== 'function' || typeof XSLTProcessor !== 'function') return null
+  try {
+    const parser = new DOMParser()
+    const xmlDoc = parser.parseFromString(xmlText, 'application/xml')
+    const xsltDoc = parser.parseFromString(xsltText, 'application/xml')
+    if (xmlDoc.querySelector('parsererror') || xsltDoc.querySelector('parsererror')) return null
+    const processor = new XSLTProcessor()
+    processor.importStylesheet(xsltDoc)
+    const resultDoc = processor.transformToDocument(xmlDoc)
+    if (!resultDoc || resultDoc.querySelector('parsererror')) return null
+    const html = new XMLSerializer().serializeToString(resultDoc)
+    return html.trim() ? html : null
+  } catch {
+    return null
+  }
 }

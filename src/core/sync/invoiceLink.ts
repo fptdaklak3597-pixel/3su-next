@@ -98,6 +98,17 @@ export function invoiceLinkHealth(opts: {
   }
 }
 
+/** Một dòng ngắn trên danh sách web — không chiếm hết hàng tiêu đề. */
+export function invoiceLinkShortText(health: InvoiceLinkHealth): string {
+  if (health.kind === 'ok') return ''
+  if (health.kind === 'stale') return 'Máy Invoice mất kết nối'
+  if (health.kind === 'no_device') return 'Chưa kết nối máy Invoice'
+  if (health.kind === 'no_shop') return 'Chưa vào cửa hàng cloud'
+  if (health.kind === 'gdt_auth') return 'Máy Invoice cần đăng nhập thuế'
+  if (health.text.includes('Chưa cấu hình cloud')) return 'Chưa nối cloud'
+  return 'Không kiểm tra được máy Invoice'
+}
+
 export function useInvoiceLinkHealth(): InvoiceLinkHealth | null {
   const [health, setHealth] = useState<InvoiceLinkHealth | null>(null)
 

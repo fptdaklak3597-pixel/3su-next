@@ -11,13 +11,13 @@ import { fmt, fmtShort, today } from '@/core/format'
 import { logError } from '@/core/errorLogger'
 import {
   createInvoice, deleteInvoice,
-  invoiceTotal, INVOICE_STATUS_LABEL, invoiceExtra, invoiceXmlState,
+  invoiceTotal, invoiceExtra, invoiceDisplayCode, invoiceListStatus,
   filterInvoiceRows, invoicePeriodRange,
   type InvoicePeriod, type InvoiceStatusFilter, type InvoiceStockFilter,
 } from '@/core/domain/invoices'
 import { invoiceSyncCaption, useInvoicePageSync } from '@/core/sync/invoicePageSync'
 import { useInvoiceLinkHealth } from '@/core/sync/invoiceLink'
-import { draftImportFromInvoice, gdtHtmlForInvoice, loadInvoiceXmlPreview } from '@/core/domain/invoicePreview'
+import { draftImportFromInvoice, gdtHtmlForInvoice, loadInvoicePreview } from '@/core/domain/invoicePreview'
 import type { ParsedInvoice } from '@/core/domain/invoiceImport'
 import { Sheet, ConfirmDialog, EmptyState } from '@/shared/components'
 import { InvoiceGdtPreview } from '@/shared/InvoiceGdtPreview'
@@ -25,13 +25,13 @@ import { InvoiceLinkBanner } from '@/shared/InvoiceLinkBanner'
 import { ChevronLeft, Plus, Search, Trash2, FileText } from 'lucide-react'
 import type { InvoiceRecord } from '@/core/types'
 
-const STATUS_COLOR: Record<InvoiceRecord['status'], string> = {
-  draft: 'var(--mute)',
-  issued: 'var(--up)',
-  cancelled: 'var(--down)',
+type PreviewState = {
+  inv: InvoiceRecord
+  xml: string
+  parsed: ParsedInvoice | null
+  printHtml: string
+  gdtHtml: string
 }
-
-type PreviewState = { inv: InvoiceRecord; xml: string; parsed: ParsedInvoice | null; html: string }
 
 export function InvoicesPage() {
   const navigate = useNavigate()
@@ -57,17 +57,13 @@ export function InvoicesPage() {
   const totalSum = rows.filter((i) => i.status !== 'cancelled').reduce((a, i) => a + invoiceTotal(i), 0)
 
   async function openPreview(inv: InvoiceRecord) {
-    const extra = invoiceExtra(inv)
-    if (extra.hasXml) {
-      try {
-        const p = await loadInvoiceXmlPreview(inv)
-        setPreview({ inv, ...p })
-        return
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : 'Không tải được XML', 'bad')
-      }
+    try {
+      const p = await loadInvoicePreview(inv)
+      setPreview({ inv, xml: p.xml, parsed: p.parsed, printHtml: p.printHtml, gdtHtml: p.gdtHtml })
+    } catch (e) {
+      setPreview({ inv, xml: '', parsed: null, printHtml: gdtHtmlForInvoice(inv), gdtHtml: '' })
+      showToast(e instanceof Error ? e.message : 'Không tải được tờ hóa đơn', 'bad')
     }
-    setPreview({ inv, xml: '', parsed: null, html: gdtHtmlForInvoice(inv) })
   }
 
   async function handleAdd() {
@@ -112,8 +108,7 @@ export function InvoicesPage() {
         </button>
         <div className="flex-1 text-center">
           <div className="font-brand text-[17px] font-medium" style={{ color: 'var(--ink)' }}>Hóa đơn điện tử</div>
-          <div className="text-[11px]" style={{ color: 'var(--mute)' }}>{rows.length} / {invoices.length} hóa đơn · {fmtShort(totalSum)}đ</div>
-          <div className="text-[10px]" style={{ color: 'var(--mute-2)' }}>{invoiceSyncCaption(sync)}</div>
+          <div className="text-[11px]" style={{ color: 'var(--mute)' }}>{rows.length} hóa đơn · {fmtShort(totalSum)}đ</div>
         </div>
         <button className="btn-back" onClick={() => setShowAdd(true)} aria-label="Thêm hóa đơn">
           <Plus size={18} />
@@ -121,20 +116,23 @@ export function InvoicesPage() {
       </header>
 
       <div className="px-4 pt-3 pb-2">
-        <InvoiceLinkBanner health={link} />
+        {link && link.kind !== 'ok' ? <InvoiceLinkBanner health={link} /> : null}
         <div className="relative">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--mute-2)' }} />
           <input className="field-input pl-9 text-sm" placeholder="Tìm số HĐ, người bán, MST…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
-        <div className="flex flex-wrap gap-1.5 mt-2">
+        <div className="text-[10px] mt-2 mb-1" style={{ color: 'var(--mute-2)' }}>{invoiceSyncCaption(sync)}</div>
+        <div className="flex flex-wrap gap-1.5">
           {([['all', 'Mọi ngày'], ['month', 'Tháng này'], ['lastMonth', 'Tháng trước']] as [InvoicePeriod, string][]).map(([v, l]) => (
             <button key={v} type="button" className={`chip ${period === v ? 'active' : ''}`} onClick={() => setPeriod(v)}>{l}</button>
           ))}
-          {([['all', 'Mọi TT'], ['issued', 'Phát hành'], ['cancelled', 'Đã hủy']] as [InvoiceStatusFilter, string][]).map(([v, l]) => (
+        </div>
+        <div className="flex flex-wrap gap-1.5 mt-1.5">
+          {([['all', 'Tất cả'], ['issued', 'Phát hành'], ['cancelled', 'Đã hủy']] as [InvoiceStatusFilter, string][]).map(([v, l]) => (
             <button key={v} type="button" className={`chip ${status === v ? 'active' : ''}`} onClick={() => setStatus(v)}>{l}</button>
           ))}
-          {([['all', 'Kho: hết'], ['open', 'Chưa nhập'], ['received', 'Đã nhập']] as [InvoiceStockFilter, string][]).map(([v, l]) => (
-            <button key={v} type="button" className={`chip ${stock === v ? 'active' : ''}`} onClick={() => setStock(v)}>{l}</button>
+          {([['all', 'Mọi kho'], ['open', 'Chưa nhập'], ['received', 'Đã nhập']] as [InvoiceStockFilter, string][]).map(([v, l]) => (
+            <button key={`s-${v}`} type="button" className={`chip ${stock === v ? 'active' : ''}`} onClick={() => setStock(v)}>{l}</button>
           ))}
         </div>
       </div>
@@ -142,6 +140,7 @@ export function InvoicesPage() {
       <div className="flex-1 overflow-y-auto px-4 pb-6">
         {rows.map((inv) => {
           const extra = invoiceExtra(inv)
+          const st = invoiceListStatus(inv)
           return (
             <div key={inv.id} className="list-row">
               <button className="flex-1 min-w-0 text-left flex items-center gap-3" onClick={() => void openPreview(inv)}>
@@ -150,20 +149,17 @@ export function InvoicesPage() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium truncate" style={{ color: 'var(--ink)' }}>{inv.code}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium" style={{ color: STATUS_COLOR[inv.status], background: 'var(--paper-2)' }}>
-                      {INVOICE_STATUS_LABEL[inv.status]}
+                    <span className="text-sm font-medium truncate" style={{ color: 'var(--ink)' }}>{invoiceDisplayCode(inv)}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium" style={{ color: st.tone === 'out' ? 'var(--down)' : 'var(--up)', background: 'var(--paper-2)' }}>
+                      {st.label}
                     </span>
                   </div>
                   <div className="text-[11px] truncate" style={{ color: 'var(--mute)' }}>
-                    {inv.date || '—'} · {extra.sellerName || '—'}{extra.nbmst ? ` · ${extra.nbmst}` : ''}
-                    {extra.source === 'desktop' ? ' · từ máy tính' : ''}
-                    {extra.receiptId ? ' · Đã nhập kho' : ''}
+                    {inv.date || '—'} · {extra.sellerName || '—'}
                   </div>
                 </div>
                 <div className="text-right">
                   <div className="text-sm font-medium" style={{ color: 'var(--ink)' }}>{fmt(invoiceTotal(inv))}</div>
-                  <div className="text-[10px]" style={{ color: 'var(--mute)' }}>XML {invoiceXmlState(inv)}</div>
                 </div>
               </button>
               <button className="ml-2 p-1.5" onClick={() => setDelTarget(inv)} aria-label="Xóa" style={{ color: 'var(--mute-2)' }}>
@@ -200,7 +196,6 @@ export function InvoicesPage() {
             <span className="text-xs" style={{ color: 'var(--mute)' }}>Ngày hóa đơn</span>
             <input className="field-input" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
           </label>
-          <input className="field-input" placeholder="Mã đơn bán (tuỳ chọn)" value={form.saleId} onChange={(e) => setForm({ ...form, saleId: e.target.value })} />
           <div className="text-sm text-right" style={{ color: 'var(--mute)' }}>
             Tổng: <b style={{ color: 'var(--ink)' }}>{fmt(form.amount + form.tax)}</b>
           </div>
@@ -210,10 +205,10 @@ export function InvoicesPage() {
 
       <InvoiceGdtPreview
         open={!!preview}
-        title={preview ? preview.inv.code : 'Hóa đơn'}
-        html={preview?.html || ''}
+        inv={preview?.inv || null}
+        printHtml={preview?.printHtml || ''}
+        gdtHtml={preview?.gdtHtml || ''}
         xml={preview?.xml || ''}
-        xmlMissing={!!preview && !preview.xml}
         onClose={() => setPreview(null)}
         onImport={preview?.parsed ? () => {
           void draftImportFromInvoice(preview.inv, preview.parsed!)
@@ -226,7 +221,7 @@ export function InvoicesPage() {
       <ConfirmDialog
         open={!!delTarget}
         title="Xóa hóa đơn?"
-        message={`Xóa hóa đơn ${delTarget?.code}? Hành động này không thể hoàn tác.`}
+        message={`Xóa hóa đơn ${delTarget?.code}? Chỉ xóa trên 3SU, không hủy trên trang thuế.`}
         confirmLabel="Xóa"
         danger
         onConfirm={handleDelete}

@@ -2,15 +2,18 @@ import { describe, expect, it } from 'vitest'
 import {
   compareInvoiceRows,
   filterInvoiceRows,
+  invoiceDisplayCode,
+  invoiceListStatus,
   invoicePeriodRange,
   invoiceSearchText,
   invoiceTotal,
   invoiceXmlState,
   visibleInvoiceRows,
 } from '@/core/domain/invoices'
-import { fillFromXml, renderInvoiceHtml } from '@/core/domain/invoiceGdtHtml'
+import { fillFromXml, renderInvoiceHtml, sanitizeOfflineHtml } from '@/core/domain/invoiceGdtHtml'
+import { officialGdtHtml, gdtHtmlForInvoice } from '@/core/domain/invoicePreview'
 import { invoiceSyncCaption } from '@/core/sync/invoicePageSync'
-import { INVOICE_LINK_STALE_MS, invoiceLinkHealth } from '@/core/sync/invoiceLink'
+import { INVOICE_LINK_STALE_MS, invoiceLinkHealth, invoiceLinkShortText } from '@/core/sync/invoiceLink'
 import type { InvoiceRecord } from '@/core/types'
 import type { InvoiceDeviceRow } from '@/core/sync/invoiceDevices'
 
@@ -108,6 +111,37 @@ describe('danh sách hóa đơn Prime', () => {
     expect(html).toContain('1.955.504')
     expect(html).toContain('Thông tin người bán hàng')
   })
+
+  it('làm sạch HTML GDT và ưu tiên tờ gốc hơn tờ in', () => {
+    const dirty = '<html><body><h1>Hóa đơn số 42</h1><script>alert(1)</script></body></html>'
+    const clean = sanitizeOfflineHtml(dirty)
+    expect(clean).toContain('Hóa đơn số 42')
+    expect(clean).not.toMatch(/<script/i)
+    expect(officialGdtHtml('', '', dirty)).toContain('Hóa đơn số 42')
+    expect(officialGdtHtml('<xml/>', '', '')).toBe('')
+  })
+
+  it('một nhãn tình trạng cho người bán', () => {
+    expect(invoiceListStatus(inv({ id: 'a', code: 'C-1', date: '2026-09-01' })).label).toBe('Phát hành')
+    expect(invoiceListStatus(inv({
+      id: 'b', code: 'C-2', date: '2026-09-01', status: 'cancelled',
+    })).label).toBe('Đã hủy')
+    expect(invoiceListStatus(inv({
+      id: 'c', code: 'C-3', date: '2026-09-01', data: { receiptId: 'gr1' },
+    })).label).toBe('Đã nhập kho')
+  })
+
+  it('tách ký hiệu và số HĐ trên tờ in khi máy chưa gửi riêng', () => {
+    const html = gdtHtmlForInvoice(inv({
+      id: 'p', code: 'C26THH-172438', date: '2026-08-30',
+      data: { sellerName: 'CÔNG TY HẢI HÀ' },
+    }))
+    expect(html).toContain('C26THH')
+    expect(html).toContain('172438')
+    expect(invoiceDisplayCode(inv({
+      id: 'p', code: 'C26THH-172438', date: '2026-08-30',
+    }))).toBe('C26THH · 172438')
+  })
 })
 
 function device(over: Partial<InvoiceDeviceRow>): InvoiceDeviceRow {
@@ -142,5 +176,14 @@ describe('cảnh báo máy 3SU Invoice', () => {
     }).kind).toBe('gdt_auth')
     expect(invoiceLinkHealth({ ...shop, error: '500' }).kind).toBe('error')
     expect(invoiceLinkHealth({ ...shop, devices: [device({ lastSeenAt: Date.now() })] }).kind).toBe('ok')
+  })
+
+  it('rút ngắn cảnh báo máy trên danh sách web', () => {
+    expect(invoiceLinkShortText(invoiceLinkHealth({ ...shop, apiConfigured: false, devices: [] })))
+      .toBe('Chưa nối cloud')
+    expect(invoiceLinkShortText(invoiceLinkHealth({
+      ...shop,
+      devices: [device({ lastSeenAt: Date.now() - INVOICE_LINK_STALE_MS - 1 })],
+    }))).toBe('Máy Invoice mất kết nối')
   })
 })

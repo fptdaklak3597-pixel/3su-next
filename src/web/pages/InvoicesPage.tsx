@@ -1,5 +1,5 @@
 /**
- * Hóa đơn điện tử web — danh sách đã quét (giống máy Invoice) + xem tờ GDT + lọc.
+ * Hóa đơn điện tử — danh sách cho người bán: tìm, lọc, bấm xem tờ GDT.
  */
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -10,22 +10,27 @@ import { useApp } from '@/core/store'
 import { fmt, today } from '@/core/format'
 import { logError } from '@/core/errorLogger'
 import {
-  createInvoice, deleteInvoice, INVOICE_STATUS_LABEL, invoiceExtra, invoicePeriodRange,
-  invoiceTotal, invoiceXmlState, filterInvoiceRows, setInvoiceStatus,
-  type InvoicePeriod, type InvoiceStatusFilter, type InvoiceStockFilter, type InvoiceXmlFilter,
+  createInvoice, deleteInvoice,
+  invoiceDisplayCode, invoiceExtra, invoiceListStatus, invoicePeriodRange, invoiceTotal, filterInvoiceRows,
+  type InvoicePeriod, type InvoiceStatusFilter, type InvoiceStockFilter,
 } from '@/core/domain/invoices'
-import { draftImportFromInvoice, gdtHtmlForInvoice, loadInvoiceXmlPreview } from '@/core/domain/invoicePreview'
+import { draftImportFromInvoice, gdtHtmlForInvoice, loadInvoicePreview } from '@/core/domain/invoicePreview'
 import { invoiceSyncCaption, useInvoicePageSync } from '@/core/sync/invoicePageSync'
-import { useInvoiceLinkHealth } from '@/core/sync/invoiceLink'
+import { invoiceLinkShortText, useInvoiceLinkHealth } from '@/core/sync/invoiceLink'
+import { paginate } from '@/web/lib/listFilters'
 import { ConfirmDialog, Sheet } from '@/shared/components'
 import { InvoiceGdtPreview } from '@/shared/InvoiceGdtPreview'
-import { InvoiceLinkBanner } from '@/shared/InvoiceLinkBanner'
-import { WebEmpty } from '@/web/components/WebEmpty'
 import { WebDateRange } from '@/web/components/WebDateRange'
 import type { InvoiceRecord } from '@/core/types'
 import type { ParsedInvoice } from '@/core/domain/invoiceImport'
 
-type PreviewState = { inv: InvoiceRecord; xml: string; parsed: ParsedInvoice | null; html: string }
+type PreviewState = {
+  inv: InvoiceRecord
+  xml: string
+  parsed: ParsedInvoice | null
+  printHtml: string
+  gdtHtml: string
+}
 
 export function WebInvoicesPage() {
   const navigate = useNavigate()
@@ -36,34 +41,49 @@ export function WebInvoicesPage() {
   const [to, setTo] = useState('')
   const [status, setStatus] = useState<InvoiceStatusFilter>('all')
   const [stock, setStock] = useState<InvoiceStockFilter>('all')
-  const [xml, setXml] = useState<InvoiceXmlFilter>('all')
+  const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
   const [delTarget, setDelTarget] = useState<InvoiceRecord | null>(null)
   const [preview, setPreview] = useState<PreviewState | null>(null)
+  const [openingId, setOpeningId] = useState<string | null>(null)
   const [form, setForm] = useState({ code: '', sellerName: '', nbmst: '', amount: 0, tax: 0, date: today(), saleId: '' })
 
   const sync = useInvoicePageSync()
   const link = useInvoiceLinkHealth()
   const invoices = useLiveQuery(() => dbx.invoices.filter((i) => !i.deleted).toArray(), [], [] as InvoiceRecord[])
   const range = useMemo(() => invoicePeriodRange(period, from, to), [period, from, to])
-  const rows = useMemo(
-    () => filterInvoiceRows(invoices, { query, from: range.from, to: range.to, status, stock, xml }),
-    [invoices, query, range, status, stock, xml],
+  const filtered = useMemo(
+    () => filterInvoiceRows(invoices, { query, from: range.from, to: range.to, status, stock }),
+    [invoices, query, range, status, stock],
   )
-  const totalSum = rows.filter((i) => i.status !== 'cancelled').reduce((a, i) => a + invoiceTotal(i), 0)
+  const { rows, pages } = paginate(filtered, page, 20)
+  const totalSum = filtered.filter((i) => i.status !== 'cancelled').reduce((a, i) => a + invoiceTotal(i), 0)
+
+  function resetPage() { setPage(1) }
 
   async function openPreview(inv: InvoiceRecord) {
-    const extra = invoiceExtra(inv)
-    if (extra.hasXml) {
-      try {
-        const p = await loadInvoiceXmlPreview(inv)
-        setPreview({ inv, ...p })
-        return
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : 'Không tải được XML', 'bad')
-      }
+    setOpeningId(inv.id)
+    try {
+      const p = await loadInvoicePreview(inv)
+      setPreview({
+        inv,
+        xml: p.xml,
+        parsed: p.parsed,
+        printHtml: p.printHtml,
+        gdtHtml: p.gdtHtml,
+      })
+    } catch (e) {
+      setPreview({
+        inv,
+        xml: '',
+        parsed: null,
+        printHtml: gdtHtmlForInvoice(inv),
+        gdtHtml: '',
+      })
+      showToast(e instanceof Error ? e.message : 'Không tải được tờ hóa đơn', 'bad')
+    } finally {
+      setOpeningId(null)
     }
-    setPreview({ inv, xml: '', parsed: null, html: gdtHtmlForInvoice(inv) })
   }
 
   async function handleAdd() {
@@ -88,118 +108,142 @@ export function WebInvoicesPage() {
     }
   }
 
+  const linkShort = link && link.kind !== 'ok' ? invoiceLinkShortText(link) : ''
+
   return (
     <div className="web-page">
-      <div className="web-ph">
+      <div className="web-list-hdr">
         <div>
           <div className="web-eyebrow">Giao dịch</div>
-          <h2>Hóa đơn điện tử</h2>
-          <p>{rows.length} / {invoices.length} HĐ · {fmt(totalSum)}</p>
-          <p className="web-sub">{invoiceSyncCaption(sync)}</p>
+          <h1 className="web-list-title">Hóa đơn điện tử</h1>
+          <div className="web-list-sub">
+            <strong>{filtered.length}</strong> hóa đơn · tổng <strong>{fmt(totalSum)}</strong>
+            {linkShort ? (
+              <>
+                <span className="web-list-sub-sep" />
+                <button type="button" className="web-list-sub-link" onClick={() => navigate(link?.to || '/thiet-bi')}>
+                  {linkShort}
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="web-list-sub-sep" />
+                <span>{invoiceSyncCaption(sync)}</span>
+              </>
+            )}
+          </div>
         </div>
-        <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm HĐ</button>
+        <div className="web-list-hdr-actions">
+          <button className="web-btn" onClick={() => setShowAdd(true)}>Thêm sổ tay</button>
+        </div>
       </div>
-
-      <InvoiceLinkBanner health={link} />
 
       <div className="web-orders-filters">
         <div className="web-chips" style={{ marginBottom: 0 }}>
-          {([['all', 'Tất cả ngày'], ['month', 'Tháng này'], ['lastMonth', 'Tháng trước']] as [InvoicePeriod, string][]).map(([v, l]) => (
-            <button key={v} type="button" className={`web-chip ${period === v ? 'on' : ''}`} onClick={() => { setPeriod(v); setFrom(''); setTo('') }}>{l}</button>
+          {([['all', 'Mọi ngày'], ['month', 'Tháng này'], ['lastMonth', 'Tháng trước']] as [InvoicePeriod, string][]).map(([v, l]) => (
+            <button
+              key={v}
+              type="button"
+              className={`web-chip ${period === v ? 'on' : ''}`}
+              onClick={() => { setPeriod(v); setFrom(''); setTo(''); resetPage() }}
+            >
+              {l}
+            </button>
           ))}
-          {([['all', 'Mọi trạng thái'], ['issued', 'Đã phát hành'], ['cancelled', 'Đã hủy']] as [InvoiceStatusFilter, string][]).map(([v, l]) => (
-            <button key={v} type="button" className={`web-chip ${status === v ? 'on' : ''}`} onClick={() => setStatus(v)}>{l}</button>
+          {([['all', 'Mọi HĐ'], ['issued', 'Phát hành'], ['cancelled', 'Đã hủy']] as [InvoiceStatusFilter, string][]).map(([v, l]) => (
+            <button key={`st-${v}`} type="button" className={`web-chip ${status === v ? 'on' : ''}`} onClick={() => { setStatus(v); resetPage() }}>{l}</button>
           ))}
-          {([['all', 'Kho: tất cả'], ['open', 'Chưa nhập kho'], ['received', 'Đã nhập kho']] as [InvoiceStockFilter, string][]).map(([v, l]) => (
-            <button key={v} type="button" className={`web-chip ${stock === v ? 'on' : ''}`} onClick={() => setStock(v)}>{l}</button>
-          ))}
-          {([['all', 'XML: tất cả'], ['yes', 'Có XML'], ['no', 'Chưa XML']] as [InvoiceXmlFilter, string][]).map(([v, l]) => (
-            <button key={v} type="button" className={`web-chip ${xml === v ? 'on' : ''}`} onClick={() => setXml(v)}>{l}</button>
+          {([['all', 'Mọi kho'], ['open', 'Chưa nhập'], ['received', 'Đã nhập']] as [InvoiceStockFilter, string][]).map(([v, l]) => (
+            <button key={`kho-${v}`} type="button" className={`web-chip ${stock === v ? 'on' : ''}`} onClick={() => { setStock(v); resetPage() }}>{l}</button>
           ))}
         </div>
       </div>
 
-      <div className="web-order-bar">
+      <div className="web-order-bar web-inv-bar">
         <div className="web-find" style={{ flex: 1, marginBottom: 0 }}>
           <Search size={16} strokeWidth={1.8} />
           <input
             className="web-search"
             placeholder="Tìm số HĐ, người bán, MST…"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); resetPage() }}
           />
         </div>
         <WebDateRange
           from={from}
           to={to}
           active={period === 'custom'}
-          onChange={(a, b) => { setFrom(a); setTo(b); setPeriod(a || b ? 'custom' : 'all') }}
+          onChange={(a, b) => { setFrom(a); setTo(b); setPeriod(a || b ? 'custom' : 'all'); resetPage() }}
         />
       </div>
 
-      {rows.length === 0 ? (
-        <WebEmpty
-          title={invoices.length === 0 ? 'Chưa có hóa đơn đã quét' : 'Không có hóa đơn khớp lọc'}
-          sub="Máy 3SU Invoice quét xong sẽ hiện hết ở đây. Có thể thêm sổ tay nếu cần."
-        >
-          <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm HĐ</button>
-        </WebEmpty>
-      ) : (
-        <div className="web-table-wrap">
-          <table className="web-table">
-            <thead>
+      <div className="web-table-wrap">
+        <table className="web-table">
+          <thead>
+            <tr>
+              <th>Ngày</th>
+              <th>Số hóa đơn</th>
+              <th>Người bán</th>
+              <th className="num">Tổng</th>
+              <th>Tình trạng</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((inv) => {
+              const extra = invoiceExtra(inv)
+              const st = invoiceListStatus(inv)
+              return (
+                <tr key={inv.id} onClick={() => void openPreview(inv)}>
+                  <td>{inv.date || '—'}</td>
+                  <td>
+                    {invoiceDisplayCode(inv)}
+                    {openingId === inv.id ? <div className="web-sub" style={{ margin: 0 }}>Đang mở…</div> : null}
+                  </td>
+                  <td>
+                    {extra.sellerName || '—'}
+                    {extra.nbmst ? <div className="web-sub" style={{ margin: 0 }}>{extra.nbmst}</div> : null}
+                  </td>
+                  <td className="num">{fmt(invoiceTotal(inv))}</td>
+                  <td>
+                    <span className={`web-badge ${st.tone}`}>{st.label}</span>
+                  </td>
+                  <td className="inv-actions">
+                    <button
+                      className="web-btn"
+                      style={{ height: 28 }}
+                      onClick={(e) => { e.stopPropagation(); setDelTarget(inv) }}
+                    >
+                      Xóa
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
+            {rows.length === 0 && (
               <tr>
-                <th>Ngày</th>
-                <th>Số / ký hiệu</th>
-                <th>Người bán</th>
-                <th>Tổng</th>
-                <th>XML</th>
-                <th>Trạng thái</th>
-                <th></th>
+                <td colSpan={6} className="web-table-empty">
+                  {invoices.length === 0
+                    ? 'Chưa có hóa đơn. Máy 3SU Invoice quét xong sẽ hiện ở đây.'
+                    : 'Không khớp bộ lọc'}
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {rows.map((inv) => {
-                const extra = invoiceExtra(inv)
-                return (
-                  <tr key={inv.id} className="static">
-                    <td>{inv.date || '—'}</td>
-                    <td>{inv.code}{inv.saleId ? <div className="web-sub">Đơn {inv.saleId.slice(-6)}</div> : null}</td>
-                    <td>
-                      {extra.sellerName || '—'}
-                      {extra.nbmst ? <div className="web-sub">{extra.nbmst}</div> : null}
-                      {extra.source === 'desktop' ? <div className="web-sub">từ máy tính</div> : null}
-                      {extra.receiptId ? <div className="web-sub">Đã nhập kho</div> : null}
-                    </td>
-                    <td>{fmt(invoiceTotal(inv))}</td>
-                    <td>{invoiceXmlState(inv)}</td>
-                    <td>
-                      <span className={`web-badge ${inv.status === 'issued' ? 'ok' : inv.status === 'cancelled' ? 'out' : 'low'}`}>
-                        {INVOICE_STATUS_LABEL[inv.status]}
-                      </span>
-                    </td>
-                    <td>
-                      <button className="web-btn" style={{ height: 28 }} onClick={() => void openPreview(inv)}>Xem</button>
-                      {' '}
-                      <button
-                        className="web-btn"
-                        style={{ height: 28 }}
-                        onClick={() => void setInvoiceStatus(inv.id, inv.status === 'issued' ? 'cancelled' : 'issued')}
-                      >
-                        {inv.status === 'issued' ? 'Hủy HĐ' : 'Phát hành'}
-                      </button>
-                      {' '}
-                      <button className="web-btn" style={{ height: 28 }} onClick={() => setDelTarget(inv)}>Xóa</button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {pages > 1 && (
+        <div className="web-foot">
+          <span>Trang {page}/{pages}</span>
+          <span>
+            <button className="web-btn" disabled={page <= 1} onClick={() => setPage(page - 1)}>Trước</button>
+            {' '}
+            <button className="web-btn" disabled={page >= pages} onClick={() => setPage(page + 1)}>Sau</button>
+          </span>
         </div>
       )}
 
-      <Sheet open={showAdd} onClose={() => setShowAdd(false)} title="Thêm hóa đơn">
+      <Sheet open={showAdd} onClose={() => setShowAdd(false)} title="Thêm hóa đơn sổ tay">
         <div className="flex flex-col gap-2">
           <input className="web-input" placeholder="Số / ký hiệu *" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
           <input className="web-input" placeholder="Người bán" value={form.sellerName} onChange={(e) => setForm({ ...form, sellerName: e.target.value })} />
@@ -207,17 +251,16 @@ export function WebInvoicesPage() {
           <input className="web-input" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
           <input className="web-input" type="number" placeholder="Tiền hàng" value={form.amount || ''} onChange={(e) => setForm({ ...form, amount: Number(e.target.value) || 0 })} />
           <input className="web-input" type="number" placeholder="Thuế" value={form.tax || ''} onChange={(e) => setForm({ ...form, tax: Number(e.target.value) || 0 })} />
-          <input className="web-input" placeholder="Mã đơn bán (tuỳ chọn)" value={form.saleId} onChange={(e) => setForm({ ...form, saleId: e.target.value })} />
           <button className="web-btn pri" onClick={handleAdd}>Lưu</button>
         </div>
       </Sheet>
 
       <InvoiceGdtPreview
         open={!!preview}
-        title={preview ? `Hóa đơn ${preview.inv.code}` : 'Hóa đơn'}
-        html={preview?.html || ''}
+        inv={preview?.inv || null}
+        printHtml={preview?.printHtml || ''}
+        gdtHtml={preview?.gdtHtml || ''}
         xml={preview?.xml || ''}
-        xmlMissing={!!preview && !preview.xml}
         onClose={() => setPreview(null)}
         onImport={preview?.parsed ? () => {
           void draftImportFromInvoice(preview.inv, preview.parsed!)
@@ -230,7 +273,7 @@ export function WebInvoicesPage() {
       <ConfirmDialog
         open={!!delTarget}
         title="Xóa hóa đơn?"
-        message={`Xóa ${delTarget?.code}?`}
+        message={`Xóa ${delTarget?.code}? Chỉ xóa trên 3SU, không hủy trên trang thuế.`}
         confirmLabel="Xóa"
         danger
         onConfirm={async () => {

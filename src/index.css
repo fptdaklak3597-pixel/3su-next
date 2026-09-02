@@ -1204,7 +1204,7 @@
   text-align: left;
   border: 0;
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   margin-bottom: 12px;
   font: inherit;
   font-size: 13px;
@@ -1221,14 +1221,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
-  background: rgba(15, 23, 42, .58);
+  padding: 24px;
+  background: rgba(15, 23, 42, .62);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 .inv-gdt-dialog {
   display: flex;
   flex-direction: column;
-  width: min(980px, 100%);
-  height: min(92vh, 860px);
+  width: min(100%, 980px);
+  height: min(92vh, 820px);
   overflow: hidden;
   border-radius: 16px;
   background: #fff;
@@ -1238,41 +1239,107 @@
 .inv-gdt-head {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 16px;
+  padding: 18px 20px;
   border-bottom: 1px solid #e2e8f0;
 }
-.inv-gdt-title { margin: 0; font-size: 18px; font-weight: 700; }
-.inv-gdt-sub { margin: 4px 0 0; color: #64748b; font-size: 12px; }
+.inv-gdt-heading { min-width: 0; flex: 1; }
+.inv-gdt-title { margin: 0; font-size: 20px; font-weight: 700; }
+.inv-gdt-sub { margin: 4px 0 0; color: #64748b; font-size: 13px; }
 .inv-gdt-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.inv-gdt-actions button {
-  min-height: 34px;
-  padding: 0 12px;
+.inv-gdt-btn {
+  min-height: 38px;
+  padding: 8px 13px;
   border: 1px solid #cbd5e1;
-  border-radius: 8px;
+  border-radius: 9px;
   background: #fff;
   color: #172033;
   font: inherit;
   font-weight: 650;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
 }
-.inv-gdt-actions button.pri,
-.inv-gdt-actions .web-btn.pri {
+.inv-gdt-official { border-color: #087b71; color: #087b71; }
+.inv-gdt-btn.pri {
   background: #0071E3;
   border-color: #0071E3;
   color: #fff;
 }
-.inv-gdt-close { width: 34px; padding: 0; font-size: 20px; }
-.inv-gdt-frame {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
+.inv-gdt-close { width: 38px; padding: 0; font-size: 20px; }
+.inv-gdt-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 18px;
+  margin: 0;
+  padding: 14px 20px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+.inv-gdt-meta div { min-width: 0; }
+.inv-gdt-meta dt {
+  color: #64748b;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.inv-gdt-meta dd { margin: 3px 0 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 650; }
+.inv-gdt-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 20px 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+.inv-gdt-tab {
+  padding: 10px 14px;
   border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.inv-gdt-tab.on { border-bottom-color: #087b71; color: #087b71; }
+.inv-gdt-panels { min-height: 0; flex: 1; }
+.inv-gdt-panel { height: 100%; padding: 16px 20px; overflow: auto; }
+.inv-gdt-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
   background: #fff;
+}
+.inv-gdt-code {
+  box-sizing: border-box;
+  min-height: 100%;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.6 Consolas, "Segoe UI Mono", "Cascadia Mono", ui-monospace, monospace;
+}
+.inv-gdt-missing {
+  margin: 0;
+  padding: 16px;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #526176;
+  font-size: 14px;
+  line-height: 1.5;
 }
 @media (max-width: 700px) {
   .inv-gdt-overlay { padding: 0; }
   .inv-gdt-dialog { width: 100%; height: 100%; border-radius: 0; }
-  .inv-gdt-head { flex-direction: column; }
+  .inv-gdt-head { padding: 14px; flex-direction: column; }
+  .inv-gdt-meta { grid-template-columns: 1fr 1fr; padding: 12px 14px; }
+  .inv-gdt-tabs { padding-left: 14px; overflow-x: auto; }
+  .inv-gdt-panel { padding: 12px 14px; }
 }

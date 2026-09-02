@@ -988,6 +988,20 @@ html[data-shell="web"] .btn-ghost:active { transform: none; }
 .web-chip.on { background: var(--blue); color: #fff; border-color: var(--blue); }
 .web-chip.ora { background: var(--orange); color: #fff; border-color: var(--orange); }
 
+.web-table th.num,
+.web-table td.num { text-align: right; }
+.web-table td.inv-actions { white-space: nowrap; text-align: right; }
+.web-list-sub-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--warn);
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+}
+
 .web-table-wrap {
   background: var(--kv-surface);
   border: 1px solid var(--kv-line);
@@ -1675,6 +1689,7 @@ html[data-shell="web"] .web-embed {
   min-width: 180px;
   max-width: 260px;
 }
+.web-inv-bar .web-search { max-width: none; }
 .web-daterange {
   display: inline-flex;
   align-items: center;
