@@ -1,31 +1,70 @@
 /**
- * Hóa đơn điện tử web — danh sách + thêm + hủy.
+ * Hóa đơn điện tử web — danh sách đã quét (giống máy Invoice) + xem tờ GDT + lọc.
  */
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { Search } from 'lucide-react'
 import { dbx } from '@/core/db'
 import { useApp } from '@/core/store'
-import { fmt, matchesSearch, today } from '@/core/format'
+import { fmt, today } from '@/core/format'
 import { logError } from '@/core/errorLogger'
-import { createInvoice, deleteInvoice, INVOICE_STATUS_LABEL, invoiceTotal, setInvoiceStatus } from '@/core/domain/invoices'
+import {
+  createInvoice, deleteInvoice, INVOICE_STATUS_LABEL, invoiceExtra, invoicePeriodRange,
+  invoiceTotal, invoiceXmlState, filterInvoiceRows, setInvoiceStatus,
+  type InvoicePeriod, type InvoiceStatusFilter, type InvoiceStockFilter, type InvoiceXmlFilter,
+} from '@/core/domain/invoices'
+import { draftImportFromInvoice, gdtHtmlForInvoice, loadInvoiceXmlPreview } from '@/core/domain/invoicePreview'
+import { invoiceSyncCaption, useInvoicePageSync } from '@/core/sync/invoicePageSync'
+import { useInvoiceLinkHealth } from '@/core/sync/invoiceLink'
 import { ConfirmDialog, Sheet } from '@/shared/components'
+import { InvoiceGdtPreview } from '@/shared/InvoiceGdtPreview'
+import { InvoiceLinkBanner } from '@/shared/InvoiceLinkBanner'
 import { WebEmpty } from '@/web/components/WebEmpty'
+import { WebDateRange } from '@/web/components/WebDateRange'
 import type { InvoiceRecord } from '@/core/types'
+import type { ParsedInvoice } from '@/core/domain/invoiceImport'
+
+type PreviewState = { inv: InvoiceRecord; xml: string; parsed: ParsedInvoice | null; html: string }
 
 export function WebInvoicesPage() {
+  const navigate = useNavigate()
   const showToast = useApp((s) => s.showToast)
   const [query, setQuery] = useState('')
+  const [period, setPeriod] = useState<InvoicePeriod>('all')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [status, setStatus] = useState<InvoiceStatusFilter>('all')
+  const [stock, setStock] = useState<InvoiceStockFilter>('all')
+  const [xml, setXml] = useState<InvoiceXmlFilter>('all')
   const [showAdd, setShowAdd] = useState(false)
   const [delTarget, setDelTarget] = useState<InvoiceRecord | null>(null)
+  const [preview, setPreview] = useState<PreviewState | null>(null)
   const [form, setForm] = useState({ code: '', sellerName: '', nbmst: '', amount: 0, tax: 0, date: today(), saleId: '' })
 
+  const sync = useInvoicePageSync()
+  const link = useInvoiceLinkHealth()
   const invoices = useLiveQuery(() => dbx.invoices.filter((i) => !i.deleted).toArray(), [], [] as InvoiceRecord[])
-  const rows = useMemo(() => {
-    return invoices
-      .filter((i) => matchesSearch(i.code + ' ' + String((i.data as { sellerName?: string }).sellerName ?? ''), query))
-      .sort((a, b) => b.ts - a.ts)
-  }, [invoices, query])
-  const totalSum = invoices.filter((i) => i.status !== 'cancelled').reduce((a, i) => a + invoiceTotal(i), 0)
+  const range = useMemo(() => invoicePeriodRange(period, from, to), [period, from, to])
+  const rows = useMemo(
+    () => filterInvoiceRows(invoices, { query, from: range.from, to: range.to, status, stock, xml }),
+    [invoices, query, range, status, stock, xml],
+  )
+  const totalSum = rows.filter((i) => i.status !== 'cancelled').reduce((a, i) => a + invoiceTotal(i), 0)
+
+  async function openPreview(inv: InvoiceRecord) {
+    const extra = invoiceExtra(inv)
+    if (extra.hasXml) {
+      try {
+        const p = await loadInvoiceXmlPreview(inv)
+        setPreview({ inv, ...p })
+        return
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : 'Không tải được XML', 'bad')
+      }
+    }
+    setPreview({ inv, xml: '', parsed: null, html: gdtHtmlForInvoice(inv) })
+  }
 
   async function handleAdd() {
     if (!form.code.trim()) { showToast('Nhập số/ký hiệu hóa đơn', 'bad'); return }
@@ -54,16 +93,55 @@ export function WebInvoicesPage() {
       <div className="web-ph">
         <div>
           <div className="web-eyebrow">Giao dịch</div>
-          <h2>Sổ hóa đơn</h2>
-          <p>{invoices.length} HĐ · {fmt(totalSum)}</p>
+          <h2>Hóa đơn điện tử</h2>
+          <p>{rows.length} / {invoices.length} HĐ · {fmt(totalSum)}</p>
+          <p className="web-sub">{invoiceSyncCaption(sync)}</p>
         </div>
         <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm HĐ</button>
       </div>
 
-      <input className="web-search mb-3" style={{ paddingLeft: 12 }} placeholder="Tìm số HĐ / người bán…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <InvoiceLinkBanner health={link} />
+
+      <div className="web-orders-filters">
+        <div className="web-chips" style={{ marginBottom: 0 }}>
+          {([['all', 'Tất cả ngày'], ['month', 'Tháng này'], ['lastMonth', 'Tháng trước']] as [InvoicePeriod, string][]).map(([v, l]) => (
+            <button key={v} type="button" className={`web-chip ${period === v ? 'on' : ''}`} onClick={() => { setPeriod(v); setFrom(''); setTo('') }}>{l}</button>
+          ))}
+          {([['all', 'Mọi trạng thái'], ['issued', 'Đã phát hành'], ['cancelled', 'Đã hủy']] as [InvoiceStatusFilter, string][]).map(([v, l]) => (
+            <button key={v} type="button" className={`web-chip ${status === v ? 'on' : ''}`} onClick={() => setStatus(v)}>{l}</button>
+          ))}
+          {([['all', 'Kho: tất cả'], ['open', 'Chưa nhập kho'], ['received', 'Đã nhập kho']] as [InvoiceStockFilter, string][]).map(([v, l]) => (
+            <button key={v} type="button" className={`web-chip ${stock === v ? 'on' : ''}`} onClick={() => setStock(v)}>{l}</button>
+          ))}
+          {([['all', 'XML: tất cả'], ['yes', 'Có XML'], ['no', 'Chưa XML']] as [InvoiceXmlFilter, string][]).map(([v, l]) => (
+            <button key={v} type="button" className={`web-chip ${xml === v ? 'on' : ''}`} onClick={() => setXml(v)}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="web-order-bar">
+        <div className="web-find" style={{ flex: 1, marginBottom: 0 }}>
+          <Search size={16} strokeWidth={1.8} />
+          <input
+            className="web-search"
+            placeholder="Tìm số HĐ, người bán, MST…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <WebDateRange
+          from={from}
+          to={to}
+          active={period === 'custom'}
+          onChange={(a, b) => { setFrom(a); setTo(b); setPeriod(a || b ? 'custom' : 'all') }}
+        />
+      </div>
 
       {rows.length === 0 ? (
-        <WebEmpty title="Chưa có hóa đơn" sub="Ghi HĐĐT đã phát hành hoặc nhập từ file ở Nhập hàng.">
+        <WebEmpty
+          title={invoices.length === 0 ? 'Chưa có hóa đơn đã quét' : 'Không có hóa đơn khớp lọc'}
+          sub="Máy 3SU Invoice quét xong sẽ hiện hết ở đây. Có thể thêm sổ tay nếu cần."
+        >
           <button className="web-btn pri" onClick={() => setShowAdd(true)}>+ Thêm HĐ</button>
         </WebEmpty>
       ) : (
@@ -71,29 +149,38 @@ export function WebInvoicesPage() {
           <table className="web-table">
             <thead>
               <tr>
+                <th>Ngày</th>
                 <th>Số / ký hiệu</th>
                 <th>Người bán</th>
-                <th>Ngày</th>
                 <th>Tổng</th>
+                <th>XML</th>
                 <th>Trạng thái</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {rows.map((inv) => {
-                const seller = String((inv.data as { sellerName?: string }).sellerName ?? '')
+                const extra = invoiceExtra(inv)
                 return (
                   <tr key={inv.id} className="static">
+                    <td>{inv.date || '—'}</td>
                     <td>{inv.code}{inv.saleId ? <div className="web-sub">Đơn {inv.saleId.slice(-6)}</div> : null}</td>
-                    <td>{seller || '—'}</td>
-                    <td>{inv.date}</td>
+                    <td>
+                      {extra.sellerName || '—'}
+                      {extra.nbmst ? <div className="web-sub">{extra.nbmst}</div> : null}
+                      {extra.source === 'desktop' ? <div className="web-sub">từ máy tính</div> : null}
+                      {extra.receiptId ? <div className="web-sub">Đã nhập kho</div> : null}
+                    </td>
                     <td>{fmt(invoiceTotal(inv))}</td>
+                    <td>{invoiceXmlState(inv)}</td>
                     <td>
                       <span className={`web-badge ${inv.status === 'issued' ? 'ok' : inv.status === 'cancelled' ? 'out' : 'low'}`}>
                         {INVOICE_STATUS_LABEL[inv.status]}
                       </span>
                     </td>
                     <td>
+                      <button className="web-btn" style={{ height: 28 }} onClick={() => void openPreview(inv)}>Xem</button>
+                      {' '}
                       <button
                         className="web-btn"
                         style={{ height: 28 }}
@@ -124,6 +211,21 @@ export function WebInvoicesPage() {
           <button className="web-btn pri" onClick={handleAdd}>Lưu</button>
         </div>
       </Sheet>
+
+      <InvoiceGdtPreview
+        open={!!preview}
+        title={preview ? `Hóa đơn ${preview.inv.code}` : 'Hóa đơn'}
+        html={preview?.html || ''}
+        xml={preview?.xml || ''}
+        xmlMissing={!!preview && !preview.xml}
+        onClose={() => setPreview(null)}
+        onImport={preview?.parsed ? () => {
+          void draftImportFromInvoice(preview.inv, preview.parsed!)
+            .then(() => { setPreview(null); navigate('/nhap-hang/hoa-don') })
+            .catch((e) => showToast(e instanceof Error ? e.message : 'Không tạo được phiếu', 'bad'))
+        } : undefined}
+        onPrintBlocked={() => showToast('Trình duyệt chặn cửa sổ in', 'bad')}
+      />
 
       <ConfirmDialog
         open={!!delTarget}

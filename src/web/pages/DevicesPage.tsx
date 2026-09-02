@@ -12,7 +12,7 @@ import { pullCloudSnapshot, pushLocalSnapshot } from '@/core/sync/engine'
 import { connectCloud, disconnectCloud, isCloudPaused } from '@/core/sync/cloud'
 import {
   approveInvoicePairing, currentRoleForDevices, currentShopForDevices, denyInvoicePairing,
-  listInvoiceDevices, lookupInvoicePairing, revokeInvoiceDevice, type InvoiceDeviceRow,
+  invoiceTaxLabel, listInvoiceDevices, lookupInvoicePairing, revokeInvoiceDevice, type InvoiceDeviceRow,
 } from '@/core/sync/invoiceDevices'
 import { ConfirmDialog } from '@/shared/components'
 import { WebEmpty } from '@/web/components/WebEmpty'
@@ -83,7 +83,7 @@ export function WebDevicesPage() {
       .then(async (shopId) => {
         if (!shopId) throw new Error('Chưa vào cửa hàng cloud')
         if (approve) await approveInvoicePairing(code, shopId)
-        else await denyInvoicePairing(code)
+        else await denyInvoicePairing(code, shopId)
         showToast(approve ? 'Đã duyệt máy' : 'Đã từ chối máy', 'ok')
         setPairCode('')
         setPairInfo(null)
@@ -232,6 +232,7 @@ export function WebDevicesPage() {
           <div className="web-settings-block-t">Thiết bị hóa đơn (máy tính)</div>
           <p className="web-sub" style={{ marginTop: 8 }}>
             App 3SU Invoice trên máy tính phải được duyệt qua đây mới chạy được. Mở app, nhập mã hiển thị trên đó vào ô dưới rồi bấm <strong>Duyệt máy</strong>.
+            {role && role !== 'owner' ? ' Nhân viên chỉ xem danh sách — chỉ chủ shop được duyệt hoặc từ chối máy.' : ''}
           </p>
           <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
             <input
@@ -248,7 +249,7 @@ export function WebDevicesPage() {
             <button type="button" className="web-btn" disabled={invBusy || !pairCode.trim()} onClick={checkPairing}>
               Kiểm tra
             </button>
-            {pairInfo && pairInfo.status === 'pending' && (
+            {pairInfo && pairInfo.status === 'pending' && role === 'owner' && (
               <>
                 <span className="web-badge ok">“{pairInfo.deviceName || 'Máy không tên'}” đang chờ</span>
                 <button type="button" className="web-btn pri" disabled={invBusy} onClick={() => actOnPairing(true)}>
@@ -258,6 +259,9 @@ export function WebDevicesPage() {
                   Từ chối
                 </button>
               </>
+            )}
+            {pairInfo && pairInfo.status === 'pending' && role !== 'owner' && (
+              <span className="web-badge">Chỉ chủ cửa hàng được duyệt máy Invoice.</span>
             )}
             {pairInfo && pairInfo.status !== 'pending' && (
               <span className="web-badge">Mã đã được xử lý trước đó</span>
@@ -270,13 +274,15 @@ export function WebDevicesPage() {
                 <tr>
                   <th>Máy</th>
                   <th>Trạng thái</th>
+                  <th>Thuế</th>
+                  <th>Quét lần cuối</th>
                   <th>Hoạt động lần cuối</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {invoiceDevices.length === 0 ? (
-                  <tr className="static"><td colSpan={4}>Chưa có máy nào được duyệt.</td></tr>
+                  <tr className="static"><td colSpan={6}>Chưa có máy nào được duyệt.</td></tr>
                 ) : invoiceDevices.map((d) => (
                   <tr key={d.deviceId} className="static">
                     <td>{d.deviceName || d.deviceId}</td>
@@ -285,6 +291,8 @@ export function WebDevicesPage() {
                         ? <span className="web-badge ok">đang hoạt động</span>
                         : <span className="web-badge">đã thu hồi</span>}
                     </td>
+                    <td>{invoiceTaxLabel(d)}</td>
+                    <td>{d.lastScanAt ? timeAgo(d.lastScanAt) : 'chưa quét'}</td>
                     <td>{d.lastSeenAt ? timeAgo(d.lastSeenAt) : 'chưa có'}</td>
                     <td>
                       {d.status === 'active' && role === 'owner' && (

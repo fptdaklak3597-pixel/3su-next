@@ -41,7 +41,7 @@ export function MorePage() {
   const items: MenuItem[] = [
     { path: '/nhap-hang', label: 'Nhập hàng', desc: 'Phiếu nhập kho nhanh', icon: <ClipboardList size={18} />, color: 'var(--up)', perm: 'inventory' },
     { path: '/don-mua', label: 'Đơn mua', desc: 'Đặt NCC rồi nhận vào kho', icon: <ClipboardList size={18} />, color: 'var(--gold)', perm: 'inventory' },
-    { path: '/hoa-don', label: 'Hóa đơn', desc: 'Sổ hóa đơn GDT / nhập', icon: <FileText size={18} />, color: 'var(--ink-2)', perm: 'invoices' },
+    { path: '/hoa-don', label: 'Hóa đơn điện tử', desc: 'Sổ hóa đơn GDT / nhập', icon: <FileText size={18} />, color: 'var(--ink-2)', perm: 'invoices' },
     { path: '/nha-cung-cap', label: 'Nhà cung cấp', desc: supDebt > 0 ? `${suppliers.length} NCC · nợ ${fmtShort(supDebt)}đ` : `${suppliers.length} nhà cung cấp`, icon: <Truck size={18} />, color: 'var(--gold)', perm: 'suppliers' },
     { path: '/cong-cu', label: 'Quy tắc giá', desc: 'Gợi ý giá bán theo biên lợi nhuận', icon: <Tags size={18} />, color: 'var(--gold)', perm: 'inventory' },
     { path: '/khach-hang', label: 'Khách hàng', desc: custDebt > 0 ? `${customers.length} khách · nợ ${fmtShort(custDebt)}đ` : `${customers.length} khách hàng`, icon: <Users size={18} />, color: 'var(--ink-3)', perm: 'sell' },

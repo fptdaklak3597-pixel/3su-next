@@ -17,6 +17,9 @@ export interface InvoiceDeviceRow {
   revokedAt: number | null
   expiresAt: number | null
   lastSeenAt: number | null
+  gdtStatus?: string | null
+  gdtStatusAt?: number | null
+  lastScanAt?: number | null
 }
 
 export interface InvoicePairingInfo {
@@ -50,10 +53,19 @@ export async function approveInvoicePairing(code: string, shopId: string): Promi
   await apiPost<{ ok: boolean }>(base, '/v1/desktop/pair/approve', getCloudIdToken, { code, shopId })
 }
 
-export async function denyInvoicePairing(code: string): Promise<void> {
+export async function denyInvoicePairing(code: string, shopId: string): Promise<void> {
   const base = apiBase()
   if (!base) throw new Error('Chưa cấu hình API')
-  await apiPost<{ ok: boolean }>(base, '/v1/desktop/pair/deny', getCloudIdToken, { code })
+  await apiPost<{ ok: boolean }>(base, '/v1/desktop/pair/deny', getCloudIdToken, { code, shopId })
+}
+
+export function invoiceTaxLabel(row: InvoiceDeviceRow): string {
+  if (row.gdtStatus === 'ok') return 'Thuế: đang đăng nhập'
+  if (row.gdtStatus === 'auth_required') {
+    const at = row.gdtStatusAt ? new Date(row.gdtStatusAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : ''
+    return at ? `Cần đăng nhập lại từ ${at}` : 'Cần đăng nhập lại'
+  }
+  return 'Thuế: chưa có'
 }
 
 export async function revokeInvoiceDevice(shopId: string, deviceId: string): Promise<void> {

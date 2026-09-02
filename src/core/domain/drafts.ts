@@ -53,6 +53,7 @@ export interface InvoiceDraft {
   expiry: string
   paid: number
   payMethod: 'cash' | 'transfer' | 'debt'
+  sourceInvoiceId?: string
   updatedAt: number
 }
 

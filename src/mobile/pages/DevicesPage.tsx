@@ -17,6 +17,9 @@ import { ConfirmDialog, EmptyState } from '@/shared/components'
 import { ChevronLeft, Smartphone, Trash2, CloudOff, Cloud } from 'lucide-react'
 import { cloudAuthMessage, cloudSendEmailLink, cloudSignInGoogle, isFirebaseConfigured } from '@/core/sync/firebase'
 import { apiBase, attachExistingCloudShop, connectCloud, createCloudShop, createPairCode, disconnectCloud, getCloudShopId, isCloudPaused, redeemPairCode } from '@/core/sync/cloud'
+import {
+  currentShopForDevices, invoiceTaxLabel, listInvoiceDevices, type InvoiceDeviceRow,
+} from '@/core/sync/invoiceDevices'
 import type { PairedDevice } from '@/core/types'
 
 function timeAgo(ts: number): string {
@@ -150,10 +153,15 @@ export function DevicesPage() {
   const [delTarget, setDelTarget] = useState<PairedDevice | null>(null)
 
   const devices = useLiveQuery(() => dbx.devices.toArray(), [], [] as PairedDevice[])
+  const [invoiceDevices, setInvoiceDevices] = useState<InvoiceDeviceRow[]>([])
 
   // Đăng ký thiết bị này khi mở trang
   useEffect(() => {
     registerThisDevice().catch((e) => logError(e, 'device.register'))
+    void currentShopForDevices().then((shopId) => {
+      if (!shopId) return
+      listInvoiceDevices(shopId).then(setInvoiceDevices).catch(() => setInvoiceDevices([]))
+    })
   }, [])
 
   async function handleDelete() {
@@ -210,6 +218,24 @@ export function DevicesPage() {
           </div>
         ))}
         {devices.length === 0 && <EmptyState icon="📱" title="Chưa có thiết bị" sub="Thiết bị này sẽ tự đăng ký" />}
+
+        <div className="section-label" style={{ marginTop: 20 }}>Máy hóa đơn ({invoiceDevices.length})</div>
+        {invoiceDevices.map((d) => (
+          <div key={d.deviceId} className="list-row">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium truncate" style={{ color: 'var(--ink)' }}>{d.deviceName || d.deviceId}</div>
+              <div className="text-[11px]" style={{ color: 'var(--mute)' }}>
+                {invoiceTaxLabel(d)}
+                {d.lastScanAt ? ` · quét ${timeAgo(d.lastScanAt)}` : ''}
+              </div>
+            </div>
+          </div>
+        ))}
+        {invoiceDevices.length === 0 && (
+          <p className="text-[11px]" style={{ color: 'var(--mute-2)' }}>
+            Duyệt máy Invoice trên bản web bằng tài khoản chủ shop.
+          </p>
+        )}
 
         <p className="text-[11px] text-center mt-6" style={{ color: 'var(--mute-2)' }}>
           Nền tảng hiện tại: {devicePlatform()}

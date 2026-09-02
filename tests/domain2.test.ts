@@ -140,6 +140,26 @@ describe('parseEInvoiceXML', () => {
   })
 })
 
+describe('invoice draft from desktop xml', () => {
+  it('giữ sourceInvoiceId khi dựng draft', async () => {
+    const { persistInvoiceDraft, loadFreshDraft, DRAFT_INVOICE, clearDraft } = await import('@/core/domain/drafts')
+    await persistInvoiceDraft({
+      inv: { supplier: { name: 'CTY A' }, items: [], date: '2026-09-01' },
+      rows: [],
+      supName: 'CTY A',
+      supId: '',
+      date: '2026-09-01',
+      expiry: '',
+      paid: 0,
+      payMethod: 'cash',
+      sourceInvoiceId: 'inv_gdt_abc',
+    })
+    const loaded = await loadFreshDraft<{ sourceInvoiceId?: string }>(DRAFT_INVOICE)
+    expect(loaded?.sourceInvoiceId).toBe('inv_gdt_abc')
+    await clearDraft(DRAFT_INVOICE)
+  })
+})
+
 /* ─── units ─── */
 describe('units', () => {
   it('nhân giá theo tỷ lệ', () => {

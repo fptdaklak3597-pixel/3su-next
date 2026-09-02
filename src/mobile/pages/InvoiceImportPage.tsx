@@ -31,6 +31,7 @@ import { useUnsavedDraftGuard } from '@/shared/useUnsavedDraftGuard'
 import {
   DRAFT_INVOICE, clearDraft, loadFreshDraft, persistInvoiceDraft, type InvoiceDraft,
 } from '@/core/domain/drafts'
+import { markInvoiceReceipt } from '@/core/domain/invoices'
 import { ChevronLeft, Upload, FileText, Trash2 } from 'lucide-react'
 import type { Product, Supplier } from '@/core/types'
 
@@ -84,6 +85,7 @@ export function InvoiceImportPage() {
   const [pickQ, setPickQ] = useState('')
   const lastCatalogKey = useRef('')
   const draftReady = useRef(false)
+  const sourceInvoiceId = useRef('')
   const leave = useUnsavedDraftGuard(inv != null)
   const gdtBlocked = typeof location !== 'undefined' && (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
 
@@ -106,14 +108,25 @@ export function InvoiceImportPage() {
   useEffect(() => {
     void loadFreshDraft<InvoiceDraft>(DRAFT_INVOICE).then((d) => {
       if (!d) { draftReady.current = true; return }
-      setInv(d.inv as ParsedInvoice | null)
-      setRows((d.rows || []) as EditRow[])
+      const parsed = (d.inv || null) as ParsedInvoice | null
+      setInv(parsed)
+      const savedRows = (d.rows || []) as EditRow[]
+      if (savedRows.length) setRows(savedRows)
+      else if (parsed?.items?.length) {
+        setRows(parsed.items.map((it) => ({
+          ...it,
+          key: uid('ir'),
+          match: matchLine(it.name, it.sku, d.supId, products, aliases),
+          confirmed: false,
+        })))
+      } else setRows([])
       setSupName(d.supName)
       setSupId(d.supId)
       setDate(d.date)
       setExpiry(d.expiry)
       setPaid(d.paid)
       setPayMethod(d.payMethod)
+      sourceInvoiceId.current = d.sourceInvoiceId || ''
       draftReady.current = true
     }).catch(() => { draftReady.current = true })
   }, [])
@@ -123,6 +136,7 @@ export function InvoiceImportPage() {
     const tmr = window.setTimeout(() => {
       void persistInvoiceDraft({
         inv, rows, supName, supId, date, expiry, paid, payMethod,
+        sourceInvoiceId: sourceInvoiceId.current || undefined,
       })
     }, 400)
     return () => window.clearTimeout(tmr)
@@ -286,6 +300,10 @@ export function InvoiceImportPage() {
           const pid = productIds[r.newProductIndex]
           if (pid) await learnProductAlias(r.name, '', sid, pid)
         }
+      }
+      if (sourceInvoiceId.current) {
+        await markInvoiceReceipt(sourceInvoiceId.current, gr.id)
+        sourceInvoiceId.current = ''
       }
       showToast(`✓ Đã nhập kho ${fmt(gr.total)}${newCount ? ` (+${newCount} SP mới)` : ''}`, 'ok')
       leave.allowLeave()

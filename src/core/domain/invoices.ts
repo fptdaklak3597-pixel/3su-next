@@ -7,7 +7,7 @@
  * (cần tiện ích + khoá AI), có thể gắn sau qua adapter.
  */
 import { dbx } from '../db'
-import { uid, today } from '../format'
+import { localDay, matchesSearch, today, uid } from '../format'
 import type { InvoiceRecord } from '../types'
 import { makeOp, persistOp, requestFlush } from '../sync/engine'
 
@@ -25,6 +25,11 @@ export interface GdtInvoiceData {
   khmshdon?: string   // ký hiệu mẫu số
   khhdon?: string     // ký hiệu hoá đơn
   shdon?: string      // số hoá đơn
+  /** Tổng thanh toán trên hóa đơn (tgtttbso), nếu có */
+  total?: number
+  hasXml?: boolean
+  source?: string
+  receiptId?: string
   items?: { name: string; qty: number; price: number }[]
 }
 
@@ -93,8 +98,120 @@ export function gdtInvoiceKey(d: GdtInvoiceData): string {
   return d.invoiceId || `${d.nbmst ?? ''}|${d.khmshdon ?? ''}|${d.khhdon ?? ''}|${d.shdon ?? ''}`
 }
 
-/** Tổng giá trị hoá đơn gồm thuế. */
+export function invoiceExtra(inv: InvoiceRecord): GdtInvoiceData {
+  return (inv.data || {}) as GdtInvoiceData
+}
+
+/** Chữ để tìm: số HĐ, người bán, MST — giống ô tìm trên máy Invoice. */
+export function invoiceSearchText(inv: InvoiceRecord): string {
+  const extra = invoiceExtra(inv)
+  return [
+    inv.code,
+    extra.sellerName,
+    extra.nbmst,
+    extra.khhdon,
+    extra.shdon,
+    extra.khmshdon,
+    inv.date,
+  ].filter(Boolean).join(' ')
+}
+
+/** Ngày hóa đơn mới trước, rồi số HĐ — không xếp theo lúc máy đẩy lên. */
+export function compareInvoiceRows(a: InvoiceRecord, b: InvoiceRecord): number {
+  const byDate = String(b.date || '').localeCompare(String(a.date || ''))
+  if (byDate) return byDate
+  const byCode = String(b.code || '').localeCompare(String(a.code || ''))
+  if (byCode) return byCode
+  return (b.ts || 0) - (a.ts || 0)
+}
+
+export function invoiceXmlState(inv: InvoiceRecord): 'có' | 'chưa' {
+  return invoiceExtra(inv).hasXml ? 'có' : 'chưa'
+}
+
+export type InvoiceStockFilter = 'all' | 'open' | 'received'
+export type InvoiceXmlFilter = 'all' | 'yes' | 'no'
+export type InvoiceStatusFilter = 'all' | InvoiceRecord['status']
+export type InvoicePeriod = 'all' | 'month' | 'lastMonth' | 'custom'
+
+export interface InvoiceListFilter {
+  query: string
+  from?: string
+  to?: string
+  status?: InvoiceStatusFilter
+  stock?: InvoiceStockFilter
+  xml?: InvoiceXmlFilter
+}
+
+export function invoicePeriodRange(
+  period: InvoicePeriod,
+  from: string,
+  to: string,
+  now = new Date(),
+): { from: string; to: string } {
+  if (period === 'custom') return { from, to }
+  if (period === 'month') {
+    const start = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    return { from: start, to: '' }
+  }
+  if (period === 'lastMonth') {
+    const firstThis = new Date(now.getFullYear(), now.getMonth(), 1)
+    const lastPrev = new Date(firstThis.getTime() - 1)
+    const firstPrev = new Date(lastPrev.getFullYear(), lastPrev.getMonth(), 1)
+    return { from: localDay(firstPrev), to: localDay(lastPrev) }
+  }
+  return { from: '', to: '' }
+}
+
+export function filterInvoiceRows(invoices: InvoiceRecord[], f: InvoiceListFilter): InvoiceRecord[] {
+  return invoices
+    .filter((i) => {
+      if (i.deleted) return false
+      if (!matchesSearch(invoiceSearchText(i), f.query)) return false
+      const day = String(i.date || '')
+      if (f.from && day && day < f.from) return false
+      if (f.to && day && day > f.to) return false
+      if (f.status && f.status !== 'all' && i.status !== f.status) return false
+      const extra = invoiceExtra(i)
+      if (f.stock === 'open' && extra.receiptId) return false
+      if (f.stock === 'received' && !extra.receiptId) return false
+      if (f.xml === 'yes' && !extra.hasXml) return false
+      if (f.xml === 'no' && extra.hasXml) return false
+      return true
+    })
+    .sort(compareInvoiceRows)
+}
+
+export function visibleInvoiceRows(
+  invoices: InvoiceRecord[],
+  query: string,
+  onlyOpen: boolean,
+): InvoiceRecord[] {
+  return filterInvoiceRows(invoices, { query, stock: onlyOpen ? 'open' : 'all' })
+}
+
+export async function markInvoiceReceipt(invoiceId: string, receiptId: string): Promise<void> {
+  const inv = await dbx.invoices.get(invoiceId)
+  if (!inv) return
+  const next: InvoiceRecord = {
+    ...inv,
+    data: { ...(inv.data || {}), receiptId },
+    ts: Date.now(),
+  }
+  await dbx.transaction('rw', [dbx.invoices, dbx.syncQueue, dbx.appliedOps], async () => {
+    const op = makeOp('invoice.upsert', null)
+    next.hlc = op.hlc
+    await dbx.invoices.put(next)
+    op.payload = next
+    await persistOp(op)
+  })
+  requestFlush()
+}
+
+/** Tổng giá trị hoá đơn gồm thuế. Ưu tiên số tổng trên HĐ nếu máy đã gửi. */
 export function invoiceTotal(inv: InvoiceRecord): number {
+  const stored = Number(invoiceExtra(inv).total)
+  if (Number.isFinite(stored) && stored > 0) return stored
   const amount = Number(inv.amount)
   const tax = Number(inv.tax)
   return (Number.isFinite(amount) ? amount : 0) + (Number.isFinite(tax) ? tax : 0)

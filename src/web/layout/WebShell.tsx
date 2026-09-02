@@ -128,6 +128,7 @@ export function WebShell() {
                   {can('inventory') && <button type="button" onClick={() => go('/kiem-ke')}>Kiểm kê</button>}
                   {can('sell') && <button type="button" onClick={() => go('/don-hang')}>Đơn hàng</button>}
                   {can('inventory') && <button type="button" onClick={() => go('/nhap-hang')}>Nhập hàng</button>}
+                  {can('invoices') && <button type="button" onClick={() => go('/hoa-don')}>Hóa đơn điện tử</button>}
                   {can('reports') && <button type="button" onClick={() => go('/bao-cao')}>Báo cáo</button>}
                   {can('settings') && <button type="button" onClick={() => go('/cai-dat')}>Cài đặt</button>}
                 </div>
@@ -151,7 +152,7 @@ export function WebShell() {
                   {can('sell') && <button type="button" onClick={() => go('/don-hang')}>Đơn hàng<small>Lịch sử + hủy hoàn kho</small></button>}
                   {can('inventory') && <button type="button" onClick={() => go('/nhap-hang')}>Nhập hàng<small>Phiếu nhập kho</small></button>}
                   {can('inventory') && <button type="button" onClick={() => go('/don-mua')}>Đơn mua<small>Đặt NCC rồi nhận vào kho</small></button>}
-                  {can('invoices') && <button type="button" onClick={() => go('/hoa-don')}>Hóa đơn<small>Sổ hóa đơn GDT / nhập</small></button>}
+                  {can('invoices') && <button type="button" onClick={() => go('/hoa-don')}>Hóa đơn điện tử<small>Sổ hóa đơn GDT / nhập</small></button>}
                 </NavDrop>
               )}
 

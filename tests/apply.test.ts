@@ -504,6 +504,33 @@ describe('applyOps — idempotent + delta + LWW', () => {
     expect((await dbx.pricingRules.get('pr1'))!.deleted).toBe(true)
   })
 
+  it('áp invoice.upsert type gdt từ máy desktop', async () => {
+    const inv: InvoiceRecord = {
+      id: 'inv_gdt_abc123abc123abc123abcd',
+      code: 'C26TAA-9',
+      type: 'gdt',
+      date: '2026-09-01',
+      amount: 100000,
+      tax: 10000,
+      status: 'issued',
+      ts: 1,
+      data: {
+        invoiceId: 'purchase/normal|invoice|012|1|C26TAA|9',
+        nbmst: '012',
+        sellerName: 'CTY A',
+        source: 'desktop',
+        deviceId: 'desk_1',
+        hasXml: true,
+      },
+    }
+    await applyOps([remoteOp('invoice.upsert', inv, hlcString(5000, 0, 'desk_1'))])
+    const saved = await dbx.invoices.get(inv.id)
+    expect(saved?.type).toBe('gdt')
+    expect(saved?.data.source).toBe('desktop')
+    expect(saved?.data.hasXml).toBe(true)
+    expect(saved?.amount).toBe(100000)
+  })
+
   it('dependency thiếu không bị đánh applied hoặc poison và có thể retry sau khi sửa dữ liệu', async () => {
     const sale = mkSale('p-missing', 1)
     const op = remoteOp('sale.commit', sale)
